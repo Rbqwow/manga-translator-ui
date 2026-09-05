@@ -44,7 +44,7 @@ class ConcurrentPipeline:
     使用 queue.Queue 和 threading.Lock 进行线程间通信和同步。
     """
     
-    def __init__(self, translator_instance, batch_size: int = 3, max_workers: int = 4):
+    def __init__(self, translator_instance, batch_size: int = 3, max_workers: int = 4, concurrency: int = None):
         """
         初始化并发流水线
         
@@ -52,9 +52,11 @@ class ConcurrentPipeline:
             translator_instance: MangaTranslator实例
             batch_size: 批量大小（一次翻译多少张图片）
             max_workers: 每个步骤的线程池大小
+            concurrency: 批次并发度（同时发起多少个翻译批次请求）
         """
         self.translator = translator_instance
-        self.batch_size = batch_size
+        self.batch_size = max(1, batch_size)
+        self.concurrency = max(1, concurrency) if concurrency is not None else 3
         
         # ✅ 为每个步骤创建独立的线程池，实现真正的并行处理
         # 每个线程拥有独立的事件循环，互不阻塞
@@ -64,7 +66,7 @@ class ConcurrentPipeline:
         self._render_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix='RenderThread')
         
         # 线程安全的队列
-        self.translation_queue = queue.Queue(maxsize=max(1, batch_size))  # 翻译队列（带背压）
+        self.translation_queue = queue.Queue(maxsize=max(10, self.concurrency * self.batch_size * 2))  # 翻译队列（带背压）
         self.inpaint_queue = queue.Queue()      # 修复队列
         self.render_queue = queue.Queue()       # 渲染队列
         
@@ -103,6 +105,10 @@ class ConcurrentPipeline:
         # ✅ 线程安全的状态消息队列（用于向主线程报告关键日志）
         self._status_queue = queue.Queue()
         self.failed_images = set()
+    def stop(self):
+        """显式停止流水线工作线程。"""
+        self.stop_workers = True
+
     
     def _emit_status(self, message: str):
         """向主线程发送状态消息（线程安全）"""
@@ -144,7 +150,7 @@ class ConcurrentPipeline:
             return None
         return ctx, config
 
-    def _should_translate_batch(self, batch: List[tuple]):
+    def _should_translate_batch(self, batch: List[tuple], wait_duration: float = 0.0, has_available_slot: bool = True):
         """根据图片数判断当前批次是否应该立刻翻译。"""
         if not batch:
             return False, ""
@@ -152,8 +158,12 @@ class ConcurrentPipeline:
         if len(batch) >= self.batch_size:
             return True, f"批次已满 ({len(batch)}/{self.batch_size} 张图片)"
 
-        if self.detection_ocr_done:
-            return True, f"OCR完成，翻译剩余 {len(batch)} 张图片"
+        if self.detection_ocr_done and self.translation_queue.empty():
+            return True, f"OCR完成且队列已空，翻译剩余 {len(batch)} 张图片"
+
+        # 弹性调度：当队列暂空但 OCR 未结束，若当前在途翻译任务集合仍有空余信号量配额且等待达到短暂超时（0.2s），允许弹性派发已有图片
+        if has_available_slot and wait_duration >= 0.2:
+            return True, f"等待超时 ({wait_duration:.2f}s) 弹性派发 {len(batch)} 张图片"
 
         return False, ""
 
@@ -422,11 +432,14 @@ class ConcurrentPipeline:
             self._emit_status(f"[翻译] 线程完成 ({self.stats['translation']}/{self.total_images})")
     
     async def _translation_async(self):
-        """翻译的异步实现"""
+        """翻译的异步实现（深度融合批次打包与基于信号量的异步并发调度）"""
+        semaphore = asyncio.Semaphore(self.concurrency)
+        active_tasks = set()
         batch = []
+        batch_start_time = None
         try:
             self._check_cancelled_or_raise("翻译")
-            logger.info(f"[翻译线程] 启动，批量大小: {self.batch_size}")
+            logger.info(f"[翻译线程] 启动，批量大小: {self.batch_size}，批次并发度: {self.concurrency}")
             
             while not self.stop_workers:
                 try:
@@ -435,40 +448,56 @@ class ConcurrentPipeline:
                     if self.has_critical_error:
                         logger.warning(f"[翻译] 检测到严重错误，停止翻译 (已完成 {self.stats['translation']}/{self.total_images})")
                         break
-                    
-                    # 从队列获取任务（非阻塞）
-                    try:
-                        task = self._pop_translation_task(timeout=0.1)
-                        if task:
-                            ctx, config = task
-                            batch.append((ctx, config))
-                    except queue.Empty:
-                        if not batch:
-                            if self.detection_ocr_done and self.translation_queue.empty():
-                                break
-                            if self.has_critical_error:
-                                logger.warning("[翻译] 检测到严重错误，停止等待")
-                                break
-                            continue
-                    
-                    # 收集更多图片直到达到 batch_size
+
+                    # 检查是否全部已完成
+                    if not batch and self.detection_ocr_done and self.translation_queue.empty():
+                        break
+
+                    # 尝试从队列填充当前批次，直到达到 batch_size
                     while len(batch) < self.batch_size:
                         try:
-                            task = self._pop_translation_task(timeout=0.05)
+                            task = self._pop_translation_task(timeout=0.01)
                             if task:
-                                ctx, config = task
-                                batch.append((ctx, config))
+                                if not batch:
+                                    batch_start_time = asyncio.get_running_loop().time()
+                                batch.append(task)
+                            else:
+                                 break
                         except queue.Empty:
                             break
-                    
-                    # 判断是否应该翻译当前批次
-                    should_translate, reason = self._should_translate_batch(batch)
+
+                    now = asyncio.get_running_loop().time()
+                    wait_duration = (now - batch_start_time) if (batch and batch_start_time) else 0.0
+                    has_slot = len(active_tasks) < self.concurrency
+                    should_translate, reason = self._should_translate_batch(batch, wait_duration, has_slot)
 
                     if should_translate:
-                        logger.info(f"[翻译] {reason}，开始翻译 ({len(batch)} 张图片)")
-                        await self._process_translation_batch(batch)
+                        # 占位获取信号量配额（带超时以定期响应取消或停止信号）
+                        try:
+                            await asyncio.wait_for(semaphore.acquire(), timeout=0.1)
+                        except asyncio.TimeoutError:
+                            # 信号量等待超时，稍后重试
+                            continue
+
+                        # 再次检查停止条件
+                        if self.stop_workers or self.has_critical_error:
+                            semaphore.release()
+                            break
+
+                        current_batch = batch
                         batch = []
-                    
+                        batch_start_time = None
+
+                        logger.info(f"[翻译] {reason}，并发派发批次 ({len(current_batch)} 张图片)")
+                        t = asyncio.create_task(self._process_concurrent_batch_task(current_batch, semaphore))
+                        active_tasks.add(t)
+                        t.add_done_callback(active_tasks.discard)
+                    else:
+                        if not batch and self.detection_ocr_done and self.translation_queue.empty():
+                            break
+                        # 批次未满且未满足派发条件，短暂挂起等待前序生产
+                        await asyncio.sleep(0.02)
+
                 except PipelineAbortError:
                     logger.info("[翻译] 因内部停止信号结束")
                     break
@@ -488,20 +517,54 @@ class ConcurrentPipeline:
                     self.critical_error_exception = e
                     self.stop_workers = True
                     break
-            
-            # 处理剩余批次
-            if batch and not self.stop_workers:
-                logger.info(f"[翻译] 翻译剩余 {len(batch)} 张图片")
-                await self._process_translation_batch(batch)
-            
+
+            # 若未因取消或严重错误中断，处理残留批次（防御性检查）
+            if batch and not self.stop_workers and not self.has_critical_error:
+                try:
+                    await asyncio.wait_for(semaphore.acquire(), timeout=5.0)
+                    t = asyncio.create_task(self._process_concurrent_batch_task(batch, semaphore))
+                    active_tasks.add(t)
+                    t.add_done_callback(active_tasks.discard)
+                    batch = []
+                except Exception as e:
+                    logger.error(f"[翻译] 派发残留批次失败: {e}")
+
+            # 若未因取消或严重错误中断，等待所有在途翻译任务正常收尾
+            if active_tasks and not self.stop_workers and not self.has_critical_error:
+                logger.info(f"[翻译] 等待剩余 {len(active_tasks)} 个在途翻译任务完成")
+                await asyncio.gather(*active_tasks, return_exceptions=True)
+
             if self.stats['translation'] >= self.total_images:
                 logger.info(f"[翻译线程] 所有图片已翻译 ({self.stats['translation']}/{self.total_images})")
         except PipelineAbortError:
             self.stop_workers = True
+        except asyncio.CancelledError:
+            self.stop_workers = True
+            raise
         finally:
+            # 异常或停止退出时，取消剩余在途任务并回收资源
+            if active_tasks:
+                for t in list(active_tasks):
+                    if not t.done():
+                        t.cancel()
+                with contextlib.suppress(Exception):
+                    await asyncio.wait_for(
+                        asyncio.gather(*active_tasks, return_exceptions=True),
+                        timeout=5.0
+                    )
             self.translation_thread_done = True
             logger.info("[翻译线程] 停止")
-    
+
+    async def _process_concurrent_batch_task(self, batch: List[tuple], semaphore: asyncio.Semaphore):
+        """处理一个翻译批次的并发任务"""
+        try:
+            await self._process_translation_batch(batch)
+        finally:
+            semaphore.release()
+
+    async def _process_concurrent_single_task(self, ctx, config, semaphore: asyncio.Semaphore):
+        """兼容旧接口：处理单张图片的并发翻译任务"""
+        await self._process_concurrent_batch_task([(ctx, config)], semaphore)
     async def _process_translation_batch(self, batch: List[tuple]):
         """处理一个翻译批次"""
         if not batch:
@@ -528,9 +591,11 @@ class ConcurrentPipeline:
             translated_batch = await self.translator._batch_translate_contexts(batch, len(batch))
             self._check_cancelled_or_raise("翻译", f"批量翻译 {len(batch)} 张图片")
             
-            self.stats['translation'] += len(batch)
+            with self._lock:
+                self.stats['translation'] += len(batch)
+                completed_count = self.stats['translation']
             # ✅ 发送状态日志
-            self._emit_status(f"[翻译] 批次完成 ({self.stats['translation']}/{self.total_images})")
+            self._emit_status(f"[翻译] 批次完成 ({completed_count}/{self.total_images})")
             
             ready_to_render = 0
             redo_tasks = []  # 锁外推送，避免锁内阻塞 queue.put
@@ -592,8 +657,10 @@ class ConcurrentPipeline:
             logger.error(f"[翻译] 异常类型: {type(e).__name__}")
             logger.error(traceback.format_exc())
 
-            self.stats['translation'] += len(batch)
-            self._emit_status(f"[翻译] 跳过失败批次 ({self.stats['translation']}/{self.total_images})")
+            with self._lock:
+                self.stats['translation'] += len(batch)
+                completed_count = self.stats['translation']
+            self._emit_status(f"[翻译] 跳过失败批次 ({completed_count}/{self.total_images})")
 
             for ctx, config in batch:
                 self.translator._mark_context_failure(ctx, e, stage='translation')

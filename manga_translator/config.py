@@ -401,7 +401,7 @@ class CliConfig(BaseModel):
     """Disable ONNX Runtime GPU acceleration and force CPUExecutionProvider."""
     context_size: int = 3
     """Context size for translation"""
-    batch_size: int = 1
+    batch_size: int = 3
     """Batch size for processing"""
     batch_concurrent: bool = False
     """Enable concurrent pipeline (Detection, OCR, Inpainting, Translation in parallel)"""

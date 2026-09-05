@@ -6,7 +6,11 @@ import re
 import shutil
 import sys
 import textwrap
+import threading
 import time
+
+# 全局线程锁：保护术语提示词文件的并发读取与合并写入
+_glossary_file_lock = threading.Lock()
 from abc import abstractmethod
 from typing import Any, Awaitable, Callable, Dict, List, Optional, Tuple
 
@@ -3405,116 +3409,120 @@ def merge_glossary_to_file(file_path: str, new_terms: List[Dict[str, Any]]) -> b
     if not new_terms:
         return False
 
+    if not os.path.isabs(file_path):
+        from ..utils import BASE_PATH
+        file_path = os.path.join(BASE_PATH, file_path)
+
     ext = os.path.splitext(file_path)[1].lower()
     is_yaml = ext in ('.yaml', '.yml')
-
-    try:
-        # 读取现有文件（统一使用 prompt_loader，自动支持 JSON/YAML）
-        data = {}
-        if os.path.exists(file_path):
-            loaded = load_prompt_file(file_path)
-            if loaded is not None:
-                data = loaded
-        
-        # 确保结构完整
-        if "glossary" not in data or not isinstance(data["glossary"], dict):
-            # 如果旧格式是列表，或者没有 glossary，初始化为新的分类结构
-            data["glossary"] = {
-                "Person": [], "Location": [], "Org": [], "Item": [], "Skill": [], "Creature": []
-            }
-        
-        glossary = data["glossary"]
-        # 确保所有标准分类键都存在
-        valid_keys_map = {
-            "person": "Person", 
-            "location": "Location", 
-            "org": "Org", 
-            "organization": "Org",
-            "item": "Item", 
-            "skill": "Skill", 
-            "creature": "Creature"
-        }
-        
-        # 确保标准键存在于 glossary 中
-        for key in set(valid_keys_map.values()):
-            if key not in glossary:
-                glossary[key] = []
-
-        modified = False
-        
-        for term in new_terms:
-            if not isinstance(term, dict):
-                continue
-            raw_category = term.get("category")
-            original = str(term.get("original") or "").strip()
-            incoming_aliases = _auto_alias_deltas(term)
+    with _glossary_file_lock:
+        try:
+            # 读取现有文件（统一使用 prompt_loader，自动支持 JSON/YAML）
+            data = {}
+            if os.path.exists(file_path):
+                loaded = load_prompt_file(file_path)
+                if loaded is not None:
+                    data = loaded
             
-            if not original or not incoming_aliases:
-                continue
-
-            # 映射 Category 到标准 Key
-            normalized_cat = str(raw_category or "").strip().lower()
-            target_key = valid_keys_map.get(normalized_cat)
-            if target_key is None:
-                continue
+            # 确保结构完整
+            if "glossary" not in data or not isinstance(data["glossary"], dict):
+                # 如果旧格式是列表，或者没有 glossary，初始化为新的分类结构
+                data["glossary"] = {
+                    "Person": [], "Location": [], "Org": [], "Item": [], "Skill": [], "Creature": []
+                }
             
-            if not isinstance(glossary.get(target_key), list):
-                glossary[target_key] = []
-
-            original_key = _glossary_match_key(original)
-            target_entry = next(
-                (
-                    entry
-                    for entry in glossary[target_key]
-                    if isinstance(entry, dict)
-                    and _glossary_match_key(entry.get("original")) == original_key
-                ),
-                None,
-            )
-            if target_entry is not None:
-                if target_entry.get("overwrite") is True:
-                    modified = (
-                        _merge_auto_glossary_aliases(target_entry, incoming_aliases)
-                        or modified
-                    )
-                continue
-
-            # A newly created entry must contain its canonical source form.
-            if (
-                _glossary_match_key(incoming_aliases[0]["original"])
-                != _glossary_match_key(original)
-            ):
-                continue
-
-            new_entry: Dict[str, Any] = {
-                "original": original,
-                "aliases": incoming_aliases,
-                "overwrite": False,
+            glossary = data["glossary"]
+            # 确保所有标准分类键都存在
+            valid_keys_map = {
+                "person": "Person", 
+                "location": "Location", 
+                "org": "Org", 
+                "organization": "Org",
+                "item": "Item", 
+                "skill": "Skill", 
+                "creature": "Creature"
             }
-            glossary[target_key].append(new_entry)
-            modified = True
-        
-        if modified:
-            # 确保存储目录存在
-            os.makedirs(os.path.dirname(os.path.abspath(file_path)), exist_ok=True)
-            with open(file_path, 'w', encoding='utf-8') as f:
-                if is_yaml:
-                    from .prompt_loader import _get_yaml
-                    yaml = _get_yaml()
-                    if yaml is not None:
-                        yaml.dump(data, f, allow_unicode=True, default_flow_style=False, sort_keys=False)
+            
+            # 确保标准键存在于 glossary 中
+            for key in set(valid_keys_map.values()):
+                if key not in glossary:
+                    glossary[key] = []
+
+            modified = False
+            
+            for term in new_terms:
+                if not isinstance(term, dict):
+                    continue
+                raw_category = term.get("category")
+                original = str(term.get("original") or "").strip()
+                incoming_aliases = _auto_alias_deltas(term)
+                
+                if not original or not incoming_aliases:
+                    continue
+
+                # 映射 Category 到标准 Key
+                normalized_cat = str(raw_category or "").strip().lower()
+                target_key = valid_keys_map.get(normalized_cat)
+                if target_key is None:
+                    continue
+                
+                if not isinstance(glossary.get(target_key), list):
+                    glossary[target_key] = []
+
+                original_key = _glossary_match_key(original)
+                target_entry = next(
+                    (
+                        entry
+                        for entry in glossary[target_key]
+                        if isinstance(entry, dict)
+                        and _glossary_match_key(entry.get("original")) == original_key
+                    ),
+                    None,
+                )
+                if target_entry is not None:
+                    if target_entry.get("overwrite") is True:
+                        modified = (
+                            _merge_auto_glossary_aliases(target_entry, incoming_aliases)
+                            or modified
+                        )
+                    continue
+
+                # A newly created entry must contain its canonical source form.
+                if (
+                    _glossary_match_key(incoming_aliases[0]["original"])
+                    != _glossary_match_key(original)
+                ):
+                    continue
+
+                new_entry: Dict[str, Any] = {
+                    "original": original,
+                    "aliases": incoming_aliases,
+                    "overwrite": False,
+                }
+                glossary[target_key].append(new_entry)
+                modified = True
+            
+            if modified:
+                # 确保存储目录存在
+                os.makedirs(os.path.dirname(os.path.abspath(file_path)), exist_ok=True)
+                with open(file_path, 'w', encoding='utf-8') as f:
+                    if is_yaml:
+                        from .prompt_loader import _get_yaml
+                        yaml = _get_yaml()
+                        if yaml is not None:
+                            yaml.dump(data, f, allow_unicode=True, default_flow_style=False, sort_keys=False)
+                        else:
+                            # YAML 不可用，回退到 JSON
+                            json.dump(data, f, indent=2, ensure_ascii=False)
                     else:
-                        # YAML 不可用，回退到 JSON
                         json.dump(data, f, indent=2, ensure_ascii=False)
-                else:
-                    json.dump(data, f, indent=2, ensure_ascii=False)
-            return True
-            
-    except Exception as e:
-        print(f"Error merging glossary: {e}")
+                return True
+                
+        except Exception as e:
+            print(f"Error merging glossary: {e}")
+            return False
+        
         return False
-    
-    return False
 
 def get_glossary_extraction_prompt(target_lang: str) -> str:
     """

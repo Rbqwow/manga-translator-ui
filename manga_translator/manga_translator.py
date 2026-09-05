@@ -3,6 +3,7 @@ import asyncio
 import json
 import logging
 import os
+import threading
 import time
 import traceback
 import unicodedata
@@ -380,6 +381,7 @@ class MangaTranslator:
         self._model_usage_timestamps = {}
         self._detector_cleanup_task = None
         self.context_size = params.get('context_size', 0)
+        self._context_history_lock = threading.RLock()
         self.all_page_translations = []
         self._original_page_texts = []  # 存储原文页面数据，用于并发模式下的上下文
         self._resume_context_pages = []
@@ -2864,29 +2866,44 @@ class MangaTranslator:
         
         return text_regions
 
+    def _is_effective_batch_concurrent(self) -> bool:
+        """判断当前运行模式是否满足并发流水线条件。"""
+        is_template_save_mode = bool(self.template and self.save_text)
+        has_incompatible_mode = bool(
+            self.load_text
+            or self.translate_json_only
+            or is_template_save_mode
+            or self.generate_and_export
+            or self.colorize_only
+            or self.upscale_only
+            or self.inpaint_only
+            or self.replace_translation
+        )
+        return bool(self.batch_concurrent and not has_incompatible_mode)
+
     def _prune_context_history(self):
         """
         Prune translation history to prevent memory leaks in large batch tasks.
         Keeps only the most recent pages needed for context.
         """
-        # Minimum history to keep (context_size + buffer)
-        # If context_size is 0, keep a small buffer (e.g., 5) just in case
-        keep_size = max(self.context_size, 1) + 5
-        
-        if len(self.all_page_translations) > keep_size:
-            # Remove oldest entries
-            trim_count = len(self.all_page_translations) - keep_size
-            self.all_page_translations = self.all_page_translations[trim_count:]
-            if len(self._original_page_texts) >= trim_count:
-                self._original_page_texts = self._original_page_texts[trim_count:]
-            # Also clean up saved image contexts if they are too old (simple heuristic)
-            if len(self._saved_image_contexts) > keep_size * 2:
-                # Keep only the last N keys
-                keys = list(self._saved_image_contexts.keys())
-                keys_to_remove = keys[:-keep_size*2]
-                for k in keys_to_remove:
-                    del self._saved_image_contexts[k]
-
+        with self._context_history_lock:
+            # Minimum history to keep (context_size + buffer)
+            # If context_size is 0, keep a small buffer (e.g., 5) just in case
+            keep_size = max(self.context_size, 1) + 5
+            
+            if len(self.all_page_translations) > keep_size:
+                # Remove oldest entries
+                trim_count = len(self.all_page_translations) - keep_size
+                self.all_page_translations = self.all_page_translations[trim_count:]
+                if len(self._original_page_texts) >= trim_count:
+                    self._original_page_texts = self._original_page_texts[trim_count:]
+                # Also clean up saved image contexts if they are too old (simple heuristic)
+                if len(self._saved_image_contexts) > keep_size * 2:
+                    # Keep only the last N keys
+                    keys = list(self._saved_image_contexts.keys())
+                    keys_to_remove = keys[:-keep_size*2]
+                    for k in keys_to_remove:
+                        del self._saved_image_contexts[k]
     @staticmethod
     def _get_context_region_count(region: Any) -> int:
         lines = getattr(region, 'lines', None)
@@ -3060,6 +3077,7 @@ class MangaTranslator:
 
     async def _load_and_prepare_prompts(self, config: Config, ctx: Context):
         """Loads custom HQ and line break prompts into the context object."""
+        from .translators.common import _glossary_file_lock
         from .translators.prompt_loader import (
             load_custom_prompt,
             load_line_break_prompt,
@@ -3073,7 +3091,8 @@ class MangaTranslator:
                 if not os.path.isabs(prompt_path):
                     prompt_path = os.path.join(BASE_PATH, prompt_path)
                 
-                ctx.custom_prompt_json = load_custom_prompt(prompt_path)
+                with _glossary_file_lock:
+                    ctx.custom_prompt_json = load_custom_prompt(prompt_path)
                 if ctx.custom_prompt_json:
                     logger.info(f"Successfully loaded custom HQ prompt from: {prompt_path}")
                     # Log the parsed content for user verification
@@ -3516,8 +3535,9 @@ class MangaTranslator:
         plan = plan_batch_inputs(self, source_items, save_info)
         images_with_configs = plan.pending_items
         skipped_count = plan.skipped_count
-        self.all_page_translations.clear()
-        self._original_page_texts.clear()
+        with self._context_history_lock:
+            self.all_page_translations.clear()
+            self._original_page_texts.clear()
         display_total = global_total if global_total is not None else global_offset + len(source_items)
         processing_offset = global_offset + skipped_count
         self._prepare_resume_context(plan)
@@ -3566,7 +3586,7 @@ class MangaTranslator:
             or self.inpaint_only
             or self.replace_translation
         )
-        effective_batch_concurrent = self.batch_concurrent and not has_incompatible_mode
+        effective_batch_concurrent = self._is_effective_batch_concurrent()
 
         is_hq_translator = False
         first_config = images_with_configs[0][1]
@@ -3617,8 +3637,9 @@ class MangaTranslator:
 
         if effective_batch_concurrent:
             mode_desc = "高质量翻译" if is_hq_translator else "标准翻译"
+            glossary_desc = " (已启用术语提取)" if getattr(first_config.translator, "extract_glossary", False) else ""
             logger.info(
-                f'🚀 启用并发流水线模式 ({mode_desc}): '
+                f'🚀 启用并发流水线模式 ({mode_desc}{glossary_desc}): '
                 f'{len(images_with_configs)} 张图片, 翻译批量大小: {batch_size}'
             )
             from .utils.concurrent_pipeline import ConcurrentPipeline
@@ -4910,14 +4931,15 @@ class MangaTranslator:
                         ctx.text_regions = await self._apply_post_translation_processing(ctx, config)
                 
                 # ✅ 立即保存当前批次的翻译结果到all_page_translations，供下一个批次使用上下文
-                for ctx, config in batch:
-                    if ctx.text_regions:
-                        page_entries = self._build_page_context_entries(ctx)
-                        self.all_page_translations.append(page_entries)
-                        logger.debug(f"[Batch Context] Saved {len(page_entries)} translations for next batch context")
-                        
-                # Prune history to prevent memory leak
-                self._prune_context_history()
+                with self._context_history_lock:
+                    for ctx, config in batch:
+                        if ctx.text_regions:
+                            page_entries = self._build_page_context_entries(ctx)
+                            self.all_page_translations.append(page_entries)
+                            logger.debug(f"[Batch Context] Saved {len(page_entries)} translations for next batch context")
+                            
+                    # Prune history to prevent memory leak
+                    self._prune_context_history()
                         
                 # 批次级别的目标语言检查
                 if batch and batch[0][1].translator.enable_post_translation_check:
@@ -6041,10 +6063,11 @@ class MangaTranslator:
         if current_order is None:
             return
 
-        while self._resume_context_cursor < len(self._resume_context_pages):
-            order, _source_path, entries = self._resume_context_pages[self._resume_context_cursor]
-            if order >= current_order:
-                break
-            self.all_page_translations.append(entries)
-            self._resume_context_cursor += 1
-        self._prune_context_history()
+        with self._context_history_lock:
+            while self._resume_context_cursor < len(self._resume_context_pages):
+                order, _source_path, entries = self._resume_context_pages[self._resume_context_cursor]
+                if order >= current_order:
+                    break
+                self.all_page_translations.append(entries)
+                self._resume_context_cursor += 1
+            self._prune_context_history()

@@ -151,7 +151,7 @@ class CliSettings(BaseModel):
     translate_json_only: bool = False
     template: bool = False
     save_quality: int = 100
-    batch_size: int = 1
+    batch_size: int = 3
     batch_concurrent: bool = False
     generate_and_export: bool = False
     colorize_only: bool = False
