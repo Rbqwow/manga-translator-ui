@@ -153,6 +153,7 @@ class CliSettings(BaseModel):
     save_quality: int = 100
     batch_size: int = 1
     batch_concurrent: bool = False
+    translation_concurrency: int = Field(default=3, ge=1, le=32)
     generate_and_export: bool = False
     colorize_only: bool = False
     upscale_only: bool = False  # 仅超分模式

@@ -20,6 +20,7 @@
         "cli.attempts",
         "cli.batch_size",
         "cli.batch_concurrent",
+        "cli.translation_concurrency",
         "use_custom_api_params",
         "cli.save_to_source_dir",
         "cli.export_editable_psd",

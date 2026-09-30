@@ -118,7 +118,15 @@ python -m manga_translator -i <input> [options]
 | `--disable-onnx-gpu` | Disable ONNX Runtime GPU acceleration | From config |
 | `--format` | Output format (`png` / `jpg` / `jpeg` / `jfif` / `webp` / `avif` / `bmp` / `tiff` / `tif` / `heic` / `heif`) | From config |
 | `--batch-size` | Batch size | From config |
+| `--concurrent` | Enable the concurrent pipeline and translation threads; omitting it preserves the config value | From config |
+| `--translation-concurrency` | Simultaneous translation batches (1–32); requires the concurrent pipeline | From config, default 3 |
 | `--attempts` | Retry count when translation fails (`-1` = unlimited) | From config |
+
+Enable the pipeline with `--concurrent` or `cli.batch_concurrent=true` in the config file. Passing `--translation-concurrency` alone does not enable concurrency. `--batch-size` controls the number of images in each translation batch; `--translation-concurrency` controls how many batches can run simultaneously. Special workflows still disable the pipeline; see [Workflow and file modes](../wiki/en/cli/workflow-and-file-modes.md).
+
+```bash
+python -m manga_translator local -i ./manga_folder/ --concurrent --translation-concurrency 3 --batch-size 2
+```
 
 ### Memory-management arguments (`subprocess` mode)
 
@@ -142,7 +150,8 @@ pip install psutil
 ### Important notes
 
 - Command-line arguments override the corresponding values in the config file
-- The current top-level entry `python -m manga_translator` does **not** expose older `--resume` or `--concurrent` top-level switches directly
+- The current `local` entry supports `--concurrent` and `--translation-concurrency`; it still does not expose `--resume` directly
+- With `--subprocess`, `--batch-size` and the concurrency arguments also override the config. The subprocess branch still does not apply `--format` or `--attempts`; set `cli.format` and `cli.attempts` in the config file instead
 - The documentation in this English version follows the actually available current top-level arguments defined by the current codebase
 
 ---
@@ -240,6 +249,7 @@ Basic example:
     "save_quality": 100,
     "batch_size": 3,
     "batch_concurrent": false,
+    "translation_concurrency": 3,
     "generate_and_export": false,
     "colorize_only": false,
     "upscale_only": false,
@@ -825,6 +835,7 @@ The `cli` section in the config file contains the following important fields.
 - `attempts` -> `Retry Attempts`
 - `batch_size` -> `Batch Size`
 - `batch_concurrent` -> `Concurrent Batch Processing`
+- `translation_concurrency`: simultaneous translation batches (1–32, default 3; requires the concurrent pipeline)
 
 ### Additional notes
 

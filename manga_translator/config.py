@@ -2,7 +2,7 @@ import argparse
 from enum import Enum
 from typing import Any, Optional, Union
 
-from pydantic import BaseModel, PrivateAttr, model_validator
+from pydantic import BaseModel, Field, PrivateAttr, model_validator
 
 from manga_translator.custom_api_params import migrate_legacy_custom_api_params_config
 
@@ -405,6 +405,8 @@ class CliConfig(BaseModel):
     """Batch size for processing"""
     batch_concurrent: bool = False
     """Enable concurrent pipeline (Detection, OCR, Inpainting, Translation in parallel)"""
+    translation_concurrency: int = Field(default=3, ge=1, le=32)
+    """Maximum translation batches in flight when batch_concurrent is enabled."""
     format: Optional[str] = None
     """Output format"""
     save_quality: int = 100

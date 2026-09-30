@@ -62,6 +62,7 @@ The 17 parameters of the General tab span two pages: application-level parameter
 | `cli.attempts` | Retry Attempts | 重试次数 | [#cli-attempts](../desktop/settings/cli-batch-and-output.md#cli-attempts) |
 | `cli.batch_size` | Batch Size | 批量大小 | [#cli-batch-size](../desktop/settings/cli-batch-and-output.md#cli-batch-size) |
 | `cli.batch_concurrent` | Concurrent Batch Processing | 并发批量处理 | [#cli-batch-concurrent](../desktop/settings/cli-batch-and-output.md#cli-batch-concurrent) |
+| `cli.translation_concurrency` | Translation Concurrency | 翻译并发数 | [#cli-translation-concurrency](../desktop/settings/cli-batch-and-output.md#cli-translation-concurrency) |
 | `use_custom_api_params` | Use Custom API Params | 使用自定义API参数 | [#custom-api-params](../desktop/settings/general-and-app.md#custom-api-params) |
 | `cli.save_to_source_dir` | Save to Source Directory | 输出到原图目录 | [#cli-save-to-source-dir](../desktop/settings/cli-batch-and-output.md#cli-save-to-source-dir) |
 | `cli.export_editable_psd` | Export Editable PSD | 导出可编辑PSD | [#cli-export-editable-psd](../desktop/settings/cli-batch-and-output.md#cli-export-editable-psd) |

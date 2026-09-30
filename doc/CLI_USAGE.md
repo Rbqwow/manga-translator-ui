@@ -99,7 +99,15 @@ python -m manga_translator -i <输入> [选项]
 | `--disable-onnx-gpu` | 禁用 ONNX Runtime GPU 加速 | 配置文件 |
 | `--format` | 输出格式（png/jpg/jpeg/jfif/webp/avif/bmp/tiff/tif/heic/heif） | 配置文件 |
 | `--batch-size` | 批量处理大小 | 配置文件 |
+| `--concurrent` | 开启并发流水线和多线程翻译；不传时保留配置值 | 配置文件 |
+| `--translation-concurrency` | 同时执行的翻译批次数（1–32）；需开启并发流水线 | 配置文件，默认 3 |
 | `--attempts` | 翻译失败重试次数（-1=无限） | 配置文件 |
+
+并发流水线可以由 `--concurrent` 或配置中的 `cli.batch_concurrent=true` 开启；`--translation-concurrency` 单独使用不会开启并发。`--batch-size` 控制每个翻译批次的图片数，`--translation-concurrency` 控制同时执行多少个批次。特殊工作流仍会禁用并发流水线，详见[工作流与文件模式](wiki/zh/cli/workflow-and-file-modes.md)。
+
+```bash
+python -m manga_translator local -i ./manga_folder/ --concurrent --translation-concurrency 3 --batch-size 2
+```
 
 ### 内存管理参数（子进程模式）
 
@@ -117,7 +125,7 @@ python -m manga_translator -i <输入> [选项]
 
 **注意**：命令行参数会覆盖配置文件中的对应设置。
 
-**补充**：当前主入口 `python -m manga_translator` 暂未直接暴露 `--resume` 和 `--concurrent` 参数，文档以下内容均以实际可用的顶层入口参数为准。
+**补充**：当前 `local` 入口支持 `--concurrent` 和 `--translation-concurrency`，仍未直接暴露 `--resume`。`--subprocess` 同样支持 `--batch-size` 和上述并发参数覆盖配置，但当前不会应用 `--format`、`--attempts` 命令行覆盖；子进程的输出格式和重试次数应通过配置文件中的 `cli.format`、`cli.attempts` 设置。
 
 ---
 
@@ -212,6 +220,7 @@ python -m manga_translator -i manga.jpg --config my_config.json
     "save_quality": 100,
     "batch_size": 3,
     "batch_concurrent": false,
+    "translation_concurrency": 3,
     "generate_and_export": false,
     "colorize_only": false,
     "upscale_only": false,
@@ -1427,6 +1436,7 @@ python -m manga_translator shared --host 127.0.0.1 --port 5003 --models-ttl 300 
 - `attempts` - 翻译失败重试次数
 - `batch_size` - 批量处理大小
 - `batch_concurrent` - 批处理并发流水线
+- `translation_concurrency` - 同时执行的翻译批次数（1–32，默认 3；需开启并发流水线）
 
 ### 补充说明
 - `导出原文` 实际上是 `template=true` 且 `save_text=true` 的组合
