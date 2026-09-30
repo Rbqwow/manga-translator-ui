@@ -6,6 +6,7 @@ import re
 import shutil
 import sys
 import textwrap
+import threading
 import time
 from abc import abstractmethod
 from typing import Any, Awaitable, Callable, Dict, List, Optional, Tuple
@@ -1379,6 +1380,7 @@ def _flatten_prompt_data(data, indent: int = 0) -> str:
 
 
 class CommonTranslator(InfererModule):
+    _REQUEST_RATE_LOCK = threading.Lock()
     # Translator has to support all languages listed in here. The language codes will be resolved into
     # _LANGUAGE_CODE_MAP[lang_code] automatically if _LANGUAGE_CODE_MAP is a dict.
     # If it is a list it will simply return the language code as is.
@@ -1517,6 +1519,22 @@ class CommonTranslator(InfererModule):
             asyncio.sleep(seconds),
             poll_interval=min(poll_interval, max(seconds, 0.05)),
         )
+
+    async def _wait_for_shared_rate_limit(self):
+        """Space request starts across worker threads without serializing replies."""
+        if self._MAX_REQUESTS_PER_MINUTE <= 0:
+            return
+        interval = 60.0 / self._MAX_REQUESTS_PER_MINUTE
+        while True:
+            self._check_cancelled()
+            with self._REQUEST_RATE_LOCK:
+                now = time.monotonic()
+                previous = self._GLOBAL_LAST_REQUEST_TS.get(self._last_request_ts_key)
+                delay = max(0.0, previous + interval - now) if previous else 0.0
+                if delay <= 0:
+                    self._GLOBAL_LAST_REQUEST_TS[self._last_request_ts_key] = now
+                    return
+            await self._sleep_with_cancel_polling(delay)
 
     async def _run_unified_stream_transport(
         self,
@@ -3388,6 +3406,14 @@ def _merge_auto_glossary_aliases(
 
 
 def merge_glossary_to_file(file_path: str, new_terms: List[Dict[str, Any]]) -> bool:
+    """Serialize the entire read/merge/write with other workers and readers."""
+    from .prompt_loader import prompt_file_lock
+
+    with prompt_file_lock:
+        return _merge_glossary_to_file(file_path, new_terms)
+
+
+def _merge_glossary_to_file(file_path: str, new_terms: List[Dict[str, Any]]) -> bool:
     """
     将新提取的术语合并到提示词文件中
     Merge newly extracted terms into the prompt file

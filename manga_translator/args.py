@@ -69,6 +69,10 @@ def create_parser():
                              help=f"输出格式：{'/'.join(OUTPUT_IMAGE_FORMATS)}（覆盖配置文件）")
     local_parser.add_argument('--batch-size', type=int, default=None,
                              help='批量处理大小（覆盖配置文件）')
+    local_parser.add_argument('--concurrent', action='store_true',
+                             help='启用并发流水线和多线程翻译')
+    local_parser.add_argument('--translation-concurrency', type=int, choices=range(1, 33), metavar='1-32',
+                             help='同时执行的翻译批次数（需开启并发处理；默认 3）')
     local_parser.add_argument('--attempts', type=int, default=None,
                              help='翻译失败重试次数，-1表示无限重试（覆盖配置文件）')
     # 内存管理参数（子进程模式）

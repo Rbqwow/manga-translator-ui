@@ -55,7 +55,7 @@ lastUpdated: true
 
 #### 并发批量处理 {#cli-batch-concurrent}
 
-“并发批量处理”开关开启后，检测+OCR、翻译、修复和排版四个阶段通过队列流水线并行；它表示阶段级并行，不是所有图片同时请求 API。导入 TXT、仅翻译 JSON、导出原文/翻译、仅上色/超分/修复和替换翻译等特殊工作流会强制关闭并发。
+“并发批量处理”开关开启后，检测+OCR、翻译、修复和排版通过队列流水线并行，翻译阶段使用多个独立线程同时处理批次。导入 TXT、仅翻译 JSON、导出原文/翻译、仅上色/超分/修复和替换翻译等特殊工作流会强制关闭并发。
 
 ```mermaid
 flowchart LR
@@ -69,7 +69,15 @@ flowchart LR
     end
 ```
 
-这不是所有图片同时请求 API；队列和 batch size 提供背压，特殊工作流会禁用它。默认值：`false`。
+等待翻译的队列最多容纳 `batch_size × translation_concurrency` 张图片，队列满时检测阶段会等待，避免无限积压。默认值：`false`。
+
+#### 翻译并发数 {#cli-translation-concurrency}
+
+“翻译并发数”位于“设置 → General”，控制同时执行的翻译批次数，范围 `1–32`，默认 `3`，需要开启“并发批量处理”。例如批量大小 `3`、翻译并发数 `3`，会同时处理最多三个各含三张图片的翻译请求。任一请求完成后，其线程立即领取下一批，不等待其他请求。
+
+回复可以乱序完成，结果仍对应原来的图片。每批使用发送时已经完成的前文，尚未返回的批次不会加入上下文；需要逐批继承完整译文上下文时设为 `1`。请求仍遵守翻译器配置的 RPM 限制。
+
+CLI 示例：`python -m manga_translator local -i ./manga_folder --concurrent --batch-size 3 --translation-concurrency 3`。配置文件对应 `cli.translation_concurrency`。
 
 #### 输出格式 {#cli-format}
 
