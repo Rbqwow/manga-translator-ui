@@ -82,8 +82,6 @@ class OpenAIHighQualityTranslator(CommonTranslator):
         self.max_tokens = None  # 不限制，使用模型默认最大值
         self._MAX_REQUESTS_PER_MINUTE = 0  # 默认无限制
         # 使用全局时间戳,跨实例共享
-        if self.model not in OpenAIHighQualityTranslator._GLOBAL_LAST_REQUEST_TS:
-            OpenAIHighQualityTranslator._GLOBAL_LAST_REQUEST_TS[self.model] = 0
         self._last_request_ts_key = self.model
         self._setup_client()
     
@@ -186,8 +184,6 @@ class OpenAIHighQualityTranslator(CommonTranslator):
         self.api_key = endpoint.api_key
         self.base_url = endpoint.base_url
         self.model = endpoint.model_name
-        if self.model not in OpenAIHighQualityTranslator._GLOBAL_LAST_REQUEST_TS:
-            OpenAIHighQualityTranslator._GLOBAL_LAST_REQUEST_TS[self.model] = 0
         self._last_request_ts_key = self.model
         self._setup_client(force_recreate=True)
 
@@ -378,16 +374,6 @@ class OpenAIHighQualityTranslator(CommonTranslator):
             messages.append({"role": "user", "content": user_content})
 
             try:
-                # RPM限制
-                if self._MAX_REQUESTS_PER_MINUTE > 0:
-                    import time
-                    now = time.time()
-                    delay = 60.0 / self._MAX_REQUESTS_PER_MINUTE
-                    elapsed = now - OpenAIHighQualityTranslator._GLOBAL_LAST_REQUEST_TS[self._last_request_ts_key]
-                    if elapsed < delay:
-                        sleep_time = delay - elapsed
-                        self.logger.info(f'Ratelimit sleep: {sleep_time:.2f}s')
-                        await self._sleep_with_cancel_polling(sleep_time)
                 
                 # 构建API参数，只有当max_tokens有值时才传递（新模型如o1/gpt-4.1不支持null值）
                 api_params = {
@@ -421,6 +407,7 @@ class OpenAIHighQualityTranslator(CommonTranslator):
 
                 async def _send_openai_request():
                     nonlocal response, streamed_text, streamed_finish_reason
+                    await self._wait_for_shared_rate_limit()
                     response = None
                     streamed_text = None
                     streamed_finish_reason = None
@@ -477,10 +464,6 @@ class OpenAIHighQualityTranslator(CommonTranslator):
                             raise RuntimeError("OpenAI HQ returned empty content")
 
                 await self._run_with_api_rotation(_send_openai_request, "translation request")
-
-                # 在API调用成功后立即更新时间戳，确保所有请求（包括重试）都被计入速率限制
-                if self._MAX_REQUESTS_PER_MINUTE > 0:
-                    OpenAIHighQualityTranslator._GLOBAL_LAST_REQUEST_TS[self._last_request_ts_key] = time.time()
 
                 if streamed_text is not None:
                     finish_reason = streamed_finish_reason

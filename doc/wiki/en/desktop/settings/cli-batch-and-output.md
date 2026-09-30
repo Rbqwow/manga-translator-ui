@@ -55,7 +55,7 @@ The “Disable ONNX GPU Acceleration” toggle forces only ONNX sessions onto th
 
 #### Concurrent Batch Processing {#cli-batch-concurrent}
 
-When the “Concurrent Batch Processing” toggle is enabled, the detection+OCR, translation, inpainting, and typesetting stages run in parallel through queues. It is stage-level parallelism, not all images requesting the API simultaneously. TXT import, JSON-only, original/translation export, colorize/upscale/inpaint-only, and replacement translation force concurrency off.
+When the “Concurrent Batch Processing” toggle is enabled, detection+OCR, translation, inpainting, and typesetting run in parallel through queues. Multiple independent translation workers can request separate batches simultaneously. TXT import, JSON-only, original/translation export, colorize/upscale/inpaint-only, and replacement translation force concurrency off.
 
 ```mermaid
 flowchart LR
@@ -69,7 +69,15 @@ flowchart LR
     end
 ```
 
-This does not mean every image sends API requests simultaneously; the queue and batch size provide backpressure, and special workflows disable the mode. Default: `false`.
+The waiting translation queue holds up to `batch_size × translation_concurrency` images. Detection waits when this queue is full to bound the backlog. Default: `false`.
+
+#### Translation Concurrency {#cli-translation-concurrency}
+
+On Settings → General, “Translation Concurrency” sets the maximum number of simultaneous translation batches (`1–32`, default `3`). Enable Concurrent Batch Processing to use it. With Batch Size `3` and Translation Concurrency `3`, up to three requests, each containing three images, can run together. A worker takes the next batch immediately after its request finishes.
+
+Responses may finish out of order while results remain associated with their source images. Each batch uses preceding pages completed when it starts; in-flight translations are unavailable as context. Set this value to `1` for full sequential translation context. The translator's configured RPM limit still applies.
+
+CLI example: `python -m manga_translator local -i ./manga_folder --concurrent --batch-size 3 --translation-concurrency 3`. The configuration key is `cli.translation_concurrency`.
 
 #### Output Format {#cli-format}
 
