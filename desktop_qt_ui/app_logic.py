@@ -1325,6 +1325,7 @@ class MainAppLogic(QObject):
                     "save_quality": self._t("label_save_quality"),
                     "batch_size": self._t("label_batch_size"),
                     "batch_concurrent": self._t("label_batch_concurrent"),
+                    "translation_concurrency": self._t("label_translation_concurrency"),
                     "generate_and_export": self._t("label_generate_and_export"),
                     "export_editable_psd": self._t("label_export_editable_psd"),
                     "last_output_path": self._t("label_last_output_path"),

@@ -363,8 +363,9 @@ class MangaTranslator:
         self._batch_configs = []   # 存储批量处理的配置
         # 内存直通载荷：image_name -> load_text 数据 dict（编辑器导出等场景跳过磁盘往返）
         self._preloaded_load_text_payloads = {}
-        # batch_concurrent 四并发模式（默认关闭，可通过配置开启）
+        # 并发流水线及独立翻译线程数（默认关闭流水线，可通过配置开启）
         self.batch_concurrent = params.get('batch_concurrent', False)
+        self.translation_concurrency = int(params.get('translation_concurrency', 3))
         
         # 添加模型加载状态标志
         self._models_loaded = False
@@ -3063,7 +3064,7 @@ class MangaTranslator:
                 return True
         return False
 
-    def _build_prev_context(self, use_original_text=False, current_page_index=None, batch_index=None, batch_original_texts=None):
+    def _build_prev_context(self, use_original_text=False, current_page_index=None, batch_index=None, batch_original_texts=None, context_history=None):
         """
         跳过句子数为0的页面，取最近 context_size 个非空页面，构造成历史多轮对话：
         - user: 过去发送给 AI 的文本请求（不附带图片）
@@ -3076,16 +3077,18 @@ class MangaTranslator:
             current_page_index: 当前页面索引，用于确定上下文范围
             batch_index: 当前页面在批次中的索引（当前未使用）
             batch_original_texts: 当前批次的原文数据（当前未使用）
+            context_history: 并发批次独立的历史快照；None 使用串行历史
         """
         if self.context_size <= 0:
             return ""
 
         # 使用指定页面索引之前的页面作为上下文
+        history = self.all_page_translations if context_history is None else context_history
         if current_page_index is not None:
-            available_pages = self.all_page_translations[:current_page_index] if self.all_page_translations else []
+            available_pages = history[:current_page_index]
         else:
             # 使用所有已完成的页面
-            available_pages = self.all_page_translations or []
+            available_pages = history
 
         if not available_pages:
             return ""
@@ -3718,7 +3721,7 @@ class MangaTranslator:
             from .utils.concurrent_pipeline import ConcurrentPipeline
 
             self._current_save_info = save_info
-            pipeline = ConcurrentPipeline(self, batch_size)
+            pipeline = ConcurrentPipeline(self, batch_size, max_workers=self.translation_concurrency)
             file_paths = [input_path(item) for item in images_with_configs]
             configs = [item[1] for item in images_with_configs]
             contexts = await pipeline.process_batch(
@@ -4849,9 +4852,9 @@ class MangaTranslator:
 
         return ctx
 
-    async def _batch_translate_contexts(self, contexts_with_configs: List[tuple], batch_size: int) -> List[tuple]:
+    async def _batch_translate_contexts(self, contexts_with_configs: List[tuple], batch_size: int, *, context_history=None) -> List[tuple]:
         """
-        批量处理翻译步骤，防止内存溢出
+        批量处理翻译步骤。传入 context_history 时不修改共享历史，由流水线收集结果。
         """
         results = []
         total_contexts = len(contexts_with_configs)
@@ -4914,8 +4917,8 @@ class MangaTranslator:
                     # 支持批量翻译 - 传递合并后的上下文（仅用于AI断句）
                     batch_contexts = [ctx for ctx, config in batch]
                     
-                    # History already contains every completed non-empty page before this batch.
-                    page_index = len(self.all_page_translations)
+                    # Concurrent batches use the history captured when they were claimed.
+                    page_index = len(self.all_page_translations if context_history is None else context_history)
                     
                     # 准备batch_original_texts（用于并发模式的上下文）
                     batch_original_texts = []
@@ -4981,7 +4984,8 @@ class MangaTranslator:
                         batch_contexts,
                         page_index=page_index,
                         batch_index=0,  # 批量处理时第一张图的批次索引为0
-                        batch_original_texts=batch_original_texts
+                        batch_original_texts=batch_original_texts,
+                        context_history=context_history,
                     )
                 else:
                     translated_texts = all_texts  # 无法翻译时保持原文
@@ -5005,14 +5009,15 @@ class MangaTranslator:
                         ctx.text_regions = await self._apply_post_translation_processing(ctx, config)
                 
                 # ✅ 立即保存当前批次的翻译结果到all_page_translations，供下一个批次使用上下文
-                for ctx, config in batch:
-                    if ctx.text_regions:
-                        page_entries = self._build_page_context_entries(ctx)
-                        self.all_page_translations.append(page_entries)
-                        logger.debug(f"[Batch Context] Saved {len(page_entries)} translations for next batch context")
-                        
-                # Prune history to prevent memory leak
-                self._prune_context_history()
+                # Concurrent workers use an immutable snapshot. The pipeline
+                # records their final translations in page order after retries.
+                if context_history is None:
+                    for ctx, config in batch:
+                        if ctx.text_regions:
+                            page_entries = self._build_page_context_entries(ctx)
+                            self.all_page_translations.append(page_entries)
+                            logger.debug(f"[Batch Context] Saved {len(page_entries)} translations for next batch context")
+                    self._prune_context_history()
                         
                 # 批次级别的目标语言检查
                 if batch and batch[0][1].translator.enable_post_translation_check:
@@ -5059,7 +5064,10 @@ class MangaTranslator:
                                     try:
                                         # 重新批量翻译
                                         logger.info(f"Retrying translation for {len(all_original_texts)} regions...")
-                                        new_translations = await self._batch_translate_texts(all_original_texts, sample_config, batch[0][0])
+                                        new_translations = await self._batch_translate_texts(
+                                            all_original_texts, sample_config, batch[0][0],
+                                            context_history=context_history,
+                                        )
                                         
                                         # 更新翻译结果到各个region
                                         for i, (ctx_idx, region) in enumerate(region_mapping):
@@ -5163,7 +5171,7 @@ class MangaTranslator:
 
         return results
 
-    async def _batch_translate_texts(self, texts: List[str], config: Config, ctx: Context, batch_contexts: List[Context] = None, page_index: int = None, batch_index: int = None, batch_original_texts: List[dict] = None) -> List[str]:
+    async def _batch_translate_texts(self, texts: List[str], config: Config, ctx: Context, batch_contexts: List[Context] = None, page_index: int = None, batch_index: int = None, batch_original_texts: List[dict] = None, context_history=None) -> List[str]:
         """
         批量翻译文本列表，使用现有的翻译器接口
 
@@ -5175,6 +5183,7 @@ class MangaTranslator:
             page_index: 当前页面索引，用于并发模式下的上下文计算
             batch_index: 当前页面在批次中的索引
             batch_original_texts: 当前批次的原文数据
+            context_history: 并发批次独立的历史快照；None 使用串行历史
         """
         if config.translator.translator == Translator.none:
             return ["" for _ in texts]
@@ -5205,7 +5214,7 @@ class MangaTranslator:
                 translator.set_cancel_check_callback(self._cancel_check_callback)
 
             # 为所有翻译器构建和设置文本上下文（包括HQ翻译器）
-            done_pages = self.all_page_translations
+            done_pages = self.all_page_translations if context_history is None else context_history
             if self.context_size > 0 and done_pages:
                 pages_expected = min(self.context_size, len(done_pages))
                 non_empty_pages = [
@@ -5225,7 +5234,8 @@ class MangaTranslator:
                 use_original_text=False,  # 始终使用翻译结果作为上下文
                 current_page_index=page_index,
                 batch_index=None,  # 不使用批次内上下文
-                batch_original_texts=None
+                batch_original_texts=None,
+                context_history=context_history,
             )
             translator.set_prev_context(prev_ctx)
 
@@ -5239,23 +5249,16 @@ class MangaTranslator:
             # 将config附加到ctx，供翻译器使用（例如AI断句功能）
             ctx.config = config
             
-            # openai_hq、gemini_hq 等需要传递ctx参数
-            if config.translator.translator in [Translator.openai_hq, Translator.gemini_hq]:
-                # 所有需要上下文的翻译器都在这里传递ctx
+            # Each batch owns its API client; close it on its worker event loop.
+            try:
                 return await translator._translate(
                     ctx.from_lang,
                     config.translator.target_lang,
                     texts,
                     ctx
                 )
-            else:
-                # 普通OpenAI和Gemini需要ctx参数（用于AI断句）
-                return await translator._translate(
-                    ctx.from_lang,
-                    config.translator.target_lang,
-                    texts,
-                    ctx
-                )
+            finally:
+                await translator._close_current_client()
 
         else:
             # 使用通用翻译调度器

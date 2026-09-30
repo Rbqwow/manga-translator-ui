@@ -151,6 +151,7 @@
     "save_quality": 100,
     "batch_size": 3,
     "batch_concurrent": true,
+    "translation_concurrency": 3,
     "generate_and_export": false,
     "colorize_only": false,
     "upscale_only": false,

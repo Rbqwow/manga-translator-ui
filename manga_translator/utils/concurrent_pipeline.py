@@ -10,6 +10,7 @@ import os
 import queue
 import threading
 import traceback
+from collections import deque
 from concurrent.futures import ThreadPoolExecutor, wait
 from datetime import datetime, timezone
 from typing import List
@@ -17,7 +18,7 @@ from typing import List
 import numpy as np
 
 from . import Context, load_image, open_pil_image
-from .batch_skip import slice_batch_indices
+from .batch_skip import normalize_path, slice_batch_indices
 
 # 使用 manga_translator 的主 logger，确保日志能被UI捕获
 logger = logging.getLogger('manga_translator')
@@ -32,45 +33,56 @@ class ConcurrentPipeline:
     """
     流水线并发处理器 - 真正的并行架构
     
-    4个独立线程，每个拥有自己的事件循环，互不阻塞：
+    各阶段拥有独立线程和事件循环，翻译阶段可同时运行多个批次：
     1. 检测+OCR线程 → 完成后放入翻译队列和修复队列
-    2. 翻译线程 → 批量处理翻译队列（HTTP 请求不会被 GPU 操作阻塞）
+    2. 翻译线程池 → 多个批次独立请求，空闲线程立即领取下一批
     3. 修复线程 → 处理修复队列（GPU 推理不会阻塞翻译）
     4. 渲染线程 → 翻译+修复完成后渲染出图
     
-    batch_size 控制翻译批量大小（一次翻译多少张图片），
-    同时也限制等待翻译的队列长度，避免 API 太慢时检测/OCR 无限堆积。
+    batch_size 控制一次翻译的图片数，max_workers 控制同时翻译的批次数。
+    等待队列最多容纳二者乘积数量的图片，避免检测/OCR 无限堆积。
     
     使用 queue.Queue 和 threading.Lock 进行线程间通信和同步。
     """
     
-    def __init__(self, translator_instance, batch_size: int = 3, max_workers: int = 4):
+    def __init__(self, translator_instance, batch_size: int = 3, max_workers: int = 3):
         """
         初始化并发流水线
         
         Args:
             translator_instance: MangaTranslator实例
             batch_size: 批量大小（一次翻译多少张图片）
-            max_workers: 每个步骤的线程池大小
+            max_workers: 同时执行的翻译批次数（每个线程拥有独立事件循环）
         """
         self.translator = translator_instance
-        self.batch_size = batch_size
+        self.batch_size = max(1, int(batch_size))
+        if not 1 <= max_workers <= 32:
+            raise ValueError('Translation concurrency must be between 1 and 32')
+        self.translation_concurrency = max_workers
         
         # ✅ 为每个步骤创建独立的线程池，实现真正的并行处理
         # 每个线程拥有独立的事件循环，互不阻塞
         self._detection_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix='DetectionThread')
-        self._translation_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix='TranslationThread')
+        self._translation_executor = ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix='TranslationThread')
         self._inpaint_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix='InpaintThread')
         self._render_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix='RenderThread')
         
         # 线程安全的队列
-        self.translation_queue = queue.Queue(maxsize=max(1, batch_size))  # 翻译队列（带背压）
+        self.translation_queue = queue.Queue(maxsize=self.batch_size * max_workers)
         self.inpaint_queue = queue.Queue()      # 修复队列
         self.render_queue = queue.Queue()       # 渲染队列
         
         # 结果存储 {image_name: ctx}
         # 使用线程锁保护共享数据
         self._lock = threading.Lock()
+        # 仅领取批次时串行，保证每批仍按页面顺序打包；网络请求不持有此锁。
+        self._batch_lock = threading.Lock()
+        self._pending_translation_batches = deque()
+        self._active_translation_workers = 0
+        self._worker_tasks = {}
+        self._page_order = {}
+        self._translation_history = {}
+        self._history_limit = max(getattr(translator_instance, 'context_size', 0), 1) + 5
         self.translation_done = {}  # 翻译完成的ctx（包含翻译后的text_regions）
         self.inpaint_done = {}      # 修复完成的ctx（包含img_inpainted）
         self.pending_redo = set()   # 翻译过滤后需要重做修复的图片名（用于协调入渲染队列的时机）
@@ -124,6 +136,16 @@ class ConcurrentPipeline:
             return
         with self._lock:
             self.failed_images.add(normalized_name)
+
+    def _set_critical_error(self, message: str, error: Exception):
+        """Preserve the first failure when several workers stop at once."""
+        with self._lock:
+            if not self.has_critical_error:
+                self.critical_error_msg = message
+                self.critical_error_exception = error
+                self.has_critical_error = True
+            self.stop_workers = True
+
     def _get_failed_count(self) -> int:
         with self._lock:
             return len(self.failed_images)
@@ -179,7 +201,7 @@ class ConcurrentPipeline:
                     )
                 self._check_cancelled_or_raise('Detection+OCR', f'Waiting for translation queue capacity: {os.path.basename(image_name)}')
 
-        raise RuntimeError('Concurrent pipeline has stopped; cannot enqueue translation tasks')
+        raise PipelineAbortError('Concurrent pipeline has stopped; cannot enqueue translation tasks')
 
     def _check_cancelled_or_raise(self, stage: str, detail: str = ""):
         """统一取消检查：区分用户取消与内部停机。"""
@@ -203,9 +225,14 @@ class ConcurrentPipeline:
         """在当前线程中创建事件循环并运行协程"""
         loop = self._create_worker_event_loop()
         asyncio.set_event_loop(loop)
+        task = loop.create_task(coro)
+        with self._lock:
+            self._worker_tasks[loop] = task
         try:
-            return loop.run_until_complete(coro)
+            return loop.run_until_complete(task)
         finally:
+            with self._lock:
+                self._worker_tasks.pop(loop, None)
             # 关闭事件循环前，先取消并回收所有挂起任务，避免 "Task was destroyed but it is pending!"
             pending = [task for task in asyncio.all_tasks(loop) if not task.done()]
             if pending:
@@ -226,6 +253,14 @@ class ConcurrentPipeline:
 
             asyncio.set_event_loop(None)
             loop.close()
+
+    def _cancel_worker_tasks(self):
+        """Interrupt in-flight async requests on their owning event loops."""
+        with self._lock:
+            tasks = list(self._worker_tasks.items())
+        for loop, task in tasks:
+            with contextlib.suppress(RuntimeError):
+                loop.call_soon_threadsafe(task.cancel)
 
     def _create_worker_event_loop(self):
         """
@@ -374,10 +409,7 @@ class ConcurrentPipeline:
                     logger.error(f"[Detection+OCR] Failed: {error_msg}")
                     logger.error(traceback.format_exc())
                     if not self.translator.ignore_errors:
-                        self.has_critical_error = True
-                        self.critical_error_msg = f'Detection+OCR failed: {error_msg}'
-                        self.critical_error_exception = e
-                        self.stop_workers = True
+                        self._set_critical_error(f'Detection+OCR failed: {error_msg}', e)
                         break
 
                     failed_ctx = ctx or Context()
@@ -417,12 +449,65 @@ class ConcurrentPipeline:
         try:
             self._run_async_in_thread(self._translation_async())
         finally:
+            with self._lock:
+                self._active_translation_workers -= 1
+                self.translation_thread_done = self._active_translation_workers == 0
             logger.info(f"[Translation thread] Thread completed ({self.stats['translation']}/{self.total_images})")
             self._emit_status(f"[Translation] Thread completed ({self.stats['translation']}/{self.total_images})")
+
+    def _take_translation_batch(self):
+        """Claim consecutive pages without holding a lock during API requests."""
+        with self._batch_lock:
+            batch = []
+            while not self._pending_translation_batches and not self.stop_workers:
+                self._check_cancelled_or_raise('Translation')
+                try:
+                    task = self._pop_translation_task(timeout=0.1)
+                    if task:
+                        batch.append(task)
+                except queue.Empty:
+                    if self.detection_ocr_done and self.translation_queue.empty() and not batch:
+                        return None
+
+                should_translate, _reason = self._should_translate_batch(batch)
+                if should_translate and (len(batch) >= self.batch_size or self.translation_queue.empty()):
+                    slices = slice_batch_indices(
+                        [(ctx.image_name, config) for ctx, config in batch],
+                        self.batch_size,
+                        self.translator._resume_context_pages,
+                        self.translator._resume_context_order,
+                    )
+                    self._pending_translation_batches.extend(batch[start:end] for start, end in slices)
+
+            if self.stop_workers:
+                return None
+            batch = self._pending_translation_batches.popleft()
+            with self._lock:
+                history = self._history_before(self._page_order[normalize_path(batch[0][0].image_name)])
+            return batch, history
+
+    def _history_before(self, page_order):
+        """Called under _lock; snapshots contain only completed preceding pages."""
+        pages = {order: entries for order, entries in self._translation_history.items() if order < page_order}
+        for order, _path, entries in getattr(self.translator, '_resume_context_pages', []):
+            if order < page_order:
+                pages[order] = entries
+        return [pages[order] for order in sorted(pages)[-self._history_limit:]]
+
+    def _record_translation_history(self, batch):
+        # Capture text before rendering releases the image context.
+        pages = {
+            self._page_order[normalize_path(ctx.image_name)]: self.translator._build_page_context_entries(ctx)
+            for ctx, _config in batch
+            if ctx.text_regions and not getattr(ctx, 'translation_error', None)
+        }
+        with self._lock:
+            self._translation_history.update(pages)
+            for order in sorted(self._translation_history)[:-self._history_limit]:
+                del self._translation_history[order]
     
     async def _translation_async(self):
         """翻译的异步实现"""
-        batch = []
         try:
             self._check_cancelled_or_raise('Translation')
             logger.info(f"[Translation thread] Started, batch size: {self.batch_size}")
@@ -435,38 +520,11 @@ class ConcurrentPipeline:
                         logger.warning(f"[Translation] Critical error detected, stopping translation (completed {self.stats['translation']}/{self.total_images})")
                         break
                     
-                    # 从队列获取任务（非阻塞）
-                    try:
-                        task = self._pop_translation_task(timeout=0.1)
-                        if task:
-                            ctx, config = task
-                            batch.append((ctx, config))
-                    except queue.Empty:
-                        if not batch:
-                            if self.detection_ocr_done and self.translation_queue.empty():
-                                break
-                            if self.has_critical_error:
-                                logger.warning("[Translation] Critical error detected, stopping wait")
-                                break
-                            continue
-                    
-                    # 收集更多图片直到达到 batch_size
-                    while len(batch) < self.batch_size:
-                        try:
-                            task = self._pop_translation_task(timeout=0.05)
-                            if task:
-                                ctx, config = task
-                                batch.append((ctx, config))
-                        except queue.Empty:
-                            break
-                    
-                    # 判断是否应该翻译当前批次
-                    should_translate, reason = self._should_translate_batch(batch)
-
-                    if should_translate:
-                        logger.info(f"[Translation] {reason}, starting translation ({len(batch)} images)")
-                        await self._process_translation_batch(batch)
-                        batch = []
+                    work = self._take_translation_batch()
+                    if work is None:
+                        break
+                    batch, history = work
+                    await self._process_translation_batch(batch, context_history=history)
                     
                 except PipelineAbortError:
                     logger.info("[Translation] Stopped due to an internal stop signal")
@@ -482,52 +540,50 @@ class ConcurrentPipeline:
                     
                     logger.error(f"[Translation thread] Error: {error_msg}")
                     logger.error(traceback.format_exc())
-                    self.has_critical_error = True
-                    self.critical_error_msg = f'Translation thread error: {error_msg}'
-                    self.critical_error_exception = e
-                    self.stop_workers = True
+                    self._set_critical_error(f'Translation thread error: {error_msg}', e)
                     break
-            
-            # 处理剩余批次
-            if batch and not self.stop_workers:
-                logger.info(f"[Translation] Translating the remaining {len(batch)} images")
-                await self._process_translation_batch(batch)
             
             if self.stats['translation'] >= self.total_images:
                 logger.info(f"[Translation thread] All images translated ({self.stats['translation']}/{self.total_images})")
         except PipelineAbortError:
             self.stop_workers = True
         finally:
-            self.translation_thread_done = True
             logger.info("[Translation thread] Stopped")
     
-    async def _process_translation_batch(self, batch: List[tuple]):
+    async def _process_translation_batch(self, batch: List[tuple], context_history=None):
         """处理一个翻译批次"""
         if not batch:
             return
-        batch_items = [(ctx.image_name, config) for ctx, config in batch]
-        batch_slices = slice_batch_indices(
-            batch_items,
-            len(batch),
-            self.translator._resume_context_pages,
-            self.translator._resume_context_order,
-        )
-        if len(batch_slices) > 1:
-            for batch_start, batch_end in batch_slices:
-                await self._process_translation_batch(batch[batch_start:batch_end])
-            return
-
-        self.translator._append_resume_context_before(batch[0][0].image_name)
+        if context_history is None:
+            batch_items = [(ctx.image_name, config) for ctx, config in batch]
+            batch_slices = slice_batch_indices(
+                batch_items,
+                len(batch),
+                self.translator._resume_context_pages,
+                self.translator._resume_context_order,
+            )
+            if len(batch_slices) > 1:
+                for batch_start, batch_end in batch_slices:
+                    await self._process_translation_batch(batch[batch_start:batch_end])
+                return
+            self.translator._append_resume_context_before(batch[0][0].image_name)
         
         logger.info(f"[Translation] Translating a batch of {len(batch)} images")
         
         try:
             self._check_cancelled_or_raise('Translation', f'Translating a batch of {len(batch)} images')
             # 直接调用翻译（已经在独立线程的事件循环中）
-            translated_batch = await self.translator._batch_translate_contexts(batch, len(batch))
+            if context_history is None:
+                translated_batch = await self.translator._batch_translate_contexts(batch, len(batch))
+            else:
+                translated_batch = await self.translator._batch_translate_contexts(
+                    batch, len(batch), context_history=context_history,
+                )
+                self._record_translation_history(translated_batch)
             self._check_cancelled_or_raise('Translation', f'Translating a batch of {len(batch)} images')
             
-            self.stats['translation'] += len(batch)
+            with self._lock:
+                self.stats['translation'] += len(batch)
             # ✅ 发送状态日志
             self._emit_status(f"[Translation] Batch completed ({self.stats['translation']}/{self.total_images})")
             
@@ -591,7 +647,8 @@ class ConcurrentPipeline:
             logger.error(f"[Translation] Exception type: {type(e).__name__}")
             logger.error(traceback.format_exc())
 
-            self.stats['translation'] += len(batch)
+            with self._lock:
+                self.stats['translation'] += len(batch)
             self._emit_status(f"[Translation] Skipping failed batch ({self.stats['translation']}/{self.total_images})")
 
             for ctx, config in batch:
@@ -606,10 +663,7 @@ class ConcurrentPipeline:
                 ctx.text_regions = []
 
             if not self.translator.ignore_errors:
-                self.has_critical_error = True
-                self.critical_error_msg = f'Translation batch failed: {error_msg}'
-                self.critical_error_exception = e
-                self.stop_workers = True
+                self._set_critical_error(f'Translation batch failed: {error_msg}', e)
     
     def _inpaint_thread(self):
         """修复工作线程（在独立线程中运行）"""
@@ -754,10 +808,7 @@ class ConcurrentPipeline:
                     logger.error(f"[Inpainting thread] Error: {error_msg}")
                     logger.error(traceback.format_exc())
                     if not self.translator.ignore_errors:
-                        self.has_critical_error = True
-                        self.critical_error_msg = f'Inpainting thread error: {error_msg}'
-                        self.critical_error_exception = e
-                        self.stop_workers = True
+                        self._set_critical_error(f'Inpainting thread error: {error_msg}', e)
                         break
 
                     if ctx is None:
@@ -979,10 +1030,7 @@ class ConcurrentPipeline:
                     logger.error(f"[Rendering thread] Error: {error_msg}")
                     logger.error(traceback.format_exc())
                     if not self.translator.ignore_errors:
-                        self.has_critical_error = True
-                        self.critical_error_msg = f'Rendering thread error: {error_msg}'
-                        self.critical_error_exception = e
-                        self.stop_workers = True
+                        self._set_critical_error(f'Rendering thread error: {error_msg}', e)
                         break
 
                     if ctx is not None:
@@ -999,10 +1047,7 @@ class ConcurrentPipeline:
                                 del self.base_contexts[ctx.image_name]
                         continue
 
-                    self.has_critical_error = True
-                    self.critical_error_msg = f'Rendering thread error: {error_msg}'
-                    self.critical_error_exception = e
-                    self.stop_workers = True
+                    self._set_critical_error(f'Rendering thread error: {error_msg}', e)
                     break
                 except PipelineAbortError:
                     logger.info("[Rendering] Stopped due to an internal stop signal")
@@ -1029,7 +1074,7 @@ class ConcurrentPipeline:
         self.start_time = datetime.now(timezone.utc)
         
         logger.info(f"[Concurrent pipeline] Processing {self.total_images} images")
-        logger.info("[Concurrent pipeline] Parallel mode: 4 independent threads (detection+OCR / translation / inpainting / rendering)")
+        logger.info(f"[Concurrent pipeline] Parallel mode: detection+OCR / {self.translation_concurrency} translation workers / inpainting / rendering; {self.batch_size} images per request")
         
         # 重置统计
         for key in self.stats:
@@ -1046,6 +1091,12 @@ class ConcurrentPipeline:
         self.critical_error_msg = None
         self.critical_error_exception = None
         self._results = []
+        self._pending_translation_batches.clear()
+        self._translation_history.clear()
+        self._page_order = dict(getattr(self.translator, '_resume_context_order', {}))
+        for index, path in enumerate(file_paths):
+            self._page_order.setdefault(normalize_path(path), index)
+        self._active_translation_workers = self.translation_concurrency
         
         # 将 stop_workers 纳入统一取消回调，确保 in-flight API 也能尽快响应停止
         original_cancel_callback = getattr(self.translator, "_cancel_check_callback", None)
@@ -1064,13 +1115,16 @@ class ConcurrentPipeline:
                 return False
             self.translator.set_cancel_check_callback(_pipeline_cancel_check)
         
-        # 提交4个独立线程任务
-        futures = [
-            self._detection_executor.submit(self._detection_ocr_thread, file_paths, configs),
-            self._translation_executor.submit(self._translation_thread),
-            self._inpaint_executor.submit(self._inpaint_thread),
-            self._render_executor.submit(self._render_thread),
+        # Each translation worker owns a long-lived event loop and claims batches
+        # as soon as it becomes idle; no barrier between groups of requests.
+        named_futures = [
+            ('Detection+OCR', self._detection_executor.submit(self._detection_ocr_thread, file_paths, configs)),
+            *[(f'Translation-{index + 1}', self._translation_executor.submit(self._translation_thread))
+              for index in range(self.translation_concurrency)],
+            ('Inpainting', self._inpaint_executor.submit(self._inpaint_thread)),
+            ('Rendering', self._render_executor.submit(self._render_thread)),
         ]
+        futures = [future for _name, future in named_futures]
         
         try:
             # 等待所有线程完成（在外部循环中检查以便响应取消）
@@ -1097,26 +1151,26 @@ class ConcurrentPipeline:
                         pass
                     last_rendered = current_rendered
                 
-                if len(not_done) == 0:
-                    break
                 # 检查是否有异常
                 for f in done:
                     if f.exception():
                         raise f.exception()
+                if len(not_done) == 0:
+                    break
                 # 让出控制权，检查取消
                 await asyncio.sleep(0)
                 
         except PipelineAbortError as e:
             logger.info(f"[Concurrent pipeline] Stopped waiting due to an internal stop signal: {e}")
             self.stop_workers = True
+            self._cancel_worker_tasks()
             done, not_done = wait(futures, timeout=10.0)
             self._flush_status_to_logger()
             if not_done:
                 thread_names = []
-                for i, future in enumerate(futures):
+                for name, future in named_futures:
                     if future in not_done:
-                        names = ['Detection+OCR', 'Translation', 'Inpainting', 'Rendering']
-                        thread_names.append(names[i])
+                        thread_names.append(name)
                 logger.warning(f"[Concurrent pipeline] {len(not_done)} threads failed to stop within 10 seconds: {', '.join(thread_names)}")
             else:
                 logger.info("[Concurrent pipeline] All threads stopped")
@@ -1124,6 +1178,7 @@ class ConcurrentPipeline:
             # 用户取消了任务
             logger.info("[Concurrent pipeline] Cancellation signal received")
             self.stop_workers = True
+            self._cancel_worker_tasks()
             # 等待所有线程停止（最多等待10秒）
             logger.info("[Concurrent pipeline] Waiting for all threads to stop...")
             done, not_done = wait(futures, timeout=10.0)
@@ -1131,10 +1186,9 @@ class ConcurrentPipeline:
             if not_done:
                 # 显示哪些线程没有停止
                 thread_names = []
-                for i, future in enumerate(futures):
+                for name, future in named_futures:
                     if future in not_done:
-                        names = ['Detection+OCR', 'Translation', 'Inpainting', 'Rendering']
-                        thread_names.append(names[i])
+                        thread_names.append(name)
                 logger.warning(f"[Concurrent pipeline] {len(not_done)} threads failed to stop within 10 seconds: {', '.join(thread_names)}")
             else:
                 logger.info("[Concurrent pipeline] All threads stopped")
@@ -1143,6 +1197,8 @@ class ConcurrentPipeline:
             logger.error(f"[Concurrent pipeline] Error: {e}")
             logger.error(traceback.format_exc())
             self.stop_workers = True
+            self._cancel_worker_tasks()
+            wait(futures, timeout=10.0)
             raise
         finally:
             self.stop_workers = True
@@ -1167,7 +1223,9 @@ class ConcurrentPipeline:
         elapsed = (datetime.now(timezone.utc) - self.start_time).total_seconds()
         logger.info("[Concurrent pipeline] Completed!")
         logger.info(f"  Total time: {elapsed:.2f}s")
-        logger.info(f"  Average time: {elapsed/self.total_images:.2f}s/image")
+        logger.info(f"  Average time: {elapsed/max(1, self.total_images):.2f}s/image")
         logger.info(f"  Processing statistics: detection+OCR={self.stats['detection_ocr']}, translation={self.stats['translation']}, inpainting={self.stats['inpaint']}, rendering={self.stats['rendering']}")
         
-        return self._results
+        with self._lock:
+            self.translator.all_page_translations = self._history_before(float('inf'))
+        return sorted(self._results, key=lambda ctx: self._page_order.get(normalize_path(ctx.image_name), 0))
