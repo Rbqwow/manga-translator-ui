@@ -8,9 +8,11 @@
 import json
 import logging
 import os
+import threading
 from typing import Any, Dict, Optional, Tuple
 
 logger = logging.getLogger('manga_translator')
+prompt_file_lock = threading.RLock()
 
 # 缓存已加载的 yaml 模块
 _yaml_module = None
@@ -32,6 +34,13 @@ def _get_yaml():
 
 
 def load_prompt_file(path: str) -> Optional[Dict[str, Any]]:
+    """Load a JSON/YAML prompt without racing concurrent glossary updates."""
+    # Glossary extraction can update the same prompt from several workers.
+    with prompt_file_lock:
+        return _load_prompt_file(path)
+
+
+def _load_prompt_file(path: str) -> Optional[Dict[str, Any]]:
     """
     加载单个提示词文件（自动检测格式）
 

@@ -88,8 +88,6 @@ class GeminiHighQualityTranslator(CommonTranslator):
         self.max_tokens = None  # 不限制，使用模型默认最大值
         self._MAX_REQUESTS_PER_MINUTE = 0  # 默认无限制
         # 使用全局时间戳,跨实例共享
-        if self.model_name not in type(self)._GLOBAL_LAST_REQUEST_TS:
-            type(self)._GLOBAL_LAST_REQUEST_TS[self.model_name] = 0
         self._last_request_ts_key = self.model_name
         # 新版 SDK 的安全设置
         self.safety_settings = [
@@ -157,8 +155,6 @@ class GeminiHighQualityTranslator(CommonTranslator):
         if user_api_model:
             self.model_name = user_api_model
             # 更新全局时间戳的 key
-            if self.model_name not in type(self)._GLOBAL_LAST_REQUEST_TS:
-                type(self)._GLOBAL_LAST_REQUEST_TS[self.model_name] = 0
             self._last_request_ts_key = self.model_name
             self.logger.info(f"[UserAPIKey] Using user-provided model: {user_api_model}")
 
@@ -222,8 +218,6 @@ class GeminiHighQualityTranslator(CommonTranslator):
         self.api_key = endpoint.api_key
         self.base_url = endpoint.base_url
         self.model_name = endpoint.model_name
-        if self.model_name not in type(self)._GLOBAL_LAST_REQUEST_TS:
-            type(self)._GLOBAL_LAST_REQUEST_TS[self.model_name] = 0
         self._last_request_ts_key = self.model_name
         self.client = None
         self._setup_client()
@@ -455,16 +449,6 @@ class GeminiHighQualityTranslator(CommonTranslator):
                 config_params["max_output_tokens"] = self.max_tokens
             
             try:
-                # RPM限制
-                if self._MAX_REQUESTS_PER_MINUTE > 0:
-                    import time
-                    now = time.time()
-                    delay = 60.0 / self._MAX_REQUESTS_PER_MINUTE
-                    elapsed = now - type(self)._GLOBAL_LAST_REQUEST_TS[self._last_request_ts_key]
-                    if elapsed < delay:
-                        sleep_time = delay - elapsed
-                        self.logger.info(f'Ratelimit sleep: {sleep_time:.2f}s')
-                        await self._sleep_with_cancel_polling(sleep_time)
                 
                 def _extract_gemini_stream_text(chunk):
                     return getattr(chunk, "text", "") or ""
@@ -481,6 +465,7 @@ class GeminiHighQualityTranslator(CommonTranslator):
 
                 async def _send_gemini_request():
                     nonlocal response, streamed_text, streamed_finish_reason, streamed_diagnostics
+                    await self._wait_for_shared_rate_limit()
                     response = None
                     streamed_text = None
                     streamed_finish_reason = None
@@ -578,11 +563,6 @@ class GeminiHighQualityTranslator(CommonTranslator):
                             raise RuntimeError(f"{self._log_provider_name()} returned empty content")
 
                 await self._run_with_api_rotation(_send_gemini_request, "translation request")
-
-                # 在API调用成功后立即更新时间戳，确保所有请求（包括重试）都被计入速率限制
-                if self._MAX_REQUESTS_PER_MINUTE > 0:
-                    import time
-                    type(self)._GLOBAL_LAST_REQUEST_TS[self._last_request_ts_key] = time.time()
 
                 if streamed_text is None:
                     # 验证响应对象是否有效

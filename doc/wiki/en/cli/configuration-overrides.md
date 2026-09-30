@@ -63,13 +63,14 @@ CLI overrides happen while assembling `cli_config` before translation starts; th
 
 ### No value passed means no override {#explicit-only}
 
-- `--use-gpu`, `--disable-onnx-gpu`, `--format`, `--batch-size`, and `--attempts` default to `None`; they write into `cli_config` only when explicitly passed, otherwise the file value or default is kept.
+- `--use-gpu`, `--disable-onnx-gpu`, `--format`, `--batch-size`, `--translation-concurrency`, and `--attempts` default to `None`; they write into `cli_config` only when explicitly passed, otherwise the file value or default is kept. See below for the subprocess limitations on `--format` and `--attempts`.
+- `--concurrent` enables `cli.batch_concurrent`; omitting it preserves the file value. `--translation-concurrency 1-32` sets the number of translation batches that can run simultaneously, with a default of `3`. It takes effect only when the pipeline is enabled through `--concurrent` or the config file; passing it alone does not enable concurrency.
 - `-v` and `--overwrite` are `store_true` switches; passing them only enables. If `cli.verbose` or `cli.overwrite` is `true` in the file, it takes effect even without the flag; the CLI cannot “turn off” an enabled config value by omitting the flag.
 - The `--format` help lists `png/jpg/jpeg/jfif/webp/avif/bmp/tiff/tif/heic/heif`, but the parser does not set `choices`; a value outside the list fails later at save time, not at parse time.
 
 ### Subprocess-mode differences {#subprocess-difference}
 
-With `--subprocess`, `run_local_mode` writes only explicitly passed `--use-gpu` and `--disable-onnx-gpu` into `cli_config` and hands the configuration to `translate_with_subprocess`; the “overrides the configuration file” behavior of `--format`, `--batch-size`, and `--attempts` does not enter that branch. `-v`/`--overwrite` are passed as function arguments. This is a source-level discrepancy and has not been verified at runtime; the five override arguments take effect per the help semantics only without `--subprocess`.
+With `--subprocess`, explicit overrides for `--use-gpu`, `--disable-onnx-gpu`, `--batch-size`, `--concurrent`, and `--translation-concurrency` also enter the `cli_config` passed to the child process. `-v`/`--overwrite` are passed as function arguments. This branch still does not apply `--format` or `--attempts`; set `cli.format` and `cli.attempts` in the config file for the output format and retry count.
 
 ## Configuration file details {#config-file-details}
 
@@ -128,6 +129,8 @@ The `local` override arguments that write back to `cli.*` configuration keys are
 | `--disable-onnx-gpu` | `cli.disable_onnx_gpu` | Disable ONNX Runtime GPU acceleration |
 | `--format` | `cli.format` | Output image format |
 | `--batch-size` | `cli.batch_size` | Batch processing size |
+| `--concurrent` | `cli.batch_concurrent` | Enable the concurrent pipeline; omitting it preserves the config value |
+| `--translation-concurrency` | `cli.translation_concurrency` | Simultaneous translation batches (1–32, default 3); requires the concurrent pipeline |
 | `--attempts` | `cli.attempts` | Retry count on translation failure |
 | `-v` / `--verbose` | `cli.verbose` | Show detailed logs |
 | `--overwrite` | `cli.overwrite` | Overwrite existing files |
@@ -171,17 +174,20 @@ Override difference between subprocess and non-subprocess paths:
 ```mermaid
 flowchart LR
     subgraph Normal["Without --subprocess"]
-        N1["use_gpu / disable_onnx_gpu / format / batch_size / attempts passed explicitly"] --> N2["Written into cli_config"]
+        N1["use_gpu / disable_onnx_gpu / format / batch_size / attempts / translation_concurrency passed explicitly"] --> N2["Written into cli_config"]
+        N4["concurrent passed: enable batch_concurrent"] --> N2
         N3["verbose / overwrite passed"] --> N2
     end
     subgraph Sub["With --subprocess"]
-        S1["use_gpu / disable_onnx_gpu passed explicitly"] --> S2["Written into cli_config"]
-        S3["format / batch_size / attempts"] -.not written in this branch.-> S4
+        S1["use_gpu / disable_onnx_gpu / batch_size / translation_concurrency passed explicitly"] --> S2["Written into cli_config"]
+        S6["concurrent passed: enable batch_concurrent"] --> S2
+        S2 --> S4
+        S3["format / attempts command-line overrides"] -.not applied; config values retained.-> S4
         S5["verbose / overwrite passed directly as function arguments"] --> S4["translate_with_subprocess"]
     end
 ```
 
-Limitation: this diagram comes from current code. Whether `--format`/`--batch-size`/`--attempts` really do not take effect in the subprocess branch may vary by release; the help text and source differ.
+Limitation: the subprocess branch still does not apply the `--format` and `--attempts` command-line overrides. `--batch-size` and concurrency arguments override configuration in both branches.
 
 ## Limitations {#dependencies-and-conflicts}
 
@@ -190,5 +196,5 @@ Limitation: this diagram comes from current code. Whether `--format`/`--batch-si
 - When `cli.verbose`/`cli.overwrite` is `true`, it takes effect even without `-v`/`--overwrite`; a switch argument cannot turn off an enabled config value.
 - `--use-gpu`/`--disable-onnx-gpu` default to `None` on `local` (no override), which differs from `web`, where environment variables provide defaults.
 - `--attempts` (`local`) and `--retry-attempts` (`web`) both accept `-1` for infinite retries but belong to different subcommands with different default sources.
-- `cli.batch_concurrent` from the file is force-disabled under special workflows (see [Workflow and file modes](./workflow-and-file-modes.md)); the formal `local` parser has no `--concurrent` argument, so the CLI cannot override it.
+- `--concurrent` can only enable concurrency. To disable an enabled config value, set `cli.batch_concurrent=false`. Special workflows still disable the concurrent pipeline (see [Workflow and file modes](./workflow-and-file-modes.md)); `--translation-concurrency` has no effect in those workflows.
 - This guide does not cover API keys, `.env` credential resolution, or candidate rotation; see the API-management pages and [Translator selection](../desktop/translator/selection-and-languages.md).

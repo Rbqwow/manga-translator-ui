@@ -81,6 +81,8 @@ def parse_args():
     # 并发模式参数
     parser.add_argument('--concurrent', action='store_true',
                         help='启用并发流水线模式（检测、OCR、翻译、渲染并行处理）')
+    parser.add_argument('--translation-concurrency', type=int, choices=range(1, 33), metavar='1-32',
+                        help='同时执行的翻译批次数（需启用 --concurrent；默认 3）')
     
     return parser.parse_args()
 
@@ -194,6 +196,8 @@ async def translate_files(input_paths, output_dir, config_service, verbose=False
     # concurrent: 命令行参数优先，否则使用配置文件中的值
     if hasattr(args, 'concurrent') and args.concurrent:
         cli_config['batch_concurrent'] = True
+    if getattr(args, 'translation_concurrency', None) is not None:
+        cli_config['translation_concurrency'] = args.translation_concurrency
     # 如果命令行没有指定，保留配置文件中的 batch_concurrent 值（已在 cli_config 中）
     
     config_dict['cli'] = cli_config
@@ -508,6 +512,12 @@ async def run_local_mode(args):
                 cli_config['use_gpu'] = args.use_gpu
             if hasattr(args, 'disable_onnx_gpu') and args.disable_onnx_gpu is not None:
                 cli_config['disable_onnx_gpu'] = args.disable_onnx_gpu
+            if getattr(args, 'concurrent', False):
+                cli_config['batch_concurrent'] = True
+            if getattr(args, 'translation_concurrency', None) is not None:
+                cli_config['translation_concurrency'] = args.translation_concurrency
+            if getattr(args, 'batch_size', None) is not None:
+                cli_config['batch_size'] = args.batch_size
             config_dict['cli'] = cli_config
             
             success_count, skipped_count, failed_count = await translate_with_subprocess(

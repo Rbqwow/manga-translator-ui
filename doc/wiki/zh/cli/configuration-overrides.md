@@ -63,13 +63,14 @@ CLI 覆盖发生在翻译启动前的 `cli_config` 组装阶段，不改变文�
 
 ### 未传值不覆盖 {#explicit-only}
 
-- `--use-gpu`、`--disable-onnx-gpu`、`--format`、`--batch-size`、`--attempts` 的解析默认值是 `None`，只有显式传入才会写入 `cli_config`；不传时保留配置文件或默认值。
+- `--use-gpu`、`--disable-onnx-gpu`、`--format`、`--batch-size`、`--translation-concurrency`、`--attempts` 的解析默认值是 `None`，只有显式传入才会写入 `cli_config`；不传时保留配置文件或默认值。子进程分支对 `--format`、`--attempts` 的限制见下。
+- `--concurrent` 开启 `cli.batch_concurrent`；不传时保留配置文件的值。`--translation-concurrency 1-32` 设置同时执行的翻译批次数，默认值为 `3`；只有通过 `--concurrent` 或配置文件开启并发流水线时才生效，单独传入不会开启并发。
 - `-v` 与 `--overwrite` 是 `store_true` 开关，传参只会“开启”。若配置文件里 `cli.verbose` 或 `cli.overwrite` 为 `true`，不传参也会生效，命令行无法用“不传参”来关闭。
 - `--format` 的帮助列出 `png/jpg/jpeg/jfif/webp/avif/bmp/tiff/tif/heic/heif`，但解析阶段不设置 `choices`；传入列表外的值会在后续保存阶段失败，而不是在解析阶段被拒绝。
 
 ### 子进程模式差异 {#subprocess-difference}
 
-启用 `--subprocess` 后，`run_local_mode` 只把显式传入的 `--use-gpu`、`--disable-onnx-gpu` 写入 `cli_config`，再把配置交给 `translate_with_subprocess`；`--format`、`--batch-size`、`--attempts` 的“覆盖配置文件”行为没有进入该分支。`-v`/`--overwrite` 在子进程分支作为函数参数直接传入。这是源码差异，尚未在所有环境中确认；不启用 `--subprocess` 时，上述五个覆盖参数才按帮助语义生效。
+启用 `--subprocess` 后，`--use-gpu`、`--disable-onnx-gpu`、`--batch-size`、`--concurrent`、`--translation-concurrency` 的显式覆盖同样会写入传给子进程的 `cli_config`。`-v`/`--overwrite` 作为函数参数传入。当前该分支仍未应用 `--format`、`--attempts`，输出格式和重试次数需要在配置文件中设置 `cli.format`、`cli.attempts`。
 
 ## 配置文件详解 {#config-file-details}
 
@@ -128,6 +129,8 @@ CLI 覆盖发生在翻译启动前的 `cli_config` 组装阶段，不改变文�
 | `--disable-onnx-gpu` | `cli.disable_onnx_gpu` | 禁用 ONNX Runtime GPU 加速 |
 | `--format` | `cli.format` | 输出图片格式 |
 | `--batch-size` | `cli.batch_size` | 批量处理大小 |
+| `--concurrent` | `cli.batch_concurrent` | 开启并发流水线；不传时保留配置值 |
+| `--translation-concurrency` | `cli.translation_concurrency` | 同时执行的翻译批次数（1–32，默认 3）；需开启并发流水线 |
 | `--attempts` | `cli.attempts` | 翻译失败重试次数 |
 | `-v` / `--verbose` | `cli.verbose` | 显示详细日志 |
 | `--overwrite` | `cli.overwrite` | 覆盖已存在文件 |
@@ -171,17 +174,20 @@ flowchart LR
 ```mermaid
 flowchart LR
     subgraph Normal["未启用 --subprocess"]
-        N1["use_gpu / disable_onnx_gpu / format / batch_size / attempts 显式传入"] --> N2["写入 cli_config"]
+        N1["use_gpu / disable_onnx_gpu / format / batch_size / attempts / translation_concurrency 显式传入"] --> N2["写入 cli_config"]
+        N4["concurrent 传参：开启 batch_concurrent"] --> N2
         N3["verbose / overwrite 传参"] --> N2
     end
     subgraph Sub["启用 --subprocess"]
-        S1["use_gpu / disable_onnx_gpu 显式传入"] --> S2["写入 cli_config"]
-        S3["format / batch_size / attempts"] -.不写入该分支.-> S4
+        S1["use_gpu / disable_onnx_gpu / batch_size / translation_concurrency 显式传入"] --> S2["写入 cli_config"]
+        S6["concurrent 传参：开启 batch_concurrent"] --> S2
+        S2 --> S4
+        S3["format / attempts 命令行覆盖"] -.未应用，沿用配置值.-> S4
         S5["verbose / overwrite 直接作为函数参数"] --> S4["translate_with_subprocess"]
     end
 ```
 
-限制：该图来自当前代码；子进程分支中 `--format`/`--batch-size`/`--attempts` 是否真的不生效尚未在所有环境中确认，帮助文本与源码存在差异。
+限制：子进程分支仍未应用 `--format`、`--attempts` 命令行覆盖；`--batch-size` 和并发参数在两个分支中均可覆盖配置。
 
 ## 使用限制 {#dependencies-and-conflicts}
 
@@ -190,5 +196,5 @@ flowchart LR
 - `cli.verbose`/`cli.overwrite` 为 `true` 时，不传 `-v`/`--overwrite` 也会生效；开关参数无法反向关闭配置中的开启值。
 - `--use-gpu`/`--disable-onnx-gpu` 在 `local` 未传时是 `None`（不覆盖），与 `web` 模式由环境变量提供默认值的语义不同。
 - `--attempts`（`local`）与 `--retry-attempts`（`web`）都接受 `-1` 表示无限重试，但分属不同子命令，默认值来源不同。
-- 配置文件中的 `cli.batch_concurrent` 在特殊工作流下会被强制关闭（见[工作流与文件模式](./workflow-and-file-modes.md)）；正式 `local` 解析器没有 `--concurrent` 参数，无法通过 CLI 覆盖它。
+- `--concurrent` 只能开启并发；要关闭配置中已开启的并发，需要设置 `cli.batch_concurrent=false`。特殊工作流仍会禁用并发流水线（见[工作流与文件模式](./workflow-and-file-modes.md)），此时 `--translation-concurrency` 不生效。
 - 这里不处理 API 密钥、`.env` 凭据解析和候选轮换；相关内容见 API 管理页与[翻译器选择](../desktop/translator/selection-and-languages.md)。

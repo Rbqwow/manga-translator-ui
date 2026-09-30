@@ -207,6 +207,9 @@ class SakuraTranslator(CommonTranslator):
         '你是一个轻小说翻译模型，可以流畅通顺地以日本轻小说的风格将日文翻译成简体中文，并联系上下文正确使用人称代词，注意不要擅自添加原文中没有的代词，也不要擅自增加或减少换行。'
     )
 
+    # 上一页/前几页的原文与译文以纯文本形式注入，避免多轮 JSON 历史破坏 Sakura 的提示词格式。
+    context_format = "plain"
+
     _LANGUAGE_CODE_MAP = {
         'CHS': 'Simplified Chinese',
         'JPN': 'Japanese'
@@ -591,10 +594,18 @@ class SakuraTranslator(CommonTranslator):
         }
         gpt_dict_raw_text = self.sakura_dict.get_dict_str()
         self.logger.debug(f"Sakura Dict: {gpt_dict_raw_text}")
+        # 并发流水线可能按完成顺序提供上下文页，因此不承诺与当前页严格相邻或有序。
+        prev_context = (getattr(self, 'prev_context', '') or '').strip()
+        context_block = ''
+        if prev_context:
+            context_block = (
+                "参考上文（已经翻译过的其他页面，顺序可能与当前页不同，仅用于统一术语和语气）：\n"
+                f"{prev_context}\n\n"
+            )
         if gpt_dict_raw_text:
-            user_prompt = f"根据以下术语表：\n{gpt_dict_raw_text}\n将下面的日文文本根据上述术语表的对应关系和注释翻译成中文：{raw_text}"
+            user_prompt = f"{context_block}根据以下术语表：\n{gpt_dict_raw_text}\n将下面的日文文本根据上述术语表的对应关系和注释翻译成中文：{raw_text}"
         else:
-            user_prompt = f"将下面的日文文本翻译成中文：{raw_text}"
+            user_prompt = f"{context_block}将下面的日文文本翻译成中文：{raw_text}"
         messages = [
             {
                 "role": "system",

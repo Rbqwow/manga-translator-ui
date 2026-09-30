@@ -4,7 +4,9 @@ from .common import CommonTranslator
 
 
 class NoneTranslator(CommonTranslator):
-    
+
+    supports_context = False
+
     def supports_languages(self, from_lang: str, to_lang: str, fatal: bool = False) -> bool:
         return True
 

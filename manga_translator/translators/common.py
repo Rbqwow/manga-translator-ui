@@ -6,6 +6,7 @@ import re
 import shutil
 import sys
 import textwrap
+import threading
 import time
 from abc import abstractmethod
 from typing import Any, Awaitable, Callable, Dict, List, Optional, Tuple
@@ -14,6 +15,7 @@ import cv2
 import numpy as np
 
 from ..utils import InfererModule, ModelWrapper, is_valuable_text, repeating_sequence
+from ..utils.retry import RetryExhaustedError
 from ..utils.curl_cffi_transport import (
     CURL_CFFI_IMPERSONATE,
     create_curl_cffi_async_session,
@@ -1379,6 +1381,7 @@ def _flatten_prompt_data(data, indent: int = 0) -> str:
 
 
 class CommonTranslator(InfererModule):
+    _REQUEST_RATE_LOCK = threading.Lock()
     # Translator has to support all languages listed in here. The language codes will be resolved into
     # _LANGUAGE_CODE_MAP[lang_code] automatically if _LANGUAGE_CODE_MAP is a dict.
     # If it is a list it will simply return the language code as is.
@@ -1391,8 +1394,20 @@ class CommonTranslator(InfererModule):
     # Will sleep for the rest of the minute if the request count is over this number.
     _MAX_REQUESTS_PER_MINUTE = -1
 
+    # Cross-page context support. Translators that consume set_prev_context()
+    # keep this flag; the batch layer uses it to decide whether to build and
+    # inject history, instead of silently dropping it.
+    supports_context = True
+    # How the history is rendered: "turns" is the OpenAI/Gemini JSON turn list,
+    # "plain" is a newline-separated "source => translation" list.
+    context_format = "turns"
+
+    def set_prev_context(self, context: str):
+        self.prev_context = context if context else ""
+
     def __init__(self):
         super().__init__()
+        self.prev_context = ""
         self.mtpe_adapter = MTPEAdapter()
         self._last_request_ts = 0
         self.enable_post_translation_check = False
@@ -1517,6 +1532,22 @@ class CommonTranslator(InfererModule):
             asyncio.sleep(seconds),
             poll_interval=min(poll_interval, max(seconds, 0.05)),
         )
+
+    async def _wait_for_shared_rate_limit(self):
+        """Space request starts across worker threads without serializing replies."""
+        if self._MAX_REQUESTS_PER_MINUTE <= 0:
+            return
+        interval = 60.0 / self._MAX_REQUESTS_PER_MINUTE
+        while True:
+            self._check_cancelled()
+            with self._REQUEST_RATE_LOCK:
+                now = time.monotonic()
+                previous = self._GLOBAL_LAST_REQUEST_TS.get(self._last_request_ts_key)
+                delay = max(0.0, previous + interval - now) if previous else 0.0
+                if delay <= 0:
+                    self._GLOBAL_LAST_REQUEST_TS[self._last_request_ts_key] = now
+                    return
+            await self._sleep_with_cancel_polling(delay)
 
     async def _run_unified_stream_transport(
         self,
@@ -2215,7 +2246,12 @@ class CommonTranslator(InfererModule):
         # 检查是否超过全局尝试次数
         if self._max_total_attempts != -1 and self._global_attempt_count >= self._max_total_attempts:
             self.logger.error(f"Global attempt limit reached before translation: {self._global_attempt_count}/{self._max_total_attempts}")
-            raise Exception(f"Translation failed: reached max total attempts ({self._max_total_attempts})")
+            # Same type as the other exhaustion paths, so the failure policy
+            # treats this page like any other retry-exhausted page instead of
+            # falling through as a generic local error.
+            raise RetryExhaustedError(
+                f"Translation failed: reached max total attempts ({self._max_total_attempts})"
+            )
 
         try:
             # 尝试翻译（内部会检查是否需要分割）
@@ -3388,6 +3424,14 @@ def _merge_auto_glossary_aliases(
 
 
 def merge_glossary_to_file(file_path: str, new_terms: List[Dict[str, Any]]) -> bool:
+    """Serialize the entire read/merge/write with other workers and readers."""
+    from .prompt_loader import prompt_file_lock
+
+    with prompt_file_lock:
+        return _merge_glossary_to_file(file_path, new_terms)
+
+
+def _merge_glossary_to_file(file_path: str, new_terms: List[Dict[str, Any]]) -> bool:
     """
     将新提取的术语合并到提示词文件中
     Merge newly extracted terms into the prompt file

@@ -47,8 +47,17 @@ async def prepare(chain: TranslatorChain):
         translator = get_translator(key)
         translator.supports_languages('auto', tgt_lang, fatal=True)
 
+def _set_prev_context(translator, prev_context: Optional[str]) -> None:
+    """Inject cross-page history into a translator that declares support for it."""
+    if not prev_context or not getattr(translator, 'supports_context', True):
+        return
+    setter = getattr(translator, 'set_prev_context', None)
+    if setter is not None:
+        setter(prev_context)
+
+
 # TODO: Optionally take in strings instead of TranslatorChain for simplicity
-async def dispatch(chain: TranslatorChain, queries: List[str], config: Config, use_mtpe: bool = False, args:Optional[Context] = None, device: str = 'cpu') -> List[str]:
+async def dispatch(chain: TranslatorChain, queries: List[str], config: Config, use_mtpe: bool = False, args:Optional[Context] = None, device: str = 'cpu', prev_context: Optional[str] = None) -> List[str]:
     if not queries:
         return queries
 
@@ -62,6 +71,7 @@ async def dispatch(chain: TranslatorChain, queries: List[str], config: Config, u
             #if translator is None:
             translator = get_translator(chain.translators[flag])
             translator.parse_args(config)
+            _set_prev_context(translator, prev_context)
             queries = await translator.translate('auto', chain.langs[flag], queries, use_mtpe)
             flag+=1
         return queries
@@ -70,6 +80,7 @@ async def dispatch(chain: TranslatorChain, queries: List[str], config: Config, u
     for key, tgt_lang in chain.chain:
         translator = get_translator(key)
         translator.parse_args(config)
+        _set_prev_context(translator, prev_context)
         if key.value in ["gemini_hq", "openai_hq"]:
             queries = await translator.translate('auto', tgt_lang, queries, ctx=args)
         else:
@@ -80,7 +91,7 @@ async def dispatch(chain: TranslatorChain, queries: List[str], config: Config, u
     return queries
 
 
-async def dispatch_batch(chain: TranslatorChain, batch_queries: List[List[str]], translator_config: Optional[TranslatorConfig] = None, use_mtpe: bool = False, args:Optional[Context] = None, device: str = 'cpu') -> List[List[str]]:
+async def dispatch_batch(chain: TranslatorChain, batch_queries: List[List[str]], translator_config: Optional[TranslatorConfig] = None, use_mtpe: bool = False, args:Optional[Context] = None, device: str = 'cpu', prev_context: Optional[str] = None) -> List[List[str]]:
     """
     批量翻译调度器，将多个文本列表一次性发送给翻译器
     Args:
@@ -106,7 +117,7 @@ async def dispatch_batch(chain: TranslatorChain, batch_queries: List[List[str]],
             query_mapping.append(batch_idx)
     
     # 使用现有的翻译调度器处理平铺的查询列表
-    flat_results = await dispatch(chain, flat_queries, translator_config, use_mtpe, args, device)
+    flat_results = await dispatch(chain, flat_queries, translator_config, use_mtpe, args, device, prev_context)
     
     # 将结果重新分组回批量结构
     batch_results = [[] for _ in batch_queries]
