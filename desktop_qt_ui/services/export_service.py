@@ -89,6 +89,8 @@ class ExportService:
 
             inpainted_path = get_inpainted_path(source_image_path, create_dir=True)
             save_quality = (config or {}).get("cli", {}).get("save_quality", 95)
+            save_lossless = bool((config or {}).get("cli", {}).get("save_lossless", False))
+            compression_effort = (config or {}).get("cli", {}).get("compression_effort", 70)
             try:
                 source_image = open_pil_image(
                     source_image_path, eager=False, apply_exif=False
@@ -108,6 +110,8 @@ class ExportService:
                 temporary,
                 source_image=source_image,
                 quality=save_quality,
+                lossless=save_lossless,
+                compression_effort=compression_effort,
                 format=resolve_pil_image_format(inpainted_path),
             )
             os.replace(temporary, inpainted_path)
@@ -761,12 +765,16 @@ class ExportService:
 
         try:
             save_quality = config.get("cli", {}).get("save_quality", 95)
+            save_lossless = bool(config.get("cli", {}).get("save_lossless", False))
+            compression_effort = config.get("cli", {}).get("compression_effort", 70)
             image_format = resolve_pil_image_format(output_path)
             save_pil_image(
                 image,
                 temp_output_path,
                 source_image=source_image,
                 quality=save_quality,
+                lossless=save_lossless,
+                compression_effort=compression_effort,
                 format=image_format,
             )
 

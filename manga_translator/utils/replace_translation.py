@@ -605,6 +605,8 @@ async def translate_batch_replace_translation(translator, images_with_configs: L
                             final_output_path,
                             source_image=raw_ctx.input,
                             quality=translator.save_quality,
+                            lossless=getattr(translator, 'save_lossless', False),
+                            compression_effort=getattr(translator, 'compression_effort', 70),
                         )
                         logger.info(f"  -> Saved: {os.path.basename(final_output_path)}")
                         

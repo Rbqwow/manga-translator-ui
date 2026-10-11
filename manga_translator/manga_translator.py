@@ -450,6 +450,8 @@ class MangaTranslator:
         self.attempts = params.get('attempts', -1)
         self._attempts_override_provided = 'attempts' in params
         self.save_quality = params.get('save_quality', 100)
+        self.save_lossless = params.get('save_lossless', False)
+        self.compression_effort = params.get('compression_effort', 70)
         self.skip_no_text = params.get('skip_no_text', False)
         self.generate_and_export = params.get('generate_and_export', False)
         self.export_from_local_json = params.get('export_from_local_json', False)
@@ -642,6 +644,8 @@ class MangaTranslator:
                 output_path,
                 source_image=source_image,
                 quality=self.save_quality,
+                lossless=self.save_lossless,
+                compression_effort=self.compression_effort,
             )
             logger.info(f"  -> ✅ [{mode_label}] Saved successfully: {os.path.basename(output_path)}")
             
@@ -1234,6 +1238,8 @@ class MangaTranslator:
                     target_path,
                     source_image=source_image,
                     quality=self.save_quality,
+                    lossless=self.save_lossless,
+                    compression_effort=self.compression_effort,
                 )
                 if self.verbose:
                     logger.debug(f"{label} saved to: {target_path}")
@@ -3807,6 +3813,8 @@ class MangaTranslator:
                             ctx.image_name = image_name
                             ctx.verbose = self.verbose
                             ctx.save_quality = self.save_quality
+                            ctx.save_lossless = self.save_lossless
+                            ctx.compression_effort = self.compression_effort
                             ctx.config = config
                             ctx.inpainted_regenerated = False
 
@@ -4233,6 +4241,8 @@ class MangaTranslator:
                             ctx.image_name = image_name
                             ctx.verbose = self.verbose
                             ctx.save_quality = self.save_quality
+                            ctx.save_lossless = self.save_lossless
+                            ctx.compression_effort = self.compression_effort
                             ctx.config = config
                             ctx.from_lang = 'auto'
 

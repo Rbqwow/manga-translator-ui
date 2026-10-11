@@ -14,7 +14,6 @@ from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import StreamingResponse
 
 from manga_translator.image_formats import (
-    RGB_PIL_FORMATS,
     resolve_output_image_format,
 )
 from manga_translator.server.core.config_manager import admin_settings, parse_config
@@ -39,8 +38,7 @@ from manga_translator.server.routes.translation_auth import (
     verify_translation_auth,
 )
 from manga_translator.server.to_json import TranslationResponse, to_translation
-from manga_translator.utils import open_pil_image
-from manga_translator.utils.image_modes import normalize_rgb_image
+from manga_translator.utils import open_pil_image, save_pil_image
 
 router = APIRouter(prefix="/translate", tags=["translation"])
 
@@ -577,11 +575,17 @@ async def batch_images(req: Request, data: BatchTranslateRequest):
             else:
                 output_name = f"translated_{i+1}{ext}"
             
-            img_byte_arr = io.BytesIO()
-            if save_format in RGB_PIL_FORMATS and img_to_save.mode not in ('RGB', 'L'):
-                img_to_save = normalize_rgb_image(img_to_save)
-            img_to_save.save(img_byte_arr, format=save_format)
-            zip_file.writestr(output_name, img_byte_arr.getvalue())
+            with io.BytesIO() as img_byte_arr:
+                save_pil_image(
+                    img_to_save,
+                    img_byte_arr,
+                    source_image=img_to_save,
+                    format=save_format,
+                    quality=config.cli.save_quality,
+                    lossless=config.cli.save_lossless,
+                    compression_effort=config.cli.compression_effort,
+                )
+                zip_file.writestr(output_name, img_byte_arr.getvalue())
             image_count += 1
     
     add_log(f"ZIP file created: contains {image_count} images", "INFO")
