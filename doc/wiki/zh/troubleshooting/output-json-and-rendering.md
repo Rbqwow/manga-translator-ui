@@ -58,26 +58,33 @@ lastUpdated: true
 | 存储值 | English | 简体中文 | 说明 |
 | --- | --- | --- | --- |
 | 空 / `不指定` / `none` | Not Specified | 不指定 | 保留原图扩展名 |
-| `png` | png | png | PNG，无损 |
+| `png` | png | png | PNG，无损，支持压缩努力程度 |
 | `jpg` / `jpeg` / `jfif` | jpg / jpeg / jfif | jpg / jpeg / jfif | JPEG，强制 RGB 转换 |
-| `webp` | webp | webp | 支持质量参数 |
-| `avif` | avif | avif | 依赖 Pillow/平台 AVIF 编解码支持 |
+| `webp` | webp | webp | 支持质量参数，可通过无损开关切换 VP8（有损）与 VP8L（无损，支持压缩努力程度） |
+| `avif` | avif | avif | 支持质量参数与无损开关；无损模式使用 pylibheif 内置 AOM 编码器保留每个像素，支持压缩努力程度 |
 | `bmp` | bmp | bmp | BMP，强制 RGB 转换 |
 | `tiff` / `tif` | tiff / tif | tiff / tif | TIFF |
-| `heic` / `heif` | heic / heif | heic / heif | HEIF，依赖平台编解码支持 |
+| `heic` / `heif` | heic / heif | heic / heif | HEIF，依赖平台编解码支持，支持质量参数与无损开关；无损模式的压缩努力程度映射为 x265 编码预设 |
 
 | UI 调用 key | English 实际值 | 简体中文实际值 |
 | --- | --- | --- |
 | `label_format` | Output Format | 输出格式 |
 | `label_save_quality` | Image Save Quality | 图像保存质量 |
+| `label_save_lossless` | Lossless Image Save | 无损图像保存 |
+| `label_compression_effort` | Compression Effort | 压缩努力程度 |
 | `desc_cli_format` | Output image format. Choose PNG, JPG/JPEG/JFIF, WebP, AVIF, BMP, TIFF/TIF, HEIC/HEIF, or leave empty to keep the original format. | 输出图片格式。可选 PNG、JPG/JPEG/JFIF、WebP、AVIF、BMP、TIFF/TIF、HEIC/HEIF，或留空保持原格式。 |
 | `desc_cli_save_quality` | JPEG/WebP/AVIF/HEIC save quality (0-100). Higher values mean better quality but larger files. | JPEG/WebP/AVIF/HEIC 保存质量 (0-100)。值越高画质越好，文件越大。 |
+| `desc_cli_save_lossless` | Enable lossless compression for WebP, AVIF, and HEIC/HEIF. Compression Effort controls encoding speed and file size in lossless mode; save quality is ignored. | 对 WebP、AVIF、HEIC/HEIF 启用无损压缩保存。无损模式使用“压缩努力程度”控制编码速度和文件体积，忽略保存质量参数。 |
+| `desc_cli_compression_effort` | Compression effort for PNG, lossless WebP, lossless AVIF, and lossless HEIC/HEIF (0-100, default 70). Higher values prioritize compression over encoding speed; lower values encode faster. | PNG、无损 WebP、无损 AVIF 和无损 HEIC/HEIF 的压缩努力程度（0-100，默认 70）。数值越大越侧重压缩效率、编码耗时越长；数值越小编码速度越快。 |
 
 行为要点：
 
-- “图像保存质量”只影响 JPEG/WebP/AVIF/HEIF；PNG、BMP、TIFF 不受质量参数影响。
+- “图像保存质量”影响有损 JPEG/WebP/AVIF/HEIC；无损模式及 PNG、BMP、TIFF 不受质量参数影响。
+- “无损图像保存”可为 WebP、AVIF、HEIC/HEIF 启用无损模式。WebP 输出 VP8L 格式；AVIF 使用全范围 4:4:4、可逆 RGB 存储及颜色/透明度无损编码，保留透明像素下的 RGB 和源图 ICC 配置。无损 AVIF 支持本程序的 8 位输出图像，高位深或浮点图像会明确报错。
+- “压缩努力程度”控制 PNG、无损 WebP、无损 AVIF 和无损 HEIC/HEIF 的 CPU 压缩计算量（0–100），较高数值更侧重压缩效率。AVIF 映射为 AOM 编码速度（9 到 0），HEIC/HEIF 使用 x265 编码预设；清空输入时恢复默认 70，0 保留为最快编码。
+- 设置页动态联动：JPEG 仅显示质量；WebP/AVIF/HEIC/HEIF 在有损时显示质量、无损时显示压缩努力程度；PNG 仅显示压缩努力程度；BMP/TIFF 隐藏这三项。“不指定”保留原图扩展名，可能混合多种格式，因此显示全部三项编码设置，保存时按实际格式应用。
 - JPEG/BMP 是无 alpha 的 RGB 格式：RGBA/调色板先转 RGB，alpha 被压平；CMYK 也会转 RGB。
-- HEIC/HEIF、AVIF 依赖 Pillow 与平台编解码器；缺少支持时保存失败。统一保存入口 `save_pil_image` 会显式指定编码器并尽量保留源图 ICC 与 DPI 元数据。
+- HEIC/HEIF、有损 AVIF 依赖 Pillow 与平台编解码器；无损 AVIF 依赖 pylibheif/AOM（已列入项目依赖），缺少支持时明确报错。pylibheif 预编译包支持 Windows x64、Linux x64 和 macOS 14+ Apple Silicon，其他环境需要源码构建。统一保存入口 `save_pil_image` 会显式指定编码器并尽量保留源图 ICC 与 DPI 元数据。
 - 服务端/CLI 的统一保存守卫（`save.py`）会在扩展名不在支持列表时抛出 `FormatNotSupportedException`。
 
 ### 覆盖与跳过行为 {#overwrite-and-skip}

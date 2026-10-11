@@ -117,6 +117,7 @@ python -m manga_translator -i <input> [options]
 | `--use-gpu` | Use GPU acceleration | From config |
 | `--disable-onnx-gpu` | Disable ONNX Runtime GPU acceleration | From config |
 | `--format` | Output format (`png` / `jpg` / `jpeg` / `jfif` / `webp` / `avif` / `bmp` / `tiff` / `tif` / `heic` / `heif`) | From config |
+| `--lossless` | Enable lossless WebP, AVIF, and HEIF/HEIC saving; omitting it preserves the config value | From config |
 | `--batch-size` | Batch size | From config |
 | `--concurrent` | Enable the concurrent pipeline and translation threads; omitting it preserves the config value | From config |
 | `--translation-concurrency` | Simultaneous translation batches (1–32); requires the concurrent pipeline | From config, default 3 |
@@ -151,7 +152,7 @@ pip install psutil
 
 - Command-line arguments override the corresponding values in the config file
 - The current `local` entry supports `--concurrent` and `--translation-concurrency`; it still does not expose `--resume` directly
-- With `--subprocess`, `--batch-size` and the concurrency arguments also override the config. The subprocess branch still does not apply `--format` or `--attempts`; set `cli.format` and `cli.attempts` in the config file instead
+- With `--subprocess`, `--format`, `--lossless`, `--batch-size`, and the concurrency arguments also override the config. The subprocess branch still does not apply `--attempts`; set `cli.attempts` in the config file instead
 - The documentation in this English version follows the actually available current top-level arguments defined by the current codebase
 
 ---
@@ -247,6 +248,8 @@ Basic example:
     "load_text": false,
     "template": false,
     "save_quality": 100,
+    "save_lossless": false,
+    "compression_effort": 70,
     "batch_size": 3,
     "batch_concurrent": false,
     "translation_concurrency": 3,
@@ -419,9 +422,19 @@ python -m manga_translator -i manga.jpg --overwrite
 # Output as PNG
 python -m manga_translator -i manga.jpg --format png
 
-# Output as JPEG
+# Output as JPEG (quality comes from cli.save_quality in the config)
 python -m manga_translator -i manga.jpg --format jpg
+
+# Output as lossless WebP
+python -m manga_translator -i manga.jpg --format webp --lossless
+
+# Subprocess mode also supports format and lossless overrides
+python -m manga_translator local -i ./manga_folder/ --subprocess --format avif --lossless
 ```
+
+`--lossless` only enables `cli.save_lossless`; omitting it preserves the config value. Set it to `false` in the config to disable it. It supports WebP, AVIF, and HEIF/HEIC. PNG already uses lossless encoding, and this switch does not make JPEG lossless. Setting `cli.save_quality` to `100` does not replace the lossless switch.
+
+Set quality and compression effort through `cli.save_quality` and `cli.compression_effort` in the config file; neither has a corresponding formal CLI argument. `compression_effort` ranges from 0 to 100 and controls the speed/file-size tradeoff for PNG and the lossless formats above. Higher values usually take longer without reducing lossless image quality.
 
 This corresponds to the desktop UI setting:
 

@@ -29,7 +29,17 @@ IMAGE_FILE_GLOB_PATTERNS = tuple(
 IMAGE_FILE_DIALOG_PATTERNS = " ".join(IMAGE_FILE_GLOB_PATTERNS)
 IMAGE_FILE_DIALOG_FILTER = f"Image Files ({IMAGE_FILE_DIALOG_PATTERNS})"
 QUALITY_PIL_FORMATS = frozenset({"JPEG", "WEBP", "AVIF", "HEIF"})
+LOSSLESS_SWITCHABLE_PIL_FORMATS = frozenset({"WEBP", "AVIF", "HEIF"})
 RGB_PIL_FORMATS = frozenset({"JPEG", "BMP"})
+
+
+def normalize_compression_effort(value: object = None) -> int:
+    """Resolve empty/invalid input to the default and keep encoder values in range."""
+    try:
+        effort = int(value)
+    except (TypeError, ValueError, OverflowError):
+        return 100
+    return max(0, min(100, effort))
 
 
 def _resolve_extension(value: object) -> str | None:

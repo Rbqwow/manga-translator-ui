@@ -5,19 +5,21 @@ This module contains all /translate/* endpoints for the manga translator server.
 """
 
 import io
+import logging
 import os
 import secrets
 import tempfile
 import zipfile
+from functools import partial
 
 from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import StreamingResponse
 
 from manga_translator.image_formats import (
-    RGB_PIL_FORMATS,
     resolve_output_image_format,
 )
 from manga_translator.server.core.config_manager import admin_settings, parse_config
+from manga_translator.server.core.image_encoding import run_image_encoding
 from manga_translator.server.core.logging_manager import add_log
 from manga_translator.server.core.response_utils import (
     apply_user_env_vars,
@@ -39,10 +41,11 @@ from manga_translator.server.routes.translation_auth import (
     verify_translation_auth,
 )
 from manga_translator.server.to_json import TranslationResponse, to_translation
-from manga_translator.utils import open_pil_image
-from manga_translator.utils.image_modes import normalize_rgb_image
+from manga_translator.utils import open_pil_image, save_pil_image
 
 router = APIRouter(prefix="/translate", tags=["translation"])
+
+logger = logging.getLogger('manga_translator.server')
 
 
 def _get_translator_name(config) -> str:
@@ -59,13 +62,11 @@ def _translation_bytes_response(ctx) -> StreamingResponse:
     return StreamingResponse(content=to_translation(ctx).to_bytes())
 
 
-def _png_response_from_ctx(ctx, error_detail: str) -> StreamingResponse:
+def _png_response_from_ctx(ctx, error_detail: str, config) -> StreamingResponse:
     if not ctx.result:
         raise HTTPException(500, detail=error_detail)
 
-    img_byte_arr = io.BytesIO()
-    ctx.result.save(img_byte_arr, format="PNG")
-    img_byte_arr.seek(0)
+    img_byte_arr = io.BytesIO(transform_to_image(ctx, config))
     return StreamingResponse(img_byte_arr, media_type="image/png")
 
 
@@ -183,6 +184,7 @@ async def image(req: Request, data: TranslateRequest) -> StreamingResponse:
         lambda ctx: _png_response_from_ctx(
             ctx,
             "Translation failed: no result image generated",
+            data.config,
         ),
     )
 
@@ -209,7 +211,9 @@ async def stream_bytes(req: Request, data: TranslateRequest) -> StreamingRespons
              response_description="A stream over elements with structure(1byte status, 4 byte size, n byte data)")
 async def stream_image(req: Request, data: TranslateRequest) -> StreamingResponse:
     """Translate image and stream result image with progress"""
-    return await _stream_translation(req, transform_to_image, data.config, data.image, "normal")
+    return await _stream_translation(
+        req, partial(transform_to_image, config=data.config), data.config, data.image, "normal"
+    )
 
 
 # ============================================================================
@@ -259,6 +263,7 @@ async def image_form(req: Request, image: UploadFile = File(...), config: str = 
         lambda ctx: _png_response_from_ctx(
             ctx,
             "Translation failed: no result image generated",
+            conf,
         ),
         set_username=True,
     )
@@ -309,7 +314,7 @@ async def stream_image_form(req: Request, image: UploadFile = File(...), config:
     conf._web_frontend_optimized = False
     return await _stream_translation(
         req,
-        transform_to_image,
+        partial(transform_to_image, config=conf),
         conf,
         img,
         "normal",
@@ -335,7 +340,7 @@ async def stream_image_form_web(req: Request, image: UploadFile = File(...), con
     conf._web_frontend_optimized = True
     return await _stream_translation(
         req,
-        transform_to_image,
+        partial(transform_to_image, config=conf),
         conf,
         img,
         "normal",
@@ -430,6 +435,63 @@ async def translate_batch_json(req: Request, data: BatchTranslateRequest):
         track_task_end(username)
         # Unregister active task
         unregister_active_task(task_id)
+
+
+def _build_batch_image_zip(result_images, filenames, config):
+    """Encode and assemble the ZIP in a worker; own its temporary file here.
+
+    A page that cannot be encoded is skipped instead of failing the whole
+    response: one unsupported page (for example a lossless AVIF save on a build
+    without pylibheif) used to turn a 200-image request into a bare 500, while
+    every other path in the app records the page and continues. The skipped
+    names are returned so the request thread can report them with the task
+    context that a worker thread does not have.
+    """
+    output_format = getattr(getattr(config, 'cli', None), 'format', None)
+    skipped = []
+    first_error = None
+    encoded = 0
+    with tempfile.TemporaryFile() as archive:
+        with zipfile.ZipFile(archive, 'w') as zip_file:
+            for img_data in result_images:
+                i = img_data['index']
+                img_to_save = img_data['image']
+                original_name = filenames[i] if i < len(filenames) else None
+                save_format, ext = resolve_output_image_format(
+                    output_format, original_path=original_name,
+                )
+                if original_name:
+                    base_name = os.path.splitext(os.path.basename(original_name))[0]
+                    output_name = f"{base_name}{ext}"
+                else:
+                    output_name = f"translated_{i+1}{ext}"
+                try:
+                    with io.BytesIO() as img_byte_arr:
+                        save_pil_image(
+                            img_to_save,
+                            img_byte_arr,
+                            source_image=img_to_save,
+                            format=save_format,
+                            quality=config.cli.save_quality,
+                            lossless=config.cli.save_lossless,
+                            compression_effort=config.cli.compression_effort,
+                        )
+                        zip_file.writestr(output_name, img_byte_arr.getvalue())
+                except Exception as exc:
+                    logger.warning(
+                        f"Could not encode {output_name} for the batch archive: {exc}"
+                    )
+                    skipped.append(output_name)
+                    first_error = first_error or exc
+                else:
+                    encoded += 1
+        if result_images and not encoded:
+            # An empty archive would look like a successful, empty batch.
+            raise RuntimeError(
+                f"No page could be encoded ({len(skipped)} failed): {first_error}"
+            ) from first_error
+        archive.seek(0)
+        return archive.read(), skipped
 
 
 @router.post("/batch/images", response_description="Zip file containing translated images", tags=["api", "batch"])
@@ -544,87 +606,46 @@ async def batch_images(req: Request, data: BatchTranslateRequest):
             except Exception as e:
                 add_log(f"Failed to copy image {i+1}: {e}", "WARNING")
     
-    # 获取配置中的输出格式
-    output_format = None
-    if config and hasattr(config, 'cli') and hasattr(config.cli, 'format'):
-        fmt = config.cli.format
-        if fmt and fmt != '不指定':
-            output_format = fmt.lower()
-    
-    # Create temporary ZIP file
-    with tempfile.NamedTemporaryFile(delete=False, suffix='.zip') as tmp_file:
-        tmp_file_name = tmp_file.name
-    
-    # File handle is closed, now safe to write
-    image_count = 0
-    with zipfile.ZipFile(tmp_file_name, 'w') as zip_file:
+    try:
+        zip_data, skipped_pages = await run_image_encoding(
+            _build_batch_image_zip, result_images, filenames, config
+        )
+        add_log(
+            f"ZIP file created: contains {len(result_images) - len(skipped_pages)} images",
+            "INFO",
+        )
+        if skipped_pages:
+            add_log(
+                f"{len(skipped_pages)} page(s) could not be encoded and are missing "
+                f"from the ZIP: {', '.join(skipped_pages)}",
+                "WARNING",
+            )
+
+        # Preserve history metadata and persist it on the request thread; only
+        # encoding runs concurrently with other requests.
+        from manga_translator.server.request_extraction import save_translation_to_history
         for img_data in result_images:
             i = img_data['index']
-            img_to_save = img_data['image']
-            
-            # 获取原始文件名
-            original_name = filenames[i] if i < len(filenames) else None
-            
-            save_format, ext = resolve_output_image_format(
-                output_format,
-                original_path=original_name,
-            )
-            
-            # 生成输出文件名
-            if original_name:
-                base_name = os.path.splitext(os.path.basename(original_name))[0]
-                output_name = f"{base_name}{ext}"
-            else:
-                output_name = f"translated_{i+1}{ext}"
-            
-            img_byte_arr = io.BytesIO()
-            if save_format in RGB_PIL_FORMATS and img_to_save.mode not in ('RGB', 'L'):
-                img_to_save = normalize_rgb_image(img_to_save)
-            img_to_save.save(img_byte_arr, format=save_format)
-            zip_file.writestr(output_name, img_byte_arr.getvalue())
-            image_count += 1
-    
-    add_log(f"ZIP file created: contains {image_count} images", "INFO")
-    
-    # 保存历史记录（使用已复制的图片数据）
-    from manga_translator.server.request_extraction import save_translation_to_history
-    for img_data in result_images:
-        i = img_data['index']
-        original_name = filenames[i] if i < len(filenames) else f"batch_{i+1}.png"
-        try:
-            # 创建一个临时 ctx 对象用于保存历史
-            class TempCtx:
-                pass
-            temp_ctx = TempCtx()
-            temp_ctx.result = img_data['image']
-            temp_ctx.text_regions = results[i].text_regions if results[i] and hasattr(results[i], 'text_regions') else None
-            
-            await save_translation_to_history(
-                temp_ctx, username, f"{task_id}_{i}", "normal", 
-                original_name, config
-            )
-        except Exception as e:
-            add_log(f"Failed to save history (image {i+1}): {e}", "WARNING")
-    
-    # 读取 ZIP 文件内容
-    with open(tmp_file_name, 'rb') as f:
-        zip_data = f.read()
-    
-    # 清理临时文件
-    try:
-        os.unlink(tmp_file_name)
-    except PermissionError:
-        import atexit
-        atexit.register(lambda: os.unlink(tmp_file_name) if os.path.exists(tmp_file_name) else None)
-    
-    # 显式清理复制的图片内存
-    for img_data in result_images:
-        try:
-            if img_data.get('image'):
-                img_data['image'].close()
-        except Exception:
-            pass
-    result_images.clear()
+            original_name = filenames[i] if i < len(filenames) else f"batch_{i+1}.png"
+            try:
+                class TempCtx:
+                    pass
+                temp_ctx = TempCtx()
+                temp_ctx.result = img_data['image']
+                temp_ctx.text_regions = results[i].text_regions if results[i] and hasattr(results[i], 'text_regions') else None
+
+                await save_translation_to_history(
+                    temp_ctx, username, f"{task_id}_{i}", "normal",
+                    original_name, config
+                )
+            except Exception as e:
+                add_log(f"Failed to save history (image {i+1}): {e}", "WARNING")
+    finally:
+        # run_image_encoding drains its worker before propagating cancellation,
+        # so no encoder can still be reading these snapshots during cleanup.
+        for img_data in result_images:
+            img_data['image'].close()
+        result_images.clear()
     
     # 返回 ZIP 数据，不使用 Content-Disposition: attachment（避免 IDM 拦截）
     # 使用 inline 或不设置，让浏览器直接处理而不触发下载
@@ -878,7 +899,7 @@ async def upscale_only(req: Request, image: UploadFile = File(...), config: str 
     img, conf = await _read_form_image_and_config(image, config)
     await _authorize_translation_with_env(req, conf, user_env_vars)
     ctx = await get_ctx(req, conf, img, "upscale_only")
-    return _png_response_from_ctx(ctx, "Upscaling failed")
+    return _png_response_from_ctx(ctx, "Upscaling failed", conf)
 
 
 @router.post("/colorize", response_class=StreamingResponse, tags=["api", "process"])
@@ -888,7 +909,7 @@ async def colorize_only(req: Request, image: UploadFile = File(...), config: str
     img, conf = await _read_form_image_and_config(image, config)
     await _authorize_translation_with_env(req, conf, user_env_vars)
     ctx = await get_ctx(req, conf, img, "colorize_only")
-    return _png_response_from_ctx(ctx, "Colorization failed")
+    return _png_response_from_ctx(ctx, "Colorization failed", conf)
 
 
 @router.post("/inpaint", response_class=StreamingResponse, tags=["api", "process"])
@@ -898,7 +919,7 @@ async def inpaint_only(req: Request, image: UploadFile = File(...), config: str 
     img, conf = await _read_form_image_and_config(image, config)
     await _authorize_translation_with_env(req, conf, user_env_vars)
     ctx = await get_ctx(req, conf, img, "inpaint_only")
-    return _png_response_from_ctx(ctx, "Inpainting failed")
+    return _png_response_from_ctx(ctx, "Inpainting failed", conf)
 
 
 @router.post("/upscale/stream", response_class=StreamingResponse, tags=["api", "process", "stream"])
@@ -914,7 +935,7 @@ async def upscale_only_stream(req: Request, image: UploadFile = File(...), confi
     )
     return await _stream_translation(
         req,
-        transform_to_image,
+        partial(transform_to_image, config=conf),
         conf,
         img,
         "upscale_only",
@@ -938,7 +959,7 @@ async def colorize_only_stream(req: Request, image: UploadFile = File(...), conf
     )
     return await _stream_translation(
         req,
-        transform_to_image,
+        partial(transform_to_image, config=conf),
         conf,
         img,
         "colorize_only",
@@ -962,7 +983,7 @@ async def inpaint_only_stream(req: Request, image: UploadFile = File(...), confi
     )
     return await _stream_translation(
         req,
-        transform_to_image,
+        partial(transform_to_image, config=conf),
         conf,
         img,
         "inpaint_only",
@@ -1024,9 +1045,7 @@ async def import_json_and_render(req: Request, image: UploadFile = File(...), js
         ctx = await get_ctx(req, conf, temp_image, "load_text")
         
         if ctx.result:
-            img_byte_arr = io.BytesIO()
-            ctx.result.save(img_byte_arr, format="PNG")
-            img_byte_arr.seek(0)
+            response = _png_response_from_ctx(ctx, "Failed to render image", conf)
             
             # Clean up temporary files
             if os.path.exists(json_path):
@@ -1034,7 +1053,7 @@ async def import_json_and_render(req: Request, image: UploadFile = File(...), js
             if os.path.exists(temp_image_path):
                 os.unlink(temp_image_path)
             
-            return StreamingResponse(img_byte_arr, media_type="image/png")
+            return response
         else:
             # Clean up temporary files
             if os.path.exists(json_path):
@@ -1138,9 +1157,7 @@ async def import_txt_and_render(req: Request, image: UploadFile = File(...), txt
         ctx = await get_ctx(req, conf, temp_image, "load_text")
         
         if ctx.result:
-            img_byte_arr = io.BytesIO()
-            ctx.result.save(img_byte_arr, format="PNG")
-            img_byte_arr.seek(0)
+            response = _png_response_from_ctx(ctx, "Failed to render image", conf)
             
             # Clean up temporary files
             if os.path.exists(json_path):
@@ -1148,7 +1165,7 @@ async def import_txt_and_render(req: Request, image: UploadFile = File(...), txt
             if os.path.exists(temp_image_path):
                 os.unlink(temp_image_path)
             
-            return StreamingResponse(img_byte_arr, media_type="image/png")
+            return response
         else:
             # Clean up temporary files
             if os.path.exists(json_path):
@@ -1213,7 +1230,9 @@ async def import_json_and_render_stream(req: Request, image: UploadFile = File(.
         # Note: Cannot delete files in finally block during streaming response
         # Temporary files will accumulate in result directory, need periodic cleanup
         # 并发控制在 while_streaming 内部处理
-        return await while_streaming(req, transform_to_image, conf, temp_image, "load_text", image.filename)
+        return await while_streaming(
+            req, partial(transform_to_image, config=conf), conf, temp_image, "load_text", image.filename
+        )
     
     except Exception as _e:
         # Only clean up temporary files on error
@@ -1312,7 +1331,9 @@ async def import_txt_and_render_stream(req: Request, image: UploadFile = File(..
         # Use streaming translation, pass PIL Image object
         # Note: Cannot delete files in finally block during streaming response
         # Temporary files will accumulate in result directory, need periodic cleanup
-        return await while_streaming(req, transform_to_image, conf, temp_image, "load_text", image.filename)
+        return await while_streaming(
+            req, partial(transform_to_image, config=conf), conf, temp_image, "load_text", image.filename
+        )
     
     except Exception as _e:
         # Only clean up temporary files on error
@@ -1353,10 +1374,7 @@ async def translate_complete(req: Request, image: UploadFile = File(...), config
     json_str = translation_data.model_dump_json()
     
     # Get image data
-    img_byte_arr = io.BytesIO()
-    if ctx.result:
-        ctx.result.save(img_byte_arr, format="PNG")
-    img_bytes = img_byte_arr.getvalue()
+    img_bytes = transform_to_image(ctx, conf) if ctx.result else b""
     
     # Build multipart response
     boundary = "----WebKitFormBoundary" + secrets.token_hex(16)

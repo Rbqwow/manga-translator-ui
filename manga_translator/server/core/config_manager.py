@@ -49,6 +49,8 @@ DEFAULT_ADMIN_SETTINGS = {
         # CLI配置默认隐藏
         'cli.format',
         'cli.save_quality',
+        'cli.save_lossless',
+        'cli.compression_effort',
         'cli.overwrite',
         'cli.skip_no_text',
         'cli.save_text',

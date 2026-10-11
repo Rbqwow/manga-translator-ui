@@ -98,6 +98,7 @@ python -m manga_translator -i <输入> [选项]
 | `--use-gpu` | 使用 GPU 加速 | 配置文件 |
 | `--disable-onnx-gpu` | 禁用 ONNX Runtime GPU 加速 | 配置文件 |
 | `--format` | 输出格式（png/jpg/jpeg/jfif/webp/avif/bmp/tiff/tif/heic/heif） | 配置文件 |
+| `--lossless` | 开启 WebP、AVIF、HEIF/HEIC 无损保存；不传时保留配置值 | 配置文件 |
 | `--batch-size` | 批量处理大小 | 配置文件 |
 | `--concurrent` | 开启并发流水线和多线程翻译；不传时保留配置值 | 配置文件 |
 | `--translation-concurrency` | 同时执行的翻译批次数（1–32）；需开启并发流水线 | 配置文件，默认 3 |
@@ -125,7 +126,7 @@ python -m manga_translator local -i ./manga_folder/ --concurrent --translation-c
 
 **注意**：命令行参数会覆盖配置文件中的对应设置。
 
-**补充**：当前 `local` 入口支持 `--concurrent` 和 `--translation-concurrency`，仍未直接暴露 `--resume`。`--subprocess` 同样支持 `--batch-size` 和上述并发参数覆盖配置，但当前不会应用 `--format`、`--attempts` 命令行覆盖；子进程的输出格式和重试次数应通过配置文件中的 `cli.format`、`cli.attempts` 设置。
+**补充**：当前 `local` 入口支持 `--concurrent` 和 `--translation-concurrency`，仍未直接暴露 `--resume`。`--subprocess` 同样支持 `--format`、`--lossless`、`--batch-size` 和上述并发参数覆盖配置，但当前不会应用 `--attempts` 命令行覆盖；子进程的重试次数应通过配置文件中的 `cli.attempts` 设置。
 
 ---
 
@@ -218,6 +219,8 @@ python -m manga_translator -i manga.jpg --config my_config.json
     "load_text": false,
     "template": false,
     "save_quality": 100,
+    "save_lossless": false,
+    "compression_effort": 70,
     "batch_size": 3,
     "batch_concurrent": false,
     "translation_concurrency": 3,
@@ -336,9 +339,19 @@ python -m manga_translator -i manga.jpg --overwrite
 # 输出为 PNG
 python -m manga_translator -i manga.jpg --format png
 
-# 输出为 JPEG（指定质量）
+# 输出为 JPEG（质量由配置中的 cli.save_quality 决定）
 python -m manga_translator -i manga.jpg --format jpg
+
+# 输出为无损 WebP
+python -m manga_translator -i manga.jpg --format webp --lossless
+
+# 子进程模式同样支持输出格式与无损保存覆盖
+python -m manga_translator local -i ./manga_folder/ --subprocess --format avif --lossless
 ```
+
+`--lossless` 只会开启 `cli.save_lossless`；不传时保留配置值，要关闭则在配置中设为 `false`。它支持 WebP、AVIF、HEIF/HEIC；PNG 本身使用无损编码，JPEG 不会因为这个开关变成无损格式。将 `cli.save_quality` 设为 `100` 不能替代无损开关。
+
+保存质量与压缩努力程度通过配置文件中的 `cli.save_quality`、`cli.compression_effort` 设置，没有对应的正式 CLI 参数。`compression_effort` 范围为 0–100，用于 PNG 和上述无损格式的压缩速度与文件大小取舍；较高值通常耗时更长，不降低无损编码的画质。
 
 ---
 

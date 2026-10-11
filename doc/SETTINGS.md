@@ -196,6 +196,10 @@
 
 - **图像保存质量 (save_quality)**：JPEG/JFIF、WebP、AVIF、HEIC/HEIF 保存质量（0-100）
 
+- **无损图像保存 (save_lossless)**：对 WebP、AVIF、HEIC/HEIF 启用无损压缩保存（默认关闭），忽略保存质量参数。AVIF 使用 pylibheif 内置 AOM 编码器，通过全范围 4:4:4、可逆 RGB 存储及颜色/透明度无损编码保留每个像素和源图 ICC 配置。无损 AVIF 支持本程序的 8 位输出图像，高位深或浮点图像会明确报错。
+
+- **压缩努力程度 (compression_effort)**：PNG、无损 WebP、无损 AVIF 和无损 HEIC/HEIF 的压缩努力程度（0-100，默认 70）。AVIF 将此值映射为 AOM 编码速度（9 到 0），HEIC/HEIF 映射为 x265 编码预设。清空或输入无效内容时恢复为 70，0 表示最快编码。
+
 - **批量大小 (batch_size)**：批量处理大小
   - 默认：1
   - 对于高质量翻译器（OpenAI HQ/Gemini HQ/Vertex HQ），此参数控制一次发送的图片数量

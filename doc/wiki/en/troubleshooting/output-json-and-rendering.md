@@ -58,26 +58,33 @@ Values of the “Output Format” (`Output Format` / `label_format`) dropdown an
 | Stored value | English | Simplified Chinese | Notes |
 | --- | --- | --- | --- |
 | empty / `不指定` / `none` | Not Specified | 不指定 | Keep the original extension |
-| `png` | png | png | PNG, lossless |
+| `png` | png | png | PNG, lossless, supports compression effort |
 | `jpg` / `jpeg` / `jfif` | jpg / jpeg / jfif | jpg / jpeg / jfif | JPEG, forced RGB conversion |
-| `webp` | webp | webp | Supports the quality parameter |
-| `avif` | avif | avif | Depends on Pillow/platform AVIF codec support |
+| `webp` | webp | webp | Supports the quality parameter; can switch between VP8 (lossy) and VP8L (lossless, supports compression effort) via lossless switch |
+| `avif` | avif | avif | Supports quality and a lossless switch; lossless mode uses pylibheif's bundled AOM encoder to preserve exact pixels and supports compression effort |
 | `bmp` | bmp | bmp | BMP, forced RGB conversion |
 | `tiff` / `tif` | tiff / tif | tiff / tif | TIFF |
-| `heic` / `heif` | heic / heif | heic / heif | HEIF, depends on platform codec support |
+| `heic` / `heif` | heic / heif | heic / heif | HEIF, depends on platform codec support; supports quality and lossless switch, with lossless compression effort mapped to an x265 encoding preset |
 
 | UI call key | English actual value | Simplified Chinese actual value |
 | --- | --- | --- |
 | `label_format` | Output Format | 输出格式 |
 | `label_save_quality` | Image Save Quality | 图像保存质量 |
+| `label_save_lossless` | Lossless Image Save | 无损图像保存 |
+| `label_compression_effort` | Compression Effort | 压缩努力程度 |
 | `desc_cli_format` | Output image format. Choose PNG, JPG/JPEG/JFIF, WebP, AVIF, BMP, TIFF/TIF, HEIC/HEIF, or leave empty to keep the original format. | 输出图片格式。可选 PNG、JPG/JPEG/JFIF、WebP、AVIF、BMP、TIFF/TIF、HEIC/HEIF，或留空保持原格式。 |
 | `desc_cli_save_quality` | JPEG/WebP/AVIF/HEIC save quality (0-100). Higher values mean better quality but larger files. | JPEG/WebP/AVIF/HEIC 保存质量 (0-100)。值越高画质越好，文件越大。 |
+| `desc_cli_save_lossless` | Enable lossless compression for WebP, AVIF, and HEIC/HEIF. Compression Effort controls encoding speed and file size in lossless mode; save quality is ignored. | 对 WebP、AVIF、HEIC/HEIF 启用无损压缩保存。无损模式使用“压缩努力程度”控制编码速度和文件体积，忽略保存质量参数。 |
+| `desc_cli_compression_effort` | Compression effort for PNG, lossless WebP, lossless AVIF, and lossless HEIC/HEIF (0-100, default 70). Higher values prioritize compression over encoding speed; lower values encode faster. | PNG、无损 WebP、无损 AVIF 和无损 HEIC/HEIF 的压缩努力程度（0-100，默认 70）。数值越大越侧重压缩效率、编码耗时越长；数值越小编码速度越快。 |
 
 Behavior notes:
 
-- “Image Save Quality” (`Image Save Quality` / `label_save_quality`, 0–100, Qt/release default `100`) affects JPEG/WebP/AVIF/HEIF only; PNG, BMP, and TIFF ignore the quality parameter.
+- “Image Save Quality” (`Image Save Quality` / `label_save_quality`, 0–100, Qt/release default `100`) affects lossy JPEG/WebP/AVIF/HEIC; lossless modes, PNG, BMP, and TIFF ignore the quality parameter.
+- “Lossless Image Save” enables lossless compression for WebP, AVIF, and HEIC/HEIF. WebP outputs VP8L format. AVIF uses full-range 4:4:4, reversible RGB storage, and lossless color/alpha encoding, preserving RGB under transparent pixels and the source ICC profile. Lossless AVIF supports the application's 8-bit output images; high-precision or floating-point images raise an explicit error.
+- “Compression Effort” controls CPU compression effort for PNG, lossless WebP, lossless AVIF, and lossless HEIC/HEIF (0–100), with higher values prioritizing compression. AVIF maps it to AOM encoding speed (9 down to 0); HEIC/HEIF uses x265 encoding presets. Empty input restores the default 70; 0 remains the fastest setting.
+- The settings page shows quality for JPEG, quality or lossless effort for WebP/AVIF/HEIC/HEIF, effort for PNG, and no encoding controls for BMP/TIFF. “Not Specified” preserves the original extension and may mix formats, so all three encoding controls remain visible and each output applies only the settings it supports.
 - JPEG/BMP are alpha-less RGB formats: RGBA/palette images are converted to RGB and alpha is flattened; CMYK is also converted to RGB.
-- HEIC/HEIF and AVIF depend on Pillow and platform codecs; saving fails when support is missing. The shared `save_pil_image` entry point passes an explicit encoder and preserves source ICC and DPI metadata where possible.
+- HEIC/HEIF and lossy AVIF depend on Pillow and platform codecs. Lossless AVIF requires pylibheif/AOM (included in project dependencies) and reports an explicit error if unavailable. pylibheif wheels support Windows x64, Linux x64, and macOS 14+ Apple Silicon; other environments require a source build. The shared `save_pil_image` entry point passes an explicit encoder and preserves source ICC and DPI metadata where possible.
 - The unified server/CLI save guard (`save.py`) raises `FormatNotSupportedException` when the extension is not in the supported list.
 
 ### Overwrite and skip behavior {#overwrite-and-skip}

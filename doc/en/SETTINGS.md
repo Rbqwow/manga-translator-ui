@@ -225,6 +225,12 @@ Older versions grouped the interface into broad settings tabs. In the current de
 - **`Image Save Quality` (`save_quality`)**: JPEG/JFIF, WebP, AVIF, and HEIC/HEIF save quality from `0` to `100`.
   - Current UI location: `Settings` -> `General` -> `Image Save Quality`
 
+- **`Lossless Image Save` (`save_lossless`)**: enable lossless compression for WebP, AVIF, and HEIC/HEIF (default false), ignoring save quality. AVIF uses the AOM encoder bundled with pylibheif, full-range 4:4:4, reversible RGB storage, and lossless color/alpha encoding to preserve exact pixels and the source ICC profile. Lossless AVIF supports the application's 8-bit output images; high-precision or floating-point images raise an explicit error.
+  - Current UI location: `Settings` -> `General` -> `Lossless Image Save`
+
+- **`Compression Effort` (`compression_effort`)**: compression effort for PNG, lossless WebP, lossless AVIF, and lossless HEIC/HEIF from `0` to `100` (default `70`). AVIF maps this value to AOM encoding speed (9 down to 0); HEIC/HEIF uses x265 encoding presets. Empty or invalid input restores `70`; `0` selects the fastest encoding.
+  - Current UI location: `Settings` -> `General` -> `Compression Effort`
+
 - **`Batch Size` (`batch_size`)**: batch processing size.
   - Current UI location: `Settings` -> `General` -> `Batch Size`
   - Default: `1`

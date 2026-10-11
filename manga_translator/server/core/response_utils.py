@@ -20,14 +20,16 @@ from manga_translator.server.runtime_api import (
     clear_runtime_api_overrides,
 )
 from manga_translator.server.to_json import to_translation
+from manga_translator.utils import save_pil_image
 
 
-def transform_to_image(ctx):
+def transform_to_image(ctx, config: Config = None):
     """
     将翻译上下文转换为图像字节
     
     Args:
         ctx: 翻译上下文对象
+        config: 当前请求的配置，用于 PNG 压缩设置
     
     Returns:
         图像字节数据
@@ -36,16 +38,16 @@ def transform_to_image(ctx):
     if ctx.result is None:
         raise HTTPException(500, detail="Translation failed: no result image generated")
     
-    # 检查是否使用占位符（在web模式下final.png保存后会设置此标记）
-    if hasattr(ctx, 'use_placeholder') and ctx.use_placeholder:
-        # ctx.result已经是1x1占位符图片，快速传输
-        img_byte_arr = io.BytesIO()
-        ctx.result.save(img_byte_arr, format="PNG")
-        return img_byte_arr.getvalue()
-
-    # 返回完整的翻译结果
+    # Web 模式的 ctx.result 可能已经是占位符，也使用相同的编码设置。
     img_byte_arr = io.BytesIO()
-    ctx.result.save(img_byte_arr, format="PNG")
+    cli_config = getattr(config, 'cli', None)
+    save_pil_image(
+        ctx.result,
+        img_byte_arr,
+        source_image=ctx.result,
+        format="PNG",
+        compression_effort=getattr(cli_config, 'compression_effort', 100),
+    )
     return img_byte_arr.getvalue()
 
 

@@ -59,6 +59,8 @@ class MainView(QObject):
     _on_setting_changed = main_view_dynamic._on_setting_changed
     _on_upscale_ratio_changed = main_view_dynamic._on_upscale_ratio_changed
     _on_numeric_input_changed = main_view_dynamic._on_numeric_input_changed
+    _get_live_setting_value = main_view_dynamic._get_live_setting_value
+    _update_image_format_settings_visibility = main_view_dynamic._update_image_format_settings_visibility
     _update_upscale_ratio_options = main_view_dynamic._update_upscale_ratio_options
     _create_param_widgets = main_view_dynamic._create_param_widgets
 
