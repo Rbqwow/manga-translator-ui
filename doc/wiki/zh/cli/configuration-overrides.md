@@ -63,14 +63,15 @@ CLI 覆盖发生在翻译启动前的 `cli_config` 组装阶段，不改变文�
 
 ### 未传值不覆盖 {#explicit-only}
 
-- `--use-gpu`、`--disable-onnx-gpu`、`--format`、`--batch-size`、`--translation-concurrency`、`--attempts` 的解析默认值是 `None`，只有显式传入才会写入 `cli_config`；不传时保留配置文件或默认值。子进程分支对 `--format`、`--attempts` 的限制见下。
+- `--use-gpu`、`--disable-onnx-gpu`、`--format`、`--lossless`、`--batch-size`、`--translation-concurrency`、`--attempts` 的解析默认值是 `None`，只有显式传入才会写入 `cli_config`；不传时保留配置文件或默认值。子进程分支对 `--attempts` 的限制见下。
+- `--lossless` 开启 `cli.save_lossless`，作用于 WebP、AVIF、HEIF/HEIC 的无损编码；不传时保留配置值。要关闭配置中已开启的无损保存，需要设置 `cli.save_lossless=false`。PNG 本身使用无损编码，JPEG 不会因为该开关变成无损格式。
 - `--concurrent` 开启 `cli.batch_concurrent`；不传时保留配置文件的值。`--translation-concurrency 1-32` 设置同时执行的翻译批次数，默认值为 `3`；只有通过 `--concurrent` 或配置文件开启并发流水线时才生效，单独传入不会开启并发。
 - `-v` 与 `--overwrite` 是 `store_true` 开关，传参只会“开启”。若配置文件里 `cli.verbose` 或 `cli.overwrite` 为 `true`，不传参也会生效，命令行无法用“不传参”来关闭。
 - `--format` 的帮助列出 `png/jpg/jpeg/jfif/webp/avif/bmp/tiff/tif/heic/heif`，但解析阶段不设置 `choices`；传入列表外的值会在后续保存阶段失败，而不是在解析阶段被拒绝。
 
 ### 子进程模式差异 {#subprocess-difference}
 
-启用 `--subprocess` 后，`--use-gpu`、`--disable-onnx-gpu`、`--batch-size`、`--concurrent`、`--translation-concurrency` 的显式覆盖同样会写入传给子进程的 `cli_config`。`-v`/`--overwrite` 作为函数参数传入。当前该分支仍未应用 `--format`、`--attempts`，输出格式和重试次数需要在配置文件中设置 `cli.format`、`cli.attempts`。
+启用 `--subprocess` 后，`--use-gpu`、`--disable-onnx-gpu`、`--format`、`--lossless`、`--batch-size`、`--concurrent`、`--translation-concurrency` 的显式覆盖同样会写入传给子进程的 `cli_config`。`-v`/`--overwrite` 作为函数参数传入。当前该分支仍未应用 `--attempts`，需要在配置文件中设置 `cli.attempts`；不要依赖 `--attempts` 覆盖子进程的重试次数。
 
 ## 配置文件详解 {#config-file-details}
 
@@ -128,12 +129,15 @@ CLI 覆盖发生在翻译启动前的 `cli_config` 组装阶段，不改变文�
 | `--use-gpu` | `cli.use_gpu` | 使用 GPU 加速 |
 | `--disable-onnx-gpu` | `cli.disable_onnx_gpu` | 禁用 ONNX Runtime GPU 加速 |
 | `--format` | `cli.format` | 输出图片格式 |
+| `--lossless` | `cli.save_lossless` | 开启 WebP、AVIF、HEIF/HEIC 无损保存；不传时保留配置值 |
 | `--batch-size` | `cli.batch_size` | 批量处理大小 |
 | `--concurrent` | `cli.batch_concurrent` | 开启并发流水线；不传时保留配置值 |
 | `--translation-concurrency` | `cli.translation_concurrency` | 同时执行的翻译批次数（1–32，默认 3）；需开启并发流水线 |
 | `--attempts` | `cli.attempts` | 翻译失败重试次数 |
 | `-v` / `--verbose` | `cli.verbose` | 显示详细日志 |
 | `--overwrite` | `cli.overwrite` | 覆盖已存在文件 |
+
+`cli.save_quality` 和 `cli.compression_effort` 通过配置文件设置，没有对应的正式 CLI 参数。`save_quality` 控制有损编码质量；`compression_effort` 范围为 0–100，用于 PNG 和无损 WebP、AVIF、HEIF/HEIC 的压缩速度与文件大小取舍，不降低无损编码的画质。将 `save_quality` 设为 `100` 不能替代 `--lossless`。
 
 工作流相关配置键（`cli.save_text`、`cli.load_text`、`cli.template`、`cli.generate_and_export`、`cli.upscale_only`、`cli.colorize_only`、`cli.inpaint_only`、`cli.replace_translation` 等）与界面工作流的对应见[工作流与文件模式](./workflow-and-file-modes.md)与[工作流矩阵](../reference/workflow-matrix.md)。这些键没有对应的正式 CLI 参数，只能通过配置文件设置。
 
@@ -174,20 +178,20 @@ flowchart LR
 ```mermaid
 flowchart LR
     subgraph Normal["未启用 --subprocess"]
-        N1["use_gpu / disable_onnx_gpu / format / batch_size / attempts / translation_concurrency 显式传入"] --> N2["写入 cli_config"]
+        N1["use_gpu / disable_onnx_gpu / format / lossless / batch_size / attempts / translation_concurrency 显式传入"] --> N2["写入 cli_config"]
         N4["concurrent 传参：开启 batch_concurrent"] --> N2
         N3["verbose / overwrite 传参"] --> N2
     end
     subgraph Sub["启用 --subprocess"]
-        S1["use_gpu / disable_onnx_gpu / batch_size / translation_concurrency 显式传入"] --> S2["写入 cli_config"]
+        S1["use_gpu / disable_onnx_gpu / format / lossless / batch_size / translation_concurrency 显式传入"] --> S2["写入 cli_config"]
         S6["concurrent 传参：开启 batch_concurrent"] --> S2
         S2 --> S4
-        S3["format / attempts 命令行覆盖"] -.未应用，沿用配置值.-> S4
+        S3["attempts 命令行覆盖"] -.未应用，沿用配置值.-> S4
         S5["verbose / overwrite 直接作为函数参数"] --> S4["translate_with_subprocess"]
     end
 ```
 
-限制：子进程分支仍未应用 `--format`、`--attempts` 命令行覆盖；`--batch-size` 和并发参数在两个分支中均可覆盖配置。
+限制：子进程分支仍未应用 `--attempts` 命令行覆盖；`--format`、`--lossless`、`--batch-size` 和并发参数在两个分支中均可覆盖配置。
 
 ## 使用限制 {#dependencies-and-conflicts}
 

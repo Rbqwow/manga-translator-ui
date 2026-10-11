@@ -473,6 +473,8 @@ class PermissionEditor {
                 <h3>${this.t('Output Settings', '输出设置')}</h3>
                 ${this.createFormRow(this.t('label_format', '输出格式'), this.createSelect('cli', 'format', formatOptions), '', 'cli', 'format')}
                 ${this.createFormRow(this.t('label_save_quality', '保存质量'), this.createInput('cli', 'save_quality', 'number'), '1-100，仅对JPG/JPEG/JFIF/WEBP/AVIF/HEIC有效', 'cli', 'save_quality')}
+                ${this.createFormRow(this.t('label_save_lossless', '无损保存'), this.createCheckbox('cli', 'save_lossless'), '支持WebP、AVIF、HEIC/HEIF', 'cli', 'save_lossless')}
+                ${this.createFormRow(this.t('label_compression_effort', '压缩努力程度'), this.createInput('cli', 'compression_effort', 'number'), '0-100，仅对无损格式有效', 'cli', 'compression_effort')}
                 ${this.createFormRow(this.t('label_overwrite', '覆盖已有文件'), this.createCheckbox('cli', 'overwrite'), '', 'cli', 'overwrite')}
                 ${this.createFormRow(this.t('label_skip_no_text', '跳过无文本图片'), this.createCheckbox('cli', 'skip_no_text'), '', 'cli', 'skip_no_text')}
                 ${this.createFormRow(this.t('label_save_text', '保存文本'), this.createCheckbox('cli', 'save_text'), '', 'cli', 'save_text')}

@@ -317,6 +317,8 @@ class ConcurrentPipeline:
                     ctx.image_name = file_path
                     ctx.verbose = self.translator.verbose
                     ctx.save_quality = self.translator.save_quality
+                    ctx.save_lossless = getattr(self.translator, 'save_lossless', False)
+                    ctx.compression_effort = getattr(self.translator, 'compression_effort', 100)
                     ctx.config = config
                     
                     logger.info(f"[Detection+OCR] Processing {idx+1}/{self.total_images}: {ctx.image_name}")

@@ -143,6 +143,30 @@ class ExportOutcome:
     generated_artifact: Optional[InpaintArtifact] = None
 
 
+@dataclass(frozen=True, slots=True)
+class SaveJob:
+    source_path: str
+    regions: list[dict]
+    mask: Optional[np.ndarray]
+    config: dict
+    inpainted_image: object = None
+    paint_overlay: Optional[np.ndarray] = None
+    stamp_overlay: Optional[np.ndarray] = None
+    paste_overlays: tuple = ()
+
+    def __post_init__(self):
+        # The GUI may receive background OCR/inpaint results while waiting.
+        # Persist one independent snapshot, never live model buffers.
+        for name in (
+            "regions", "mask", "config", "inpainted_image",
+            "paint_overlay", "stamp_overlay", "paste_overlays",
+        ):
+            object.__setattr__(self, name, copy.deepcopy(getattr(self, name)))
+
+    def release_resources(self):
+        _close_images(self.inpainted_image)
+
+
 class EditorControllerExportService:
     """编辑器工程保存与渲染图片导出流程。"""
 
@@ -155,6 +179,7 @@ class EditorControllerExportService:
         self._state_lock = threading.RLock()
         self._accepting = True
         self._unfinished = 0
+        self._saving = False
         self._pending_auto: dict[str, concurrent.futures.Future] = {}
         from services.export_service import ExportService
 
@@ -177,17 +202,37 @@ class EditorControllerExportService:
         return not self.controller.history_service.is_clean()
 
     def save_editor_state(self) -> bool:
-        """同步保存 JSON 与当前内存快照中的修复图，不等待后台修复。"""
-        self.controller.commit_pending_edits()
-        source_path = self.model.get_source_image_path()
-        if not source_path:
-            self._reject_export("保存失败：当前图片没有来源路径")
-            return False
-
+        """后台保存当前快照；保持 Qt 响应，完成后才允许切图或标记 clean。"""
+        with self._state_lock:
+            if self._saving or not self._accepting:
+                return False
+            self._saving = True
         try:
+            self.controller.commit_pending_edits()
+            source_path = self.model.get_source_image_path()
+            if not source_path:
+                self._reject_export("保存失败：当前图片没有来源路径")
+                return False
             image = self.model.get_image()
             if image is None:
                 self._reject_export("保存失败：缺少图像数据")
+                return False
+            saved_state = self._save_state_identity()
+            from .save_progress import wait_for_editor_save
+
+            # A manual export may already be generating a newer inpaint image
+            # for this document. Let it finish and install its artifact before
+            # capturing a save snapshot, otherwise the queued save could write
+            # the old display image over the newly generated sidecar.
+            with self._state_lock:
+                if not self._accepting:
+                    return False
+                barrier = self._executor.submit(lambda: None)
+            wait_for_editor_save(
+                barrier, getattr(self.controller, "view", None), flush_results=True
+            )
+            if saved_state != self._save_state_identity():
+                self._reject_export("保存期间图片内容已更新，请再次保存")
                 return False
             regions = self.model.get_regions() or []
             mask = self.model.get_refined_mask()
@@ -202,21 +247,28 @@ class EditorControllerExportService:
 
             source_path = os.path.abspath(source_path)
             config = self._build_config_dict(self.config_service.get_config())
-            self._export_service.save_editor_project(
-                source_path,
-                regions,
-                mask,
-                config,
+            job = SaveJob(
+                source_path=source_path,
+                regions=regions,
+                mask=mask,
+                config=config,
+                inpainted_image=inpainted_image,
                 paint_overlay=self.model.get_paint_overlay_image(),
                 stamp_overlay=self.model.get_stamp_overlay_image(),
-                paste_overlays=self.model.get_paste_overlays() or [],
+                paste_overlays=tuple(self.model.get_paste_overlays() or ()),
             )
-            if inpainted_image is not None:
-                self._export_service.save_inpainted_image(
-                    source_path, inpainted_image, config
-                )
-            else:
-                self._export_service.delete_inpainted_image(source_path)
+            future = self._submit_save_job(job)
+            if future is None:
+                job.release_resources()
+                self._reject_export("保存队列已经关闭")
+                return False
+            wait_for_editor_save(future, getattr(self.controller, "view", None))
+            if saved_state != self._save_state_identity():
+                # A queued OCR/translation result can change the undo stack even
+                # though user input is blocked. Do not mark newer edits saved or
+                # let an automatic switch discard them.
+                self._reject_export("保存期间图片内容已更新，请再次保存")
+                return False
             self.controller.history_service.mark_clean()
             toast_manager = self.controller.get_toast_manager()
             if toast_manager is not None:
@@ -226,11 +278,63 @@ class EditorControllerExportService:
             self.logger.error("Failed to save editor state", exc_info=True)
             self._reject_export(f"保存失败：{e}")
             return False
+        finally:
+            with self._state_lock:
+                self._saving = False
+
+    def saving_in_progress(self) -> bool:
+        with self._state_lock:
+            return self._saving
+
+    def _save_state_identity(self):
+        document_identity = getattr(self.model, "get_document_identity", lambda: None)()
+        revision = getattr(self.controller.history_service, "current_revision", lambda: None)()
+        return self.model.get_source_image_path(), document_identity, revision
+
+    def _emit_queue_status(self):
+        signal = getattr(self.controller, "_export_queue_status_signal", None)
+        if signal is not None:
+            signal.emit(self.unfinished_count())
+
+    def _submit_save_job(self, job: SaveJob):
+        with self._state_lock:
+            if not self._accepting:
+                return None
+            self._unfinished += 1
+            try:
+                future = self._executor.submit(self._execute_save_job, job)
+            except RuntimeError:
+                self._unfinished -= 1
+                return None
+        self._emit_queue_status()
+        return future
+
+    def _execute_save_job(self, job: SaveJob):
+        try:
+            self._export_service.save_editor_project(
+                job.source_path, job.regions, job.mask, job.config,
+                paint_overlay=job.paint_overlay,
+                stamp_overlay=job.stamp_overlay,
+                paste_overlays=list(job.paste_overlays),
+            )
+            if job.inpainted_image is not None:
+                self._export_service.save_inpainted_image(
+                    job.source_path, job.inpainted_image, job.config
+                )
+            else:
+                self._export_service.delete_inpainted_image(job.source_path)
+        finally:
+            job.release_resources()
+            with self._state_lock:
+                self._unfinished -= 1
+            self._emit_queue_status()
 
     def export_image(
         self,
         automatic: bool = False,
     ) -> Optional[concurrent.futures.Future]:
+        if self.saving_in_progress():
+            return None
         source_path = self.model.get_source_image_path()
         if not source_path:
             return self._reject_export("导出失败：当前图片没有来源路径")
@@ -273,7 +377,7 @@ class EditorControllerExportService:
     def _submit_job(self, job: ExportJob) -> Optional[concurrent.futures.Future]:
         source_key = job.source_key if job.automatic else None
         with self._state_lock:
-            if not self._accepting:
+            if not self._accepting or self._saving:
                 return None
             previous = self._pending_auto.get(source_key) if source_key else None
             try:

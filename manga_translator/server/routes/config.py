@@ -47,6 +47,8 @@ SERVER_HIDDEN_CONFIG_KEYS = {
     # CLI 配置隐藏
     "cli.format",
     "cli.save_quality",
+    "cli.save_lossless",
+    "cli.compression_effort",
     "cli.overwrite",
     "cli.skip_no_text",
     "cli.save_text",

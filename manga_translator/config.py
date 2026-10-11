@@ -411,6 +411,10 @@ class CliConfig(BaseModel):
     """Output format"""
     save_quality: int = 100
     """Save quality for output images"""
+    save_lossless: bool = False
+    """Save images with lossless compression for supported formats (WebP, AVIF, HEIF)"""
+    compression_effort: int = Field(default=70, ge=0, le=100)
+    """Compression effort for lossless formats (0-100, higher means smaller file but slower)"""
     overwrite: bool = False
     """Overwrite existing files"""
     skip_no_text: bool = False

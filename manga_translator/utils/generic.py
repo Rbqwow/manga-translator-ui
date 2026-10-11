@@ -1,6 +1,6 @@
 import functools
 import os
-from typing import Callable, List, Optional, Tuple
+from typing import BinaryIO, Callable, List, Optional, Tuple
 
 import cv2
 import numpy as np
@@ -8,8 +8,10 @@ import tqdm
 from PIL import Image, ImageOps
 
 from ..image_formats import (
+    LOSSLESS_SWITCHABLE_PIL_FORMATS,
     QUALITY_PIL_FORMATS,
     RGB_PIL_FORMATS,
+    normalize_compression_effort,
     resolve_pil_image_format,
 )
 
@@ -36,6 +38,7 @@ import requests
 from shapely import affinity
 from shapely.geometry import MultiPoint, Polygon
 
+from .avif import save_lossless_avif
 from .image_modes import normalize_rgb_image, pil_image_has_alpha
 
 try:
@@ -547,7 +550,7 @@ def dump_image(
     return result
 
 
-def _infer_pil_save_format(output_path: str, format: Optional[str] = None) -> str:
+def _infer_pil_save_format(output_path: str | os.PathLike[str] | BinaryIO, format: Optional[str] = None) -> str:
     return resolve_pil_image_format(format or output_path)
 
 
@@ -571,15 +574,18 @@ def build_preserved_pil_save_kwargs(source_image: Optional[Image.Image] = None) 
 
 def save_pil_image(
     image: Image.Image,
-    output_path: str,
+    output_path: str | os.PathLike[str] | BinaryIO,
     source_image: Optional[Image.Image] = None,
     *,
     quality: Optional[int] = None,
+    lossless: Optional[bool] = None,
+    compression_effort: Optional[int] = None,
     format: Optional[str] = None,
     **save_kwargs,
 ):
     """
     Save a PIL image while preserving source color metadata when possible.
+    File-like destinations require an explicit format and remain caller-owned.
     """
     target_format = _infer_pil_save_format(output_path, format)
     image_to_save = image
@@ -600,6 +606,46 @@ def save_pil_image(
         if quality is not None and target_format in QUALITY_PIL_FORMATS:
             save_kwargs.setdefault('quality', quality)
 
+        effort = normalize_compression_effort(compression_effort)
+        if target_format == 'AVIF' and lossless:
+            save_lossless_avif(
+                image_to_save,
+                output_path,
+                compression_effort=effort,
+                icc_profile=save_kwargs.get('icc_profile', image_to_save.info.get('icc_profile')),
+                exif=save_kwargs.get('exif'),
+                xmp=save_kwargs.get('xmp'),
+                # The ordinary save path passes dpi through save_kwargs, but
+                # this branch bypasses image.save(), so hand it over directly.
+                dpi=save_kwargs.get('dpi'),
+                max_threads=save_kwargs.get('max_threads'),
+            )
+            return
+        if target_format == 'WEBP' and lossless is not None:
+            save_kwargs['lossless'] = bool(lossless)
+        if lossless and target_format in LOSSLESS_SWITCHABLE_PIL_FORMATS:
+            if target_format == 'WEBP':
+                save_kwargs['quality'] = effort
+                save_kwargs.setdefault('exact', True)
+                save_kwargs.setdefault('method', round(effort * 6 / 100))
+            elif target_format == 'HEIF':
+                save_kwargs['quality'] = -1
+                save_kwargs['chroma'] = '444'
+                save_kwargs['subsampling'] = '4:4:4'
+                save_kwargs['matrix_coefficients'] = 0
+                enc_params = dict(save_kwargs.get('enc_params') or {})
+                enc_params['lossless'] = '1'
+                presets = ('ultrafast', 'superfast', 'veryfast', 'faster', 'fast',
+                           'medium', 'slow', 'slower', 'veryslow', 'placebo')
+                enc_params.setdefault('preset', presets[round(effort * (len(presets) - 1) / 100)])
+                save_kwargs['enc_params'] = enc_params
+
+        if target_format == 'PNG':
+            # PNG is always lossless, so `compression_effort` is the only dial
+            # that matters here; `lossless` cannot change the outcome and is
+            # intentionally not consulted. The ceiling keeps the default (100)
+            # at level 9, matching the documented "highest compression" intent.
+            save_kwargs.setdefault('compress_level', round(effort * 9 / 100))
         # Always pass an explicit encoder so atomic ``.tmp`` writes still work.
         image_to_save.save(output_path, format=target_format, **save_kwargs)
     finally:

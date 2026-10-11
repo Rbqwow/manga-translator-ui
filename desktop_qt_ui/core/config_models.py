@@ -150,7 +150,9 @@ class CliSettings(BaseModel):
     load_text: bool = False
     translate_json_only: bool = False
     template: bool = False
+    save_lossless: bool = False
     save_quality: int = 100
+    compression_effort: int = Field(default=70, ge=0, le=100)
     batch_size: int = 1
     batch_concurrent: bool = False
     translation_concurrency: int = Field(default=3, ge=1, le=32)

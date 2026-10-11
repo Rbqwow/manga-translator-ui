@@ -1,6 +1,12 @@
 import json
 import os
 
+from manga_translator.image_formats import (
+    LOSSLESS_SWITCHABLE_PIL_FORMATS,
+    QUALITY_PIL_FORMATS,
+    normalize_compression_effort,
+    resolve_pil_image_format,
+)
 from PyQt6.QtCore import QSignalBlocker, Qt, QTimer, pyqtSlot
 from PyQt6.QtWidgets import (
     QGridLayout,
@@ -174,6 +180,7 @@ def _add_api_section_panel(
 _CACHED_SETTINGS_WIDGET_ATTRS = (
     "translator_combo",
     "upscale_ratio_combo",
+    "_settings_row_widgets",
 )
 
 _FIXED_PROMPT_KEYS = frozenset({
@@ -618,6 +625,8 @@ def _sync_setting_widget_values(self, config: dict) -> bool:
                 elif isinstance(widget, QComboBox):
                     if full_key == "upscale.upscale_ratio":
                         continue
+                    if full_key == "cli.format" and str(value or "").strip().lower() in {"", "none", "不指定", "null"}:
+                        value = "不指定"
                     target = display_map.get(value, value) if display_map else value
                     if full_key == "translator.high_quality_prompt_path":
                         target = os.path.basename(value) if value else ""
@@ -639,6 +648,7 @@ def _sync_setting_widget_values(self, config: dict) -> bool:
                 _repopulate_upscale_ratio_options(self, widget, upscaler)
             finally:
                 del blocker
+        self._update_image_format_settings_visibility()
         return True
     except (AttributeError, RuntimeError):
         return False
@@ -682,6 +692,7 @@ def set_parameters(self, config: dict):
     self._settings_pending_signature = config_signature
     self._settings_pending_structure_signature = structure_signature
     self._settings_value_bindings = {}
+    self._settings_row_widgets = {}
 
     # 构建代号：每次重建自增，链中每步校验，过期构建链自行终止，
     # 避免二次 config_loaded 并发开出第二条构建链导致控件重复。
@@ -929,6 +940,7 @@ def _finalize_settings_ui(self, build_seq: int | None = None):
         "_settings_pending_structure_signature",
         None,
     )
+    self._update_image_format_settings_visibility()
     self._settings_ui_ready = True
 
 def _create_dynamic_settings(self):
@@ -954,6 +966,9 @@ def _on_setting_changed(self, value, full_key, display_map=None):
 
     if full_key == "render.disable_system_fonts":
         set_system_fonts_enabled(not bool(final_value))
+
+    if full_key in {"cli.format", "cli.save_lossless"}:
+        self._update_image_format_settings_visibility()
     
     self.setting_changed.emit(full_key, final_value)
     if full_key in {
@@ -1017,6 +1032,9 @@ def _on_upscale_ratio_changed(self, text, full_key):
 
 def _on_numeric_input_changed(self, text, full_key, value_type):
     """统一处理数值类型输入框的变化（支持 int 和 float）"""
+    if full_key == "cli.compression_effort":
+        self.setting_changed.emit(full_key, normalize_compression_effort(text))
+        return
     if not text or not text.strip():
         # 空值 = 使用默认值 (None)
         self.setting_changed.emit(full_key, None)
@@ -1027,6 +1045,69 @@ def _on_numeric_input_changed(self, text, full_key, value_type):
         except ValueError:
             # 无效输入 = 使用默认值
             self.setting_changed.emit(full_key, None)
+
+
+def _get_live_setting_value(self, full_key: str):
+    bindings = getattr(self, "_settings_value_bindings", {})
+    if full_key in bindings:
+        widget, display_map = bindings[full_key]
+        if isinstance(widget, QComboBox):
+            text = widget.currentText()
+            if display_map:
+                for k, v in display_map.items():
+                    if v == text:
+                        return k
+            return text
+        elif isinstance(widget, ToggleSwitch):
+            return widget.isChecked()
+        elif hasattr(widget, "text"):
+            return widget.text()
+    if hasattr(self, "config_service"):
+        config = self.config_service.get_config()
+        config_dict = config.model_dump() if hasattr(config, "model_dump") else (config if isinstance(config, dict) else {})
+        exists, val = _resolve_config_value(config_dict, full_key)
+        if exists:
+            return val
+    return None
+
+
+def _update_image_format_settings_visibility(self):
+    """
+    更新输出格式、图像保存质量、压缩努力程度、无损图像保存四个设置的联动可见性。
+    """
+    row_widgets = getattr(self, "_settings_row_widgets", {})
+    if not row_widgets:
+        return
+
+    raw_fmt = str(self._get_live_setting_value("cli.format") or "").strip().lower()
+    if raw_fmt in {"", "none", "不指定", "null"}:
+        target_format = None
+    else:
+        try:
+            target_format = resolve_pil_image_format(raw_fmt)
+        except ValueError:
+            target_format = ""
+
+    save_lossless = bool(self._get_live_setting_value("cli.save_lossless"))
+    keep_original_format = target_format is None
+    supports_lossless = target_format in LOSSLESS_SWITCHABLE_PIL_FORMATS
+
+    if "cli.format" in row_widgets:
+        row_widgets["cli.format"].setVisible(True)
+
+    lossless_toggle_visible = keep_original_format or supports_lossless
+    if "cli.save_lossless" in row_widgets:
+        row_widgets["cli.save_lossless"].setVisible(lossless_toggle_visible)
+
+    quality_visible = keep_original_format or (
+        target_format in QUALITY_PIL_FORMATS and not (supports_lossless and save_lossless)
+    )
+    if "cli.save_quality" in row_widgets:
+        row_widgets["cli.save_quality"].setVisible(quality_visible)
+
+    effort_visible = keep_original_format or target_format == "PNG" or (supports_lossless and save_lossless)
+    if "cli.compression_effort" in row_widgets:
+        row_widgets["cli.compression_effort"].setVisible(effort_visible)
 
 def _update_upscale_ratio_options(self, upscaler):
     """当 upscaler 变化时，更新 upscale_ratio 下拉框的选项"""
@@ -1112,6 +1193,8 @@ def _create_param_widgets(self, data, parent_layout, prefix=""):
     added_rows = 0
     for key, value in data.items():
         full_key = f"{prefix}.{key}" if prefix else key
+        if full_key == "cli.format" and str(value or "").strip().lower() in {"", "none", "不指定", "null"}:
+            value = "不指定"
 
         # 跳过这些选项，因为已经用下拉框替代或不需要在UI中显示
         # realcugan_model 将通过 upscale_ratio 动态下拉框处理
@@ -1334,9 +1417,11 @@ def _create_param_widgets(self, data, parent_layout, prefix=""):
             row = _ClickableRow(self, full_key, label_text, widget)
             value_widget = widget[0] if isinstance(widget, (list, tuple)) else widget
             self._settings_value_bindings[full_key] = (value_widget, dict(display_map or {}))
+            if not hasattr(self, "_settings_row_widgets"):
+                self._settings_row_widgets = {}
+            self._settings_row_widgets[full_key] = row
             _append_settings_row(parent_layout, row)
             added_rows += 1
-
     return added_rows
 
 

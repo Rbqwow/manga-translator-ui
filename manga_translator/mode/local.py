@@ -185,6 +185,9 @@ async def translate_files(input_paths, output_dir, config_service, verbose=False
     if hasattr(args, 'format') and args.format is not None:
         cli_config['format'] = args.format
     
+    # lossless: 命令行参数优先
+    if hasattr(args, 'lossless') and args.lossless is not None:
+        cli_config['save_lossless'] = args.lossless
     # batch_size: 命令行参数优先
     if hasattr(args, 'batch_size') and args.batch_size is not None:
         cli_config['batch_size'] = args.batch_size
@@ -213,6 +216,7 @@ async def translate_files(input_paths, output_dir, config_service, verbose=False
     print(f"覆盖已存在文件: {overwrite}")
     print(f"输出格式: {cli_config.get('format') or '保持原格式'}")
     print(f"保存质量: {cli_config.get('save_quality', 95)}")
+    print(f"无损保存: {'启用' if cli_config.get('save_lossless', False) else '禁用'}")
     print(f"{'='*60}\n")
     
     # 收集所有图片文件
@@ -347,6 +351,7 @@ async def translate_files(input_paths, output_dir, config_service, verbose=False
     print(f"   输出格式: {output_format or '保持原格式'}")
     print(f"   覆盖模式: {overwrite}")
     print(f"   保存质量: {cli_config.get('save_quality', 95)}")
+    print(f"   无损保存: {'启用' if cli_config.get('save_lossless', False) else '禁用'}")
     print(f"   批量大小: {batch_size} 张/批")
     if verbose and input_folders:
         print("   输入文件夹:")
@@ -512,6 +517,10 @@ async def run_local_mode(args):
                 cli_config['use_gpu'] = args.use_gpu
             if hasattr(args, 'disable_onnx_gpu') and args.disable_onnx_gpu is not None:
                 cli_config['disable_onnx_gpu'] = args.disable_onnx_gpu
+            if getattr(args, 'format', None) is not None:
+                cli_config['format'] = args.format
+            if getattr(args, 'lossless', None) is not None:
+                cli_config['save_lossless'] = args.lossless
             if getattr(args, 'concurrent', False):
                 cli_config['batch_concurrent'] = True
             if getattr(args, 'translation_concurrency', None) is not None:

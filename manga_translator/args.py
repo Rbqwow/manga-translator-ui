@@ -67,6 +67,8 @@ def create_parser():
                              help='禁用 ONNX Runtime GPU 加速（覆盖配置文件）')
     local_parser.add_argument('--format', default=None,
                              help=f"输出格式：{'/'.join(OUTPUT_IMAGE_FORMATS)}（覆盖配置文件）")
+    local_parser.add_argument('--lossless', action='store_true', default=None,
+                             help='使用无损压缩保存支持的格式（WebP、AVIF、HEIF）（覆盖配置文件）')
     local_parser.add_argument('--batch-size', type=int, default=None,
                              help='批量处理大小（覆盖配置文件）')
     local_parser.add_argument('--concurrent', action='store_true',

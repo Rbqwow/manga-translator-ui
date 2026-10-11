@@ -63,14 +63,15 @@ CLI overrides happen while assembling `cli_config` before translation starts; th
 
 ### No value passed means no override {#explicit-only}
 
-- `--use-gpu`, `--disable-onnx-gpu`, `--format`, `--batch-size`, `--translation-concurrency`, and `--attempts` default to `None`; they write into `cli_config` only when explicitly passed, otherwise the file value or default is kept. See below for the subprocess limitations on `--format` and `--attempts`.
+- `--use-gpu`, `--disable-onnx-gpu`, `--format`, `--lossless`, `--batch-size`, `--translation-concurrency`, and `--attempts` default to `None`; they write into `cli_config` only when explicitly passed, otherwise the file value or default is kept. See below for the subprocess limitation on `--attempts`.
+- `--lossless` enables `cli.save_lossless` for lossless WebP, AVIF, and HEIF/HEIC encoding; omitting it preserves the config value. To disable an enabled config value, set `cli.save_lossless=false`. PNG already uses lossless encoding, and this switch does not make JPEG lossless.
 - `--concurrent` enables `cli.batch_concurrent`; omitting it preserves the file value. `--translation-concurrency 1-32` sets the number of translation batches that can run simultaneously, with a default of `3`. It takes effect only when the pipeline is enabled through `--concurrent` or the config file; passing it alone does not enable concurrency.
 - `-v` and `--overwrite` are `store_true` switches; passing them only enables. If `cli.verbose` or `cli.overwrite` is `true` in the file, it takes effect even without the flag; the CLI cannot “turn off” an enabled config value by omitting the flag.
 - The `--format` help lists `png/jpg/jpeg/jfif/webp/avif/bmp/tiff/tif/heic/heif`, but the parser does not set `choices`; a value outside the list fails later at save time, not at parse time.
 
 ### Subprocess-mode differences {#subprocess-difference}
 
-With `--subprocess`, explicit overrides for `--use-gpu`, `--disable-onnx-gpu`, `--batch-size`, `--concurrent`, and `--translation-concurrency` also enter the `cli_config` passed to the child process. `-v`/`--overwrite` are passed as function arguments. This branch still does not apply `--format` or `--attempts`; set `cli.format` and `cli.attempts` in the config file for the output format and retry count.
+With `--subprocess`, explicit overrides for `--use-gpu`, `--disable-onnx-gpu`, `--format`, `--lossless`, `--batch-size`, `--concurrent`, and `--translation-concurrency` also enter the `cli_config` passed to the child process. `-v`/`--overwrite` are passed as function arguments. This branch still does not apply `--attempts`; set `cli.attempts` in the config file instead of relying on a command-line retry override in subprocess mode.
 
 ## Configuration file details {#config-file-details}
 
@@ -128,12 +129,15 @@ The `local` override arguments that write back to `cli.*` configuration keys are
 | `--use-gpu` | `cli.use_gpu` | Use GPU acceleration |
 | `--disable-onnx-gpu` | `cli.disable_onnx_gpu` | Disable ONNX Runtime GPU acceleration |
 | `--format` | `cli.format` | Output image format |
+| `--lossless` | `cli.save_lossless` | Enable lossless WebP, AVIF, and HEIF/HEIC saving; omitting it preserves the config value |
 | `--batch-size` | `cli.batch_size` | Batch processing size |
 | `--concurrent` | `cli.batch_concurrent` | Enable the concurrent pipeline; omitting it preserves the config value |
 | `--translation-concurrency` | `cli.translation_concurrency` | Simultaneous translation batches (1–32, default 3); requires the concurrent pipeline |
 | `--attempts` | `cli.attempts` | Retry count on translation failure |
 | `-v` / `--verbose` | `cli.verbose` | Show detailed logs |
 | `--overwrite` | `cli.overwrite` | Overwrite existing files |
+
+Set `cli.save_quality` and `cli.compression_effort` in the config file; neither has a corresponding formal CLI argument. `save_quality` controls lossy encoding quality. `compression_effort` ranges from 0 to 100 and controls the speed/file-size tradeoff for PNG and lossless WebP, AVIF, and HEIF/HEIC without reducing lossless image quality. Setting `save_quality` to `100` does not replace `--lossless`.
 
 The workflow-related keys (`cli.save_text`, `cli.load_text`, `cli.template`, `cli.generate_and_export`, `cli.upscale_only`, `cli.colorize_only`, `cli.inpaint_only`, `cli.replace_translation`, etc.) and their correspondence to the UI workflows are covered by [Workflow and file modes](./workflow-and-file-modes.md) and the [Workflow matrix](../reference/workflow-matrix.md). These keys have no official CLI argument and can only be set through the configuration file.
 
@@ -174,20 +178,20 @@ Override difference between subprocess and non-subprocess paths:
 ```mermaid
 flowchart LR
     subgraph Normal["Without --subprocess"]
-        N1["use_gpu / disable_onnx_gpu / format / batch_size / attempts / translation_concurrency passed explicitly"] --> N2["Written into cli_config"]
+        N1["use_gpu / disable_onnx_gpu / format / lossless / batch_size / attempts / translation_concurrency passed explicitly"] --> N2["Written into cli_config"]
         N4["concurrent passed: enable batch_concurrent"] --> N2
         N3["verbose / overwrite passed"] --> N2
     end
     subgraph Sub["With --subprocess"]
-        S1["use_gpu / disable_onnx_gpu / batch_size / translation_concurrency passed explicitly"] --> S2["Written into cli_config"]
+        S1["use_gpu / disable_onnx_gpu / format / lossless / batch_size / translation_concurrency passed explicitly"] --> S2["Written into cli_config"]
         S6["concurrent passed: enable batch_concurrent"] --> S2
         S2 --> S4
-        S3["format / attempts command-line overrides"] -.not applied; config values retained.-> S4
+        S3["attempts command-line override"] -.not applied; config value retained.-> S4
         S5["verbose / overwrite passed directly as function arguments"] --> S4["translate_with_subprocess"]
     end
 ```
 
-Limitation: the subprocess branch still does not apply the `--format` and `--attempts` command-line overrides. `--batch-size` and concurrency arguments override configuration in both branches.
+Limitation: the subprocess branch still does not apply the `--attempts` command-line override. `--format`, `--lossless`, `--batch-size`, and concurrency arguments override configuration in both branches.
 
 ## Limitations {#dependencies-and-conflicts}
 

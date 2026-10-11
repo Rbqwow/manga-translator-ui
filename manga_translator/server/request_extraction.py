@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 import asyncio
 import builtins
+import inspect
 import io
 import json
 import logging
@@ -17,11 +18,10 @@ from pydantic import BaseModel
 
 from manga_translator import Config
 from manga_translator.image_formats import (
-    RGB_PIL_FORMATS,
     resolve_output_image_format,
 )
-from manga_translator.utils import normalize_pil_image, open_pil_image
-from manga_translator.utils.image_modes import normalize_rgb_image
+from manga_translator.server.core.image_encoding import run_image_encoding
+from manga_translator.utils import normalize_pil_image, open_pil_image, save_pil_image
 
 logger = logging.getLogger('manga_translator.server')
 
@@ -601,7 +601,14 @@ async def while_streaming(req: Request, transform, config: Config, image: bytes 
             
             try:
                 yield pack_message(1, json.dumps({"stage": "transforming", "message": "Converting..."}, ensure_ascii=False).encode('utf-8'))
-                result_data = transform(ctx)
+                # PNG/zip encoding is native CPU work; running it inline inside
+                # this async generator blocked the event loop for every other
+                # request. The worker pool also keeps the encode alive if the
+                # client disconnects mid-conversion.
+                if inspect.iscoroutinefunction(transform):
+                    result_data = await transform(ctx)
+                else:
+                    result_data = await run_image_encoding(transform, ctx)
                 
                 # 保存翻译结果到历史
                 try:
@@ -811,7 +818,7 @@ async def save_translation_to_history(ctx, username: str, task_id: str, workflow
         task_id: 任务ID
         workflow: 工作流程类型
         original_filename: 原始文件名（可选）
-        config: 配置对象（可选，用于获取输出格式）
+        config: 配置对象（可选，用于获取输出格式和编码设置）
     """
     import shutil
     import tempfile
@@ -895,11 +902,21 @@ async def save_translation_to_history(ctx, username: str, task_id: str, workflow
                 # 如果复制失败，尝试直接使用原图
                 img_to_save = ctx.result
             
-            if save_format in RGB_PIL_FORMATS and img_to_save.mode not in ('RGB', 'L'):
-                img_to_save = normalize_rgb_image(img_to_save)
-                add_log(f"Converted {ctx.result.mode} to RGB for {save_format} format", "DEBUG")
-            
-            img_to_save.save(result_path, save_format)
+            cli_config = getattr(config, 'cli', None)
+            try:
+                await run_image_encoding(
+                    save_pil_image,
+                    img_to_save,
+                    result_path,
+                    source_image=img_to_save,
+                    format=save_format,
+                    quality=getattr(cli_config, 'save_quality', None),
+                    lossless=getattr(cli_config, 'save_lossless', False),
+                    compression_effort=getattr(cli_config, 'compression_effort', 100),
+                )
+            finally:
+                if img_to_save is not ctx.result:
+                    img_to_save.close()
             temp_files.append(result_path)
             add_log(f"Saved result image to temp: {result_path} (format: {save_format})", "DEBUG")
         else:

@@ -1128,6 +1128,10 @@ class MainAppLogic(QObject):
     def get_display_mapping(self, key: str) -> Optional[Dict[str, str]]:
         # 每次都动态生成翻译映射，确保语言切换时能正确更新
         display_name_maps = {
+            "format": {
+                "不指定": self._t("format_not_specified"),
+                **{image_format: image_format for image_format in OUTPUT_IMAGE_FORMATS},
+            },
             "alignment": {
                 "auto": self._t("alignment_auto"),
                 "left": self._t("alignment_left"),
@@ -1323,6 +1327,8 @@ class MainAppLogic(QObject):
                     "translate_json_only": self._t("label_translate_json_only"),
                     "template": self._t("label_template"),
                     "save_quality": self._t("label_save_quality"),
+                    "save_lossless": self._t("label_save_lossless"),
+                    "compression_effort": self._t("label_compression_effort"),
                     "batch_size": self._t("label_batch_size"),
                     "batch_concurrent": self._t("label_batch_concurrent"),
                     "translation_concurrency": self._t("label_translation_concurrency"),
@@ -1371,7 +1377,7 @@ class MainAppLogic(QObject):
 
     def get_options_for_key(self, key: str) -> Optional[List[str]]:
         options_map = {
-            "format": [self._t("format_not_specified"), *OUTPUT_IMAGE_FORMATS],
+            "format": ["不指定", *OUTPUT_IMAGE_FORMATS],
             "renderer": [member.value for member in Renderer],
             "alignment": [member.value for member in Alignment],
             "direction": [member.value for member in Direction],
