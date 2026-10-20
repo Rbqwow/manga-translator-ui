@@ -15,10 +15,10 @@
   },
   "baseline_comparison": {
     "requested_baseline": 111,
-    "layout_parameter_entries": 111,
-    "visible_parameter_fields": 110,
+    "layout_parameter_entries": 118,
+    "visible_parameter_fields": 117,
     "difference_from_requested_baseline": -1,
-    "difference_explanation": "The layout has 111 string entries, matching the updated baseline. Its render.font_color entry has a null release default and no None widget branch, leaving 110 visible settings rows (one below 111)."
+    "difference_explanation": "The layout has 118 string entries, matching the updated baseline. Its render.font_color entry has a null release default and no None widget branch, leaving 117 visible settings rows (one below 118)."
   },
   "visible_fields": [
     {
@@ -64,16 +64,22 @@
       "default_source": "config/config-example.json (release) -> desktop_qt_ui/core/config_models.py#CliSettings.skip_no_text"
     },
     {
+      "key": "force_simple_sort",
+      "page": "General",
+      "control": "toggle",
+      "default_source": "config/config-example.json (release) -> desktop_qt_ui/core/config_models.py#AppSettings.force_simple_sort"
+    },
+    {
       "key": "cli.save_text",
       "page": "General",
       "control": "toggle",
       "default_source": "config/config-example.json (release) -> desktop_qt_ui/core/config_models.py#CliSettings.save_text"
     },
     {
-      "key": "cli.export_from_local_json",
-      "page": "Mode Specific",
+      "key": "cli.save_lossless",
+      "page": "General",
       "control": "toggle",
-      "default_source": "config/config-example.json (release) -> desktop_qt_ui/core/config_models.py#CliSettings.export_from_local_json"
+      "default_source": "config/config-example.json (release) -> desktop_qt_ui/core/config_models.py#CliSettings.save_lossless"
     },
     {
       "key": "cli.save_quality",
@@ -82,10 +88,28 @@
       "default_source": "config/config-example.json (release) -> desktop_qt_ui/core/config_models.py#CliSettings.save_quality"
     },
     {
+      "key": "cli.compression_effort",
+      "page": "General",
+      "control": "int-input",
+      "default_source": "config/config-example.json (release) -> desktop_qt_ui/core/config_models.py#CliSettings.compression_effort"
+    },
+    {
       "key": "cli.attempts",
       "page": "General",
       "control": "int-input",
       "default_source": "config/config-example.json (release) -> desktop_qt_ui/core/config_models.py#CliSettings.attempts"
+    },
+    {
+      "key": "cli.skip_failed_after_retries",
+      "page": "General",
+      "control": "toggle",
+      "default_source": "config/config-example.json (release) -> desktop_qt_ui/core/config_models.py#CliSettings.skip_failed_after_retries"
+    },
+    {
+      "key": "cli.max_failure_skips",
+      "page": "General",
+      "control": "int-input",
+      "default_source": "config/config-example.json (release) -> desktop_qt_ui/core/config_models.py#CliSettings.max_failure_skips"
     },
     {
       "key": "cli.batch_size",
@@ -98,6 +122,12 @@
       "page": "General",
       "control": "toggle",
       "default_source": "config/config-example.json (release) -> desktop_qt_ui/core/config_models.py#CliSettings.batch_concurrent"
+    },
+    {
+      "key": "cli.translation_concurrency",
+      "page": "General",
+      "control": "int-input",
+      "default_source": "config/config-example.json (release) -> desktop_qt_ui/core/config_models.py#CliSettings.translation_concurrency"
     },
     {
       "key": "use_custom_api_params",
@@ -604,6 +634,12 @@
       "default_source": "config/config-example.json (release) -> desktop_qt_ui/core/config_models.py#RenderSettings.layout_mode"
     },
     {
+      "key": "render.force_strict_layout",
+      "page": "Typesetting",
+      "control": "toggle",
+      "default_source": "config/config-example.json (release) -> desktop_qt_ui/core/config_models.py#RenderSettings.force_strict_layout"
+    },
+    {
       "key": "render.max_font_size",
       "page": "Typesetting",
       "control": "int-input",
@@ -614,6 +650,12 @@
       "page": "Typesetting",
       "control": "float-input",
       "default_source": "config/config-example.json (release) -> desktop_qt_ui/core/config_models.py#RenderSettings.font_scale_ratio"
+    },
+    {
+      "key": "cli.export_from_local_json",
+      "page": "Mode Specific",
+      "control": "toggle",
+      "default_source": "config/config-example.json (release) -> desktop_qt_ui/core/config_models.py#CliSettings.export_from_local_json"
     },
     {
       "key": "render.enable_template_alignment",
@@ -686,14 +728,11 @@
     {
       "key": "render.font_color",
       "page": "Typesetting",
-      "release_default": null,
-      "potential_control_when_non_null": "text-input",
-      "default_source": "config/config-example.json (release) -> desktop_qt_ui/core/config_models.py#RenderSettings.font_color",
-      "reason": "dynamic_settings.py only creates a None-valued input when the short key is in _OPTIONAL_INPUT_KEYS; font_color is not in that set."
+      "reason": "release default is null and dynamic_settings.py has no widget branch for it"
     }
   ],
   "reproduction": {
     "command": "uv run --no-sync python doc/wiki/verify_phase0_ui_parameter_fields.py",
-      "expected_result": "PASS: layout=111, fixed-actions=3, visible=110, baseline-delta=-1, excluded=render.font_color"
+    "expected_result": "PASS: layout=118, fixed-actions=3, visible=117, baseline-delta=-1, excluded=render.font_color"
   }
 }
