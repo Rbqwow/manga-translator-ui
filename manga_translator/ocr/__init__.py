@@ -5,17 +5,41 @@ import numpy as np
 from ..config import Ocr, OcrConfig
 from ..utils import Quadrilateral
 from .common import CommonOCR, OfflineOCR
-from .model_32px import Model32pxOCR
-from .model_48px import Model48pxOCR
-from .model_48px_ctc import Model48pxCTCOCR
 
-# ModelMangaOCR 延迟导入，避免未使用时下载模型
-from .model_paddleocr import (
-    ModelPaddleOCR,
-    ModelPaddleOCRKorean,
-    ModelPaddleOCRLatin,
-    ModelPaddleOCRThai,
-)
+
+def _get_32px_class():
+    from .model_32px import Model32pxOCR
+    return Model32pxOCR
+
+
+def _get_48px_class():
+    from .model_48px import Model48pxOCR
+    return Model48pxOCR
+
+
+def _get_48px_ctc_class():
+    from .model_48px_ctc import Model48pxCTCOCR
+    return Model48pxCTCOCR
+
+
+def _get_paddleocr_class():
+    from .model_paddleocr import ModelPaddleOCR
+    return ModelPaddleOCR
+
+
+def _get_paddleocr_korean_class():
+    from .model_paddleocr import ModelPaddleOCRKorean
+    return ModelPaddleOCRKorean
+
+
+def _get_paddleocr_latin_class():
+    from .model_paddleocr import ModelPaddleOCRLatin
+    return ModelPaddleOCRLatin
+
+
+def _get_paddleocr_thai_class():
+    from .model_paddleocr import ModelPaddleOCRThai
+    return ModelPaddleOCRThai
 
 
 def _get_manga_ocr_class():
@@ -47,20 +71,38 @@ def _get_gemini_ocr_class():
     return ModelGeminiOCR
 
 OCRS = {
-    Ocr.ocr32px: Model32pxOCR,
-    Ocr.ocr48px: Model48pxOCR,
-    Ocr.ocr48px_ctc: Model48pxCTCOCR,
+    Ocr.ocr32px: _get_32px_class,
+    Ocr.ocr48px: _get_48px_class,
+    Ocr.ocr48px_ctc: _get_48px_ctc_class,
     Ocr.mocr: _get_manga_ocr_class,  # 延迟导入
-    Ocr.paddleocr: ModelPaddleOCR,
-    Ocr.paddleocr_korean: ModelPaddleOCRKorean,
-    Ocr.paddleocr_latin: ModelPaddleOCRLatin,
-    Ocr.paddleocr_thai: ModelPaddleOCRThai,
+    Ocr.paddleocr: _get_paddleocr_class,
+    Ocr.paddleocr_korean: _get_paddleocr_korean_class,
+    Ocr.paddleocr_latin: _get_paddleocr_latin_class,
+    Ocr.paddleocr_thai: _get_paddleocr_thai_class,
     Ocr.paddleocr_vl: _get_paddleocr_vl_class,  # 延迟导入 PaddleOCR-VL
     Ocr.hayai_ocr_v2: _get_hayai_ocr_class,  # 延迟导入 Hayai OCR
     Ocr.openai_ocr: _get_openai_ocr_class,
     Ocr.gemini_ocr: _get_gemini_ocr_class,
 }
 ocr_cache = {}
+
+
+def __getattr__(name):
+    # Preserve explicit class imports without importing every model at startup.
+    loaders = {
+        "Model32pxOCR": _get_32px_class,
+        "Model48pxOCR": _get_48px_class,
+        "Model48pxCTCOCR": _get_48px_ctc_class,
+        "ModelPaddleOCR": _get_paddleocr_class,
+        "ModelPaddleOCRKorean": _get_paddleocr_korean_class,
+        "ModelPaddleOCRLatin": _get_paddleocr_latin_class,
+        "ModelPaddleOCRThai": _get_paddleocr_thai_class,
+    }
+    if name in loaders:
+        value = loaders[name]()
+        globals()[name] = value
+        return value
+    raise AttributeError(f"module '{__name__}' has no attribute '{name}'")
 
 
 def _resolve_ocr_config(config: Optional[Any]) -> Any:

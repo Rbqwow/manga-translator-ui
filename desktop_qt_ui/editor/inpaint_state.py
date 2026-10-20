@@ -37,7 +37,7 @@ class InpaintConfigSnapshot:
     inpainting_precision: str
     force_use_torch_inpainting: bool
     inpainting_size: int
-    device: str
+    device: str  # Requested device; availability is resolved by the background job.
 
 
 @dataclass(frozen=True, slots=True)

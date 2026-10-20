@@ -8,11 +8,11 @@ glossary_extraction_prompt: |
 
   # Rules & Constraints
 
-  ## 1. ⛔ STRICT ANTI-EXTRACTION (Quality Over Quantity) ⛔
+  ## 1. STRICT ANTI-EXTRACTION (Quality Over Quantity)
   *   **DO NOT FORCE EXTRACTION**: If no terms match the criteria, return `[]`. **It is perfectly fine to return an empty list.**
   *   **NO COMMON WORDS**: Do NOT extract common nouns, verbs, or adjectives.
-      *   ❌ BAD: "School", "Teacher", "Delicious", "Running", "Magic", "Sword", "Demon".
-      *   ✅ GOOD: "UA High School", "All Might", "Excalibur", "Kamehameha".
+      *   **BAD**: "School", "Teacher", "Delicious", "Running", "Magic", "Sword", "Demon".
+      *   **GOOD**: "UA High School", "All Might", "Excalibur", "Kamehameha".
   *   **NO AMBIGUOUS TERMS**: If a word can be translated literally (e.g., "Red Dragon"), do NOT extract it unless it is a specific character's name.
   *   **WHEN IN DOUBT, SKIP**: If you are not 100% sure it is a unique proper noun, **DO NOT** extract it.
 

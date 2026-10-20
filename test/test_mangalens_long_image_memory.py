@@ -1,10 +1,33 @@
 import _bootstrap  # noqa: F401
 
 from types import SimpleNamespace
+from unittest.mock import Mock
 
 import numpy as np
 
 import manga_translator.utils.mangalens_detector as mangalens_detector
+
+
+def test_model_load_imports_yolo_on_demand_and_reuses_loaded_model(monkeypatch, tmp_path):
+    import os
+    import sys
+
+    model_path = tmp_path / "mangalens.pt"
+    model_path.touch()
+    monkeypatch.chdir(tmp_path)
+    model = Mock()
+    yolo = Mock(return_value=model)
+    monkeypatch.setitem(sys.modules, "ultralytics", SimpleNamespace(YOLO=yolo))
+    detector = mangalens_detector.MangaLensBubbleDetector(
+        model_path=model_path, device="cpu", auto_load=False, auto_download=False,
+    )
+    yolo.assert_not_called()
+    assert detector.load_model() is model
+    yolo.assert_called_once_with(os.path.relpath(model_path, os.getcwd()), task="segment")
+    model.to.assert_called_once_with("cpu")
+    assert detector.load_model() is model
+    yolo.assert_called_once()
+    model.to.assert_called_once()
 
 
 def _detector_with_outputs(outputs):

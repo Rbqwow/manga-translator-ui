@@ -1100,6 +1100,8 @@ class MainAppLogic(QObject):
             parent_obj = config_obj
             for key in keys[:-1]:
                 parent_obj = getattr(parent_obj, key)
+            if getattr(parent_obj, keys[-1]) == value:
+                return
             setattr(parent_obj, keys[-1], value)
             
             self.config_service.set_config(config_obj)
@@ -1982,7 +1984,7 @@ class MainAppLogic(QObject):
                 if result.get('skipped'):
                     if result.get('skip_reason') == 'retry_exhausted':
                         reason = result.get('skip_message') or 'Retries exhausted'
-                        self._ui_log(f"⏭️ {os.path.basename(result.get('original_path') or '')}: {reason}")
+                        self._ui_log(f"Skipped {os.path.basename(result.get('original_path') or '')}: {reason}")
                     continue
                 if not result.get('success'):
                     self._record_task_failure_from_result(result)
@@ -2224,10 +2226,9 @@ class MainAppLogic(QObject):
             if config.app.last_output_path:
                 self.output_path_updated.emit(config.app.last_output_path)
             
-            # Ensure the config path is stored in the state manager
-            default_config_path = self.config_service.get_default_config_path()
-            if os.path.exists(default_config_path):
-                self.state_manager.set_state(AppStateKey.CONFIG_PATH, default_config_path)
+            # Track the active configuration rather than its default template.
+            config_path = self.config_service.config_path or self.config_service.get_user_config_path()
+            self.state_manager.set_state(AppStateKey.CONFIG_PATH, config_path)
 
             self.state_manager.set_app_ready(True)
             self.state_manager.set_status_message("就绪")
@@ -2401,7 +2402,7 @@ class TranslationWorker(QObject):
 
     def _build_batch_failure_log_message(self, failed_items: list[dict], total_failed: int) -> str:
         lines = [
-            f"\n⚠️ Batch translation completed: {total_failed} images failed"
+            f"\nBatch translation completed: {total_failed} images failed"
         ]
         for item in failed_items[:5]:
             lines.append(f"- {item['file_name']}: {item['summary']}")
@@ -3026,13 +3027,13 @@ class TranslationWorker(QObject):
             progress_context["failed_count"] = 0
             self._log_info(f"--- Starting batch processing ({'high-quality mode' if is_hq else 'batch mode'})")
             self._log_info(
-                '📊 Batch processing mode: {total} images in {batches} batches'.format(total=total_images, batches=(total_images + batch_size - 1) // batch_size if batch_size > 0 else total_images)
+                'Batch processing mode: {total} images in {batches} batches'.format(total=total_images, batches=(total_images + batch_size - 1) // batch_size if batch_size > 0 else total_images)
             )
-            self._log_info('🔧 Translation workflow: {mode}'.format(mode=workflow_mode))
-            self._log_info('📁 Output directory: {dir}'.format(dir=self.output_folder))
+            self._log_info('Translation workflow: {mode}'.format(mode=workflow_mode))
+            self._log_info('Output directory: {dir}'.format(dir=self.output_folder))
             if workflow_tip:
                 self._log_info(workflow_tip)
-            self._log_info('🚀 Starting translation...')
+            self._log_info('Starting translation...')
             emit_eta_progress(0, total_images, "处理中")
             if total_images > 0:
                 progress_context["processing_started_at"] = time.perf_counter()
@@ -3072,7 +3073,7 @@ class TranslationWorker(QObject):
                     })
                     if self._get_context_value(ctx, 'skip_reason') == 'retry_exhausted':
                         retry_skipped_count += 1
-                        self._log_info(f"⏭️ {file_name}: {skip_message}")
+                        self._log_info(f"Skipped {file_name}: {skip_message}")
                     continue
 
                 error_message = self._extract_context_error_message(ctx)
@@ -3081,7 +3082,7 @@ class TranslationWorker(QObject):
                     results.append({'success': False, 'original_path': image_name, 'error': error_message})
                     failed_count += 1
                     failed_items.append({'file_name': file_name, 'summary': error_summary})
-                    self._log_warning(f"\n⚠️ Translation failed for image {file_name}: {error_summary}")
+                    self._log_warning(f"\nTranslation failed for image {file_name}: {error_summary}")
                     self._log_error(error_message)
                 elif self._get_context_value(ctx, 'success') or self._get_context_value(ctx, 'result'):
                     result = {'success': True, 'original_path': image_name}
@@ -3107,7 +3108,7 @@ class TranslationWorker(QObject):
             if retry_skipped_count:
                 summary += f", {retry_skipped_count} skipped after retries exhausted"
             self._log_info(summary + ".")
-            self._log_info('💾 Files saved to: {dir}'.format(dir=self.output_folder))
+            self._log_info('Files saved to: {dir}'.format(dir=self.output_folder))
 
             self.finished.emit(results)
 

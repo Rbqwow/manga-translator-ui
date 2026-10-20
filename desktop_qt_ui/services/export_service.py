@@ -1039,7 +1039,7 @@ class ExportService:
                             script_only,
                         )
                         self.logger.info(
-                            f"✅ [PSD] Exported editable PSD: {os.path.basename(psd_path)}"
+                            f"[PSD] Exported editable PSD: {os.path.basename(psd_path)}"
                         )
 
                         if progress_callback:
