@@ -482,58 +482,6 @@ class ConfigService(QObject):
             self.current_config = AppSettings()
             return False
 
-    def _build_config_payload(self, save_path: str) -> Dict[str, Any]:
-        config_dict = self.current_config.model_dump()
-        is_default_config = save_path == self.default_config_path
-        if is_default_config:
-            config_dict.setdefault("detector", {})["min_box_area_ratio"] = 0
-
-        if is_default_config and not getattr(sys, "frozen", False):
-            app = config_dict.setdefault("app", {})
-            app.update(
-                {
-                    "last_open_dir": ".",
-                    "last_output_path": "",
-                    "favorite_folders": None,
-                    "folder_dialog_sort": "name_ascending",
-                    "theme": "light",
-                    "ui_language": "auto",
-                    "current_preset": "默认",
-                    "editor_snap_enabled": False,
-                    "editor_center_scale_enabled": False,
-                    "editor_rich_text_popup_enabled": True,
-                    "editor_rich_text_popup_pinned": False,
-                    "editor_auto_save_on_switch": True,
-                    "editor_auto_export_on_switch": True,
-                    "editor_suppress_unsaved_warning": False,
-                    "editor_auto_rich_text_rules": True,
-                    "editor_delete_and_recover": False,
-                    "saved_colors": None,
-                    "saved_style_presets": None,
-                    "saved_rich_text_presets": None,
-                }
-            )
-            config_dict.setdefault("cli", {})["verbose"] = False
-            render = config_dict.setdefault("render", {})
-            render.update(
-                {
-                    "font_family": "Microsoft YaHei UI",
-                    "disable_auto_wrap": False,
-                    "center_text_in_bubble": False,
-                    "optimize_line_breaks": False,
-                    "semantic_linebreak": False,
-                    "remove_linebreak_punctuation": False,
-                    "check_br_and_retry": False,
-                    "strict_smart_scaling": False,
-                    "balloon_fill_mask_layout": False,
-                }
-            )
-            config_dict.setdefault("translator", {})["high_quality_prompt_path"] = (
-                "dict/prompt_example.yaml"
-            )
-            config_dict.setdefault("ocr", {})["use_hybrid_ocr"] = False
-        return config_dict
-
     @staticmethod
     def _atomic_write_text(path: str, content: str) -> None:
         target = os.path.abspath(path)
@@ -602,6 +550,14 @@ class ConfigService(QObject):
         errors: list[str] = []
         for save_path, payload in config_writes.items():
             try:
+                # Compare in the writer thread so no-op saves retain formatting
+                # and mtime without adding disk I/O to the GUI thread.
+                try:
+                    with open(save_path, "r", encoding="utf-8") as existing:
+                        if json.load(existing) == payload:
+                            continue
+                except (OSError, ValueError):
+                    pass
                 content = json.dumps(payload, indent=2, ensure_ascii=False) + "\n"
                 cls._atomic_write_text(save_path, content)
             except Exception as exc:
@@ -687,21 +643,21 @@ class ConfigService(QObject):
         return True
 
     def request_save(self) -> bool:
-        """Queue the current default config snapshots for a coalesced write."""
+        """Queue the current user config snapshot for a coalesced write."""
         return self.save_config_file()
 
     def save_config_file(self, config_path: Optional[str] = None) -> bool:
-        """Queue a coalesced save; explicit export paths retain synchronous status."""
+        """Autosave only user settings; explicit exports retain synchronous status."""
         try:
             if config_path:
                 save_paths = [config_path]
-            elif getattr(sys, "frozen", False):
-                save_paths = [self.user_config_path]
             else:
-                save_paths = [self.user_config_path, self.default_config_path]
+                # config-example.json is an input template, never an autosave
+                # destination, including when running directly from source.
+                save_paths = [self.user_config_path]
 
             payloads = {
-                os.path.abspath(path): self._build_config_payload(path)
+                os.path.abspath(path): self.current_config.model_dump()
                 for path in save_paths
                 if path
             }
