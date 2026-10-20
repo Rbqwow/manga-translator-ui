@@ -301,14 +301,8 @@ def temp_env_vars(env_vars: dict):
                 os.environ[key] = str(value)
                 logger.debug(f"[TempEnv] Set {key}=***")
         
-        # 清除翻译器缓存，强制重新创建（这样才能读取新的环境变量）
-        try:
-            from manga_translator.translators import translator_cache
-            translator_cache.clear()
-            logger.debug("[TempEnv] Cleared translator cache")
-        except Exception as e:
-            logger.warning(f"[TempEnv] Failed to clear translator cache: {e}")
-        
+        # API 翻译器每次请求都会新建实例，天然读取当前环境变量；缓存里只剩
+        # 无状态的 none/original，因此不再需要清缓存（旧代码清的是空缓存）。
         yield
     finally:
         # 恢复原始值
@@ -319,13 +313,6 @@ def temp_env_vars(env_vars: dict):
                 os.environ[key] = original_value
         
         logger.debug("[TempEnv] Restored original env vars")
-        
-        # 再次清除缓存，确保下次使用服务器的
-        try:
-            from manga_translator.translators import translator_cache
-            translator_cache.clear()
-        except Exception:
-            pass
 
 
 def init_server_config_file():
