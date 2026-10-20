@@ -61,9 +61,9 @@ DEFAULT_ADMIN_SETTINGS = {
         # 'cli.attempts',  # 不再隐藏，让用户可以设置重试次数
         'cli.ignore_errors',
         'cli.batch_size',
-        'cli.batch_concurrent',
-        'cli.translation_concurrency',
         'cli.use_gpu',
+        # cli.batch_concurrent / cli.translation_concurrency 对 Web 可见：
+        # 每个服务端任务现在有独立翻译器实例，流水线并发按请求生效。
         'cli.verbose',
         'cli.psd_script_only',  # Web UI隐藏PSD脚本模式参数
         'cli.generate_and_export',
@@ -224,12 +224,16 @@ def load_default_config_dict() -> dict:
 
 
 def load_default_config() -> Config:
-    """加载默认配置文件，返回Config对象"""
+    """加载默认配置文件，返回Config对象。
+
+    服务端的全局默认（并发、上下文页数）就来自这里：``config/config.json`` 的
+    ``cli`` 段，缺省时用 ``CliConfig`` 的默认值（并发开关开启、翻译并发 3、
+    上下文 3）。请求里显式携带的值会覆盖它。
+    """
     config_dict = load_default_config_dict()
     if config_dict:
         try:
-            config = Config.model_validate(config_dict)
-            return config
+            return Config.model_validate(config_dict)
         except Exception as e:
             print(f"[WARNING] Failed to parse config: {e}")
             return Config()

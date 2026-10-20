@@ -124,6 +124,8 @@ sequenceDiagram
 
 `TranslationResponse` JSON 顶层字段：`regions`（每个文本区域的排版与翻译字段）、`original_width`、`original_height`，以及可选 `upscale_ratio`、`upscaler`、`colorizer`、`mask_raw`（base64 PNG，保存的是优化后的蒙版）和 `mask_is_refined`。
 
+跳过状态（`skipped`、`skip_reason`、`skip_message`）只在 JSON 端点返回。字节端点保持既有载荷布局，被跳过的页面与"无文字页面"编码完全相同；服务端改为在流式路径上记录每次跳过，而不扩展二进制协议。需要区分二者时应改用 JSON 端点。
+
 注意：`/with-form/image/stream/web` 的端点注释声称启用“占位符优化”以加快响应，但当前源码中 `_web_frontend_optimized` 只被写入配置、没有任何消费者读取，`use_placeholder` 也只在旧版 `mode/share.py` 中出现；该端点在当前 Web 路径下应返回完整 PNG。此项需在实际环境中确认。
 
 ## 取消与异常结束 {#cancellation}
@@ -197,7 +199,7 @@ Web 前端 `static/script.js` 的 `processStream()` 是参考实现：
 | --- | --- | --- |
 | 流帧编码 | `manga_translator/server/request_extraction.py` | `while_streaming()`、`pack_message()`、进度/错误帧与 stage 列表 |
 | 流端点 | `manga_translator/server/routes/translation.py` | 14 个流端点、multipart/JSON 请求、`transform_to_*` 与工作流 |
-| 结果载荷 | `manga_translator/server/server_utils.py`、`to_json.py` | PNG / JSON / 二进制转换与 `TranslationResponse` 字段 |
+| 结果载荷 | `manga_translator/server/core/response_utils.py`、`to_json.py` | PNG / JSON / 二进制转换与 `TranslationResponse` 字段 |
 | 取消 | `manga_translator/server/core/task_manager.py`、`routes/admin.py` | `is_task_cancelled`、`cancel_task`、`/admin/tasks/{task_id}/cancel` |
 | 批量非帧流 | `manga_translator/server/routes/translation.py` | `/batch/images` ZIP、`X-Content-Type: application/zip`、`499` |
 | 客户端解析 | `manga_translator/server/static/script.js` | `processStream()` 分帧、错误中断、`task_id` 日志拉取 |

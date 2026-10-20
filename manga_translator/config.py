@@ -163,13 +163,13 @@ class RenderConfig(BaseModel):
     disable_auto_wrap: bool = False
     font_size_offset: int = 0
     """Adjust the base font size once after automatic layout, before the scale ratio."""
-    font_size_minimum: int = -1
+    font_size_minimum: int = 0
     """Minimum base font size after layout. Non-positive values disable this limit."""
     max_font_size: int = 0
     """Maximum base font size after layout. 0 means no limit. Local rich-text sizes take precedence."""
     font_scale_ratio: float = 1.0
     """Scale the base font size once after layout and offset, before min/max limits."""
-    center_text_in_bubble: bool = False
+    center_text_in_bubble: bool = True
     """Center the text block vertically in the bubble"""
     optimize_line_breaks: bool = False
     """Automatically optimize line breaks by testing all combinations to find the best font size"""
@@ -203,7 +203,7 @@ class RenderConfig(BaseModel):
     """Override the automatic base font size before offset, ratio, and min/max limits."""
     rtl: bool = True
     """Right-to-left reading order for panel and text_region sorting,"""  
-    layout_mode: str = 'smart_scaling'
+    layout_mode: str = 'balloon_fill'
     """The layout mode to use for rendering. Options: 'smart_scaling', 'strict', 'balloon_fill'"""
     balloon_fill_mask_layout: bool = False
     """Lay out balloon-fill text against the bubble mask while preserving explicit line breaks."""
@@ -252,7 +252,7 @@ class RenderConfig(BaseModel):
         return self._font_color_bg
 
 class UpscaleConfig(BaseModel):
-    upscaler: Upscaler = Upscaler.esrgan
+    upscaler: Upscaler = Upscaler.mangajanai
     """Upscaler to use. --upscale-ratio has to be set for it to take effect"""
     revert_upscaling: bool = False
     """Downscales the previously upscaled image after translation back to original size (Use with --upscale-ratio)."""
@@ -260,13 +260,13 @@ class UpscaleConfig(BaseModel):
     """Image upscale ratio applied before detection. Can be int (2,3,4) or string for mangajanai (x2, x4, DAT2 x4)."""
     realcugan_model: Optional[str] = None
     """Real-CUGAN model to use when upscaler is set to realcugan"""
-    tile_size: Optional[int] = None
+    tile_size: Optional[int] = 400
     """Tile size for Real-CUGAN upscaling (default: 400, 0 = process full image without tiling)"""
 
 class TranslatorConfig(BaseModel):
-    translator: Translator = Translator.openai_hq
+    translator: Translator = Translator.openai
     """Language translator to use"""
-    target_lang: str = 'ENG' #todo: validate VALID_LANGUAGES #todo: convert to enum
+    target_lang: str = 'CHS' #todo: validate VALID_LANGUAGES #todo: convert to enum
     """Destination language"""
     keep_lang: str = 'none'
     """After text merging, keep only regions detected as this source language for later processing. Filtered regions remain unchanged. Use 'none' to disable."""
@@ -276,11 +276,11 @@ class TranslatorConfig(BaseModel):
     """Dont skip text that is seemingly already in the target language."""
     skip_lang: Optional[str] = None
     """Skip translation if source image is one of the provide languages, use comma to separate multiple languages. Example: JPN,ENG"""
-    high_quality_prompt_path: Optional[str] = None
+    high_quality_prompt_path: Optional[str] = 'dict/prompt_example.yaml'
     """Path to a JSON file containing custom prompts for high-quality translation."""
     extract_glossary: bool = False
     """Automatically extract new terms to glossary (requires high_quality_prompt_path)"""
-    remove_trailing_period: bool = False
+    remove_trailing_period: bool = True
     """Remove a sentence-final period from the translation when the source text has no terminal punctuation."""
     translator_chain: Optional[str] = None
     """Output of one translator goes in another. Example: --translator-chain "openai:JPN;gemini:ENG"."""    
@@ -348,7 +348,7 @@ class DetectorConfig(BaseModel):
     """Threshold for text detection"""
     import_yolo_labels: bool = False
     """Import YOLO labels from manga_translator_work/yolo_labels and use them in detection workflows"""
-    use_yolo_obb: bool = False
+    use_yolo_obb: bool = True
     """Enable YOLO OBB auxiliary detector for hybrid detection"""
     use_sfx_filter: bool = False
     """Filter main-detector boxes that are neither wrapped by YOLO 'other' boxes nor overlapping YOLO text boxes"""
@@ -358,11 +358,11 @@ class DetectorConfig(BaseModel):
     """Confidence threshold for YOLO OBB detector"""
     yolo_obb_overlap_threshold: float = 0.1
     """Overlap ratio threshold for removing YOLO boxes (0.0-1.0). YOLO boxes with overlap >= threshold will be removed if they don't meet replacement criteria. Set to 1.0 to keep all overlapping boxes."""
-    box_threshold: float = 0.7
+    box_threshold: float = 0.5
     """Threshold for bbox generation"""
-    unclip_ratio: float = 2.3
+    unclip_ratio: float = 2.5
     """How much to extend text skeleton to form bounding box"""
-    min_box_area_ratio: float = 0.0009
+    min_box_area_ratio: float = 0
     """Minimum detection box area ratio relative to total image pixels (default 0.0009 = 0.09%)"""
 
 class InpainterConfig(BaseModel):
@@ -370,7 +370,7 @@ class InpainterConfig(BaseModel):
     """Inpainting model to use"""
     inpainting_size: int = 2048
     """Size of image used for inpainting (too large will result in OOM)"""
-    inpainting_precision: InpaintPrecision = InpaintPrecision.bf16
+    inpainting_precision: InpaintPrecision = InpaintPrecision.fp32
     """Inpainting precision for lama, use bf16 while you can."""
     force_use_torch_inpainting: bool = False
     """Force use PyTorch for inpainting instead of ONNX (useful if ONNX has memory issues)"""
@@ -380,7 +380,7 @@ class InpainterConfig(BaseModel):
     """Inpaint each isolated refined-mask component in a 2x crop instead of feeding the whole page to the model"""
 
 class ColorizerConfig(BaseModel):
-    colorization_size: int = 576
+    colorization_size: int = 2048
     """Size of image used for colorization. Set to -1 to use full image size"""
     denoise_sigma: int = 30
     """Used by colorizer and affects color strength, range from 0 to 255 (default 30). -1 turns it off."""
@@ -391,11 +391,11 @@ class ColorizerConfig(BaseModel):
 
 class CliConfig(BaseModel):
     """CLI-specific configuration options"""
-    attempts: int = -1
+    attempts: int = 5
     """Number of retry attempts for translation. -1 means unlimited retries"""
-    skip_failed_after_retries: bool = False
+    skip_failed_after_retries: bool = True
     """Skip pages after request retries/failover are exhausted."""
-    max_failure_skips: int = Field(default=3, ge=0)
+    max_failure_skips: int = Field(default=5, ge=0)
     """Stop when this many pages have been skipped due to errors; 0 means unlimited."""
     verbose: bool = False
     """Enable verbose logging"""
@@ -405,27 +405,27 @@ class CliConfig(BaseModel):
     """Disable ONNX Runtime GPU acceleration and force CPUExecutionProvider."""
     context_size: int = 3
     """Context size for translation"""
-    batch_size: int = 1
+    batch_size: int = 3
     """Batch size for processing"""
-    batch_concurrent: bool = False
+    batch_concurrent: bool = True
     """Enable concurrent pipeline (Detection, OCR, Inpainting, Translation in parallel)"""
     translation_concurrency: int = Field(default=3, ge=1, le=32)
     """Maximum translation batches in flight when batch_concurrent is enabled."""
-    format: Optional[str] = None
+    format: Optional[str] = 'webp'
     """Output format"""
     save_quality: int = 100
     """Save quality for output images"""
-    save_lossless: bool = False
+    save_lossless: bool = True
     """Save images with lossless compression for supported formats (WebP, AVIF, HEIF)"""
-    compression_effort: int = Field(default=70, ge=0, le=100)
+    compression_effort: int = Field(default=100, ge=0, le=100)
     """Compression effort for lossless formats (0-100, higher means smaller file but slower)"""
     overwrite: bool = False
     """Overwrite existing files"""
-    skip_no_text: bool = False
+    skip_no_text: bool = True
     """Skip images with no text"""
-    save_text: bool = False
+    save_text: bool = True
     """Save extracted text"""
-    export_from_local_json: bool = False
+    export_from_local_json: bool = True
     """Export original/translated sidecars from existing local project JSON without processing images."""
     ignore_errors: bool = False
     """Ignore errors and continue processing"""
@@ -443,9 +443,9 @@ class CliConfig(BaseModel):
 class OcrConfig(BaseModel):
     ocr: Ocr = Ocr.ocr48px
     """Optical character recognition (OCR) model to use"""
-    use_hybrid_ocr: bool = False
+    use_hybrid_ocr: bool = True
     """Enable hybrid OCR mode, using a secondary OCR engine if the primary one fails."""
-    secondary_ocr: Ocr = Ocr.ocr48px
+    secondary_ocr: Ocr = Ocr.mocr
     """Secondary OCR to use in hybrid mode."""
     min_text_length: int = 0
     """Minimum text length of a text region"""
@@ -457,9 +457,9 @@ class OcrConfig(BaseModel):
     """Minimum overlap ratio (0-1) between text bbox and model-detected bubble boxes. Lower values are more permissive."""
     use_model_bubble_repair_intersection: bool = False
     """After mask refinement, keep only model bubble-mask connected components that intersect the refined mask."""
-    limit_mask_dilation_to_bubble_mask: bool = False
+    limit_mask_dilation_to_bubble_mask: bool = True
     """Clip refined-mask connected components by model bubble mask: intersecting components keep only intersection; non-intersecting components are preserved."""
-    prob: float | None = None
+    prob: float | None = 0.1
     """Minimum probability of a text region to be considered valid. If None, uses the model default."""
     merge_gamma: float = 0.8
     """Textline merge distance tolerance, higher is more tolerant."""
@@ -472,7 +472,7 @@ class OcrConfig(BaseModel):
     """Language hint for vision-language OCR models that support it."""
     ocr_vl_custom_prompt: Optional[str] = None
     """Custom prompt for vision-language OCR models that support it."""
-    ai_ocr_concurrency: int = 1
+    ai_ocr_concurrency: int = 10
     """Maximum concurrent API requests for OpenAI OCR and Gemini OCR."""
     ai_ocr_custom_prompt: Optional[str] = None
     """Custom prompt for API OCR backends such as OpenAI OCR and Gemini OCR."""
@@ -500,7 +500,7 @@ class Config(BaseModel):
     """Don't use panel detection for sorting, use a simpler fallback logic instead"""
     kernel_size: int = 3
     """Set the convolution kernel size of the text erasure area to completely clean up text residues"""
-    mask_dilation_offset: int = 20
+    mask_dilation_offset: int = 50
     """By how much to extend the text mask to remove left-over text pixels of the original image."""
     use_custom_api_params: bool = False
     """Use custom API parameters from config/custom_api_params.json for supported AI backends."""

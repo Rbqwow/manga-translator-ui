@@ -75,6 +75,40 @@ Older versions grouped the interface into broad settings tabs. In the current de
   - After adding a new prompt file, you can see it immediately without restarting
   - Current UI note: in the current desktop UI, prompt files are mainly managed through `Prompt Management`, then applied with `Apply Selected Prompt`
 
+- **`Skip Languages` (`skip_lang`)**: skip translation for text detected as one of these source languages; separate several with commas.
+  - Current UI location: `Settings` -> `Translation` -> `Skip Languages`
+  - Default: `null` (skip nothing)
+  - Example: `JPN,ENG`
+  - Runs after text-line merge: matched regions keep their original text and are neither translated nor erased
+  - Difference from `keep_lang`: `keep_lang` keeps only the listed languages, while `skip_lang` skips the listed languages; both act on the same filtering stage
+
+- **`Translator Chain` (`translator_chain`)**: chain several translators, feeding each translation into the next translator.
+  - Current UI location: `Settings` -> `Translation` -> `Translator Chain`
+  - Default: `null`
+  - Format: `translator:target_lang;translator:target_lang`, for example `openai:JPN;gemini:ENG`
+  - Typical use: one model reads the source language, a second model polishes the target language
+
+- **`Selective Translation` (`selective_translation`)**: route only the listed language segments to a specific translator.
+  - Current UI location: `Settings` -> `Translation` -> `Selective Translation`
+  - Default: `null`
+  - Uses the same format as `translator_chain`
+  - Text that matches no rule keeps using the main translator
+
+- **`Enable Post-Translation Check` (`enable_post_translation_check`)**: check repetition and target-language ratio after translating, retrying when the check fails.
+  - Current UI location: `Settings` -> `Translation` -> `Enable Post-Translation Check`
+  - Default: `false`
+  - On failure it retries up to `post_check_max_retry_attempts`, then keeps the original translation and logs the reason
+
+- **`Max Retry Attempts` (`post_check_max_retry_attempts`)**: retry budget for the post-translation check.
+  - Default: `3`
+
+- **`Repetition Detection Threshold` (`post_check_repetition_threshold`)**: threshold for treating output as repetitive degeneration.
+  - Default: `20`
+
+- **`Target Language Ratio Threshold` (`post_check_target_lang_threshold`)**: minimum share of text that must read as the target language.
+  - Default: `0.5`
+  - Below this ratio the output is treated as untranslated and retried
+
 - **`Auto Extract Glossary` (`extract_glossary`)**: automatically extract new terms from translation results.
   - Current UI location: `Settings` -> `Translation` -> `Auto Extract Glossary`
   - Applies to: `OpenAI`, `Google Gemini`, `Vertex`, `OpenAI High Quality`, `Gemini High Quality`, and `Vertex High Quality`
@@ -180,7 +214,20 @@ Older versions grouped the interface into broad settings tabs. In the current de
 
 - **`Retry Attempts` (`attempts`)**: retry count for errors.
   - Current UI location: `Settings` -> `General` -> `Retry Attempts`
+  - Default: `5`, meaning five retries in addition to the first request
   - `-1` means unlimited retries
+
+- **`Skip Page After Retries` (`skip_failed_after_retries`)**: skip a page once its retries are exhausted and continue with the remaining pages.
+  - Current UI location: `Settings` -> `General` -> `Skip Page After Retries`
+  - Default: `true`
+  - Only retryable failures (timeouts, dropped connections, 429/5xx) are skipped. Configuration errors such as an invalid API key, an unknown model name, or a deactivated account abort the task with an error instead of being reported as exhausted retries.
+  - Skipped pages are listed in the task summary (desktop) and in the `skip_reason` field (server), so they are never confused with images that contain no text.
+
+- **`Max Failure Skips` (`max_failure_skips`)**: task-wide cap on skipped pages.
+  - Current UI location: `Settings` -> `General` -> `Max Failure Skips`
+  - Default: `5`
+  - When the cap is reached the task stops and reports the last page's error, so an entire volume cannot be skipped silently
+  - `0` means no cap
 
 - **`Ignore Errors` (`ignore_errors`)**: ignore errors and continue processing.
   - Current UI location: `Settings` -> `General` -> `Ignore Errors`
@@ -225,21 +272,41 @@ Older versions grouped the interface into broad settings tabs. In the current de
 - **`Image Save Quality` (`save_quality`)**: JPEG/JFIF, WebP, AVIF, and HEIC/HEIF save quality from `0` to `100`.
   - Current UI location: `Settings` -> `General` -> `Image Save Quality`
 
-- **`Lossless Image Save` (`save_lossless`)**: enable lossless compression for WebP, AVIF, and HEIC/HEIF (default false), ignoring save quality. AVIF uses the AOM encoder bundled with pylibheif, full-range 4:4:4, reversible RGB storage, and lossless color/alpha encoding to preserve exact pixels and the source ICC profile. Lossless AVIF supports the application's 8-bit output images; high-precision or floating-point images raise an explicit error.
+- **`Lossless Image Save` (`save_lossless`)**: enable lossless compression for WebP, AVIF, and HEIC/HEIF (default true), ignoring save quality. AVIF uses the AOM encoder bundled with pylibheif, full-range 4:4:4, reversible RGB storage, and lossless color/alpha encoding to preserve exact pixels and the source ICC profile. Lossless AVIF writes the application's 8-bit output images: 16-bit or floating-point input is quantized to 8-bit first, matching how JPEG, BMP, HEIC, and WebP already behave, instead of aborting the batch.
   - Current UI location: `Settings` -> `General` -> `Lossless Image Save`
 
-- **`Compression Effort` (`compression_effort`)**: compression effort for PNG, lossless WebP, lossless AVIF, and lossless HEIC/HEIF from `0` to `100` (default `70`). AVIF maps this value to AOM encoding speed (9 down to 0); HEIC/HEIF uses x265 encoding presets. Empty or invalid input restores `70`; `0` selects the fastest encoding.
+- **`Compression Effort` (`compression_effort`)**: compression effort for PNG, lossless WebP, lossless AVIF, and lossless HEIC/HEIF from `0` to `100` (default `100`). AVIF maps this value to AOM encoding speed (9 down to 0); HEIC/HEIF uses x265 encoding presets. Empty or invalid input restores `100`; `0` selects the fastest encoding, `100` the strongest compression.
   - Current UI location: `Settings` -> `General` -> `Compression Effort`
 
 - **`Batch Size` (`batch_size`)**: batch processing size.
   - Current UI location: `Settings` -> `General` -> `Batch Size`
-  - Default: `1`
+  - Default: `3`
   - For high-quality translators (`OpenAI High Quality` / `Gemini High Quality` / `Vertex High Quality`), this controls how many images are sent at once
   - Larger values make translation faster but consume more tokens
   - Recommended range: `1-10`
 
-- **`Concurrent Batch Processing` (`batch_concurrent`)**: enable batch concurrent processing.
+- **`Concurrent Batch Processing` (`batch_concurrent`)**: enable the concurrent pipeline.
   - Current UI location: `Settings` -> `General` -> `Concurrent Batch Processing`
+  - Default: `true`
+  - Runs detection, translation, inpainting, and rendering on separate threads, with several translation batches in flight
+  - High-quality translators take part in the same pipeline: the batch layer assembles the images and text regions that HQ needs and hands them to the HQ request path, so the two modes are not mutually exclusive
+  - It is disabled automatically for import/export, text-only JSON translation, original-text export, colorize/upscale/inpaint-only, and replace-translation workflows; the log names the reason
+
+- **`Translation Concurrency` (`translation_concurrency`)**: number of translation batches in flight in the concurrent pipeline.
+  - Current UI location: `Settings` -> `General` -> `Translation Concurrency`
+  - Default: `3`, range `1-32`
+  - It only bounds how many batches run at once; it does not enable concurrency on its own (`batch_concurrent` must also be on)
+  - Higher values raise both API rate-limit pressure and memory use
+
+- **`Use Custom API Params` (`use_custom_api_params`)**: apply the request overrides in `config/custom_api_params.json`.
+  - Current UI location: `Settings` -> `General` -> `Use Custom API Params`
+  - Default: `false`
+  - The file must exist and contain valid presets; a missing or malformed file leaves the switch without effect
+
+- **`Force Simple Sort` (`force_simple_sort`)**: ignore panel detection and order text regions top-to-bottom, right-to-left.
+  - Current UI location: `Settings` -> `General` -> `Force Simple Sort`
+  - Default: `false`
+  - Useful when panel detection scrambles the reading order
 
 - **`Export Editable PSD` (`export_editable_psd`)**: export layered PSD files.
   - Current UI location: `Settings` -> `General` -> `Export Editable PSD`
@@ -445,9 +512,25 @@ Older versions grouped the interface into broad settings tabs. In the current de
 
 - **`Layout Mode` (`layout_mode`)**: text layout mode.
   - Current UI location: `Settings` -> `Typesetting` -> `Layout Mode`
+  - Default: `balloon_fill`
   - `smart_scaling`: `Smart Scaling`
   - `strict`: `Strict Boundary`
   - `balloon_fill`: `Smart Bubble`, recommended
+
+- **`Force Strict Layout` (`force_strict_layout`)**: always lay out against the text box bounds, exactly like import-translation mode.
+  - Current UI location: `Settings` -> `Typesetting` -> `Force Strict Layout`
+  - Default: `false`
+  - Disables the automatic box growth performed by Smart Bubble and Smart Scaling
+
+- **`Center Text In Bubble` (`center_text_in_bubble`)**: center the text block vertically inside the bubble.
+  - Current UI location: `Settings` -> `Typesetting` -> `Center Text In Bubble`
+  - Default: `true`
+
+- **`AI Line Breaking` (`disable_auto_wrap`)**: disable local automatic wrapping so the AI decides where lines break.
+  - Current UI location: `Settings` -> `Typesetting` -> `AI Line Breaking`
+  - Default: `false`
+  - The stored field name is `disable_auto_wrap`; the label reads "AI Line Breaking", and both refer to the same value
+  - When enabled the renderer stops wrapping on its own and expects `[BR]` markers or AI-provided breaks
 
 - **`Alignment` (`alignment`)**: text alignment mode.
   - Current UI location: `Settings` -> `Typesetting` -> `Alignment`
@@ -775,7 +858,7 @@ Older versions grouped the interface into broad settings tabs. In the current de
 
 - **`Mask Dilation Offset` (`mask_dilation_offset`)**: mask dilation offset.
   - Current UI location: `Settings` -> `Inpainting` -> `Mask Dilation Offset`
-  - Default: `70`
+  - Default: `50`
   - Controls how far the text-erasure mask expands
 
 ### Filter List

@@ -31,15 +31,15 @@ lastUpdated: true
 
 #### 重试次数 {#cli-attempts}
 
-“重试次数”是整数输入框。设置翻译请求失败后的重试次数，`-1` 表示无限重试。它只作用于翻译/API 请求层，不是检测、OCR 或渲染的通用重试，也不等同于高质量重试。默认值：`3`。
+“重试次数”是整数输入框。设置翻译请求失败后的重试次数，`-1` 表示无限重试。它只作用于翻译/API 请求层，不是检测、OCR 或渲染的通用重试，也不等同于高质量重试。默认值：`5`（在首次请求之外再重试 5 次）。
 
 #### 重试耗尽后跳过 {#cli-skip-failed-after-retries}
 
-位于“设置 → 通用 → 重试次数”之后，默认关闭。开启后，请求先完成现有重试与 API 通道轮换，仍然失败才跳过对应图片并继续；不会额外重跑整个图片流程。普通翻译、高质量翻译、并发处理和使用 API 的 OCR、上色、渲染共用此策略。重试次数设为 `-1` 时仍会无限重试，不会因为开启此开关而提前跳过。
+位于“设置 → 通用 → 重试次数”之后，默认开启。开启后，请求先完成现有重试与 API 通道轮换，仍然失败才跳过对应图片并继续；不会额外重跑整个图片流程。普通翻译、高质量翻译、并发处理和使用 API 的 OCR、上色、渲染共用此策略。重试次数设为 `-1` 时仍会无限重试，不会因为开启此开关而提前跳过。
 
 #### 失败跳过上限 {#cli-max-failure-skips}
 
-仅在“重试耗尽后跳过”开启时生效。默认 `3`：整个任务因重试耗尽而累计跳过第 3 张图片时停止；`0` 表示不限制跳过数量。按图片累计，成功处理不会清零，失败批次中的每张受影响图片分别计数。已有输出、无文本等正常跳过不占用此额度。上限优先于“忽略错误”，用户取消始终立即停止。
+仅在“重试耗尽后跳过”开启时生效。默认 `5`：整个任务因重试耗尽而累计跳过第 5 张图片时停止；`0` 表示不限制跳过数量。按图片累计，成功处理不会清零，失败批次中的每张受影响图片分别计数。已有输出、无文本等正常跳过不占用此额度。上限优先于“忽略错误”，用户取消始终立即停止。
 
 结束日志和提示仅汇总因重试耗尽而跳过的数量、文件路径和原因，不列出因已有输出而跳过的文件；达到上限或提前失败时也会附上此前因重试耗尽跳过的文件。配置键为 `cli.skip_failed_after_retries` 和 `cli.max_failure_skips`。
 
@@ -79,7 +79,7 @@ flowchart LR
     end
 ```
 
-等待翻译的队列最多容纳 `batch_size × translation_concurrency` 张图片，队列满时检测阶段会等待，避免无限积压。高质量翻译器同样参与该流水线，二者并非互斥。默认值：`false`。
+等待翻译的队列最多容纳 `batch_size × translation_concurrency` 张图片，队列满时检测阶段会等待，避免无限积压。高质量翻译器同样参与该流水线，二者并非互斥。默认值：`true`。
 
 #### 翻译并发数 {#cli-translation-concurrency}
 
@@ -110,7 +110,7 @@ CLI 示例：`python -m manga_translator local -i ./manga_folder --concurrent --
 
 #### 跳过无文本图像 {#cli-skip-no-text}
 
-“跳过无文本图像”开关开启后，检测/OCR 判定没有可翻译文本的图片会被跳过；这是正常分支，不属于“忽略错误”。默认值：`false`。
+“跳过无文本图像”开关开启后，检测/OCR 判定没有可翻译文本的图片会被标记为跳过（`skip_reason=no_text`），仍然写出图片与空的 JSON/TXT，但不再进入翻译和渲染。它只改变统计口径与摘要，不会省掉检测与 OCR（否则无从判断是否无文本）；这是正常分支，不计入失败，也不占用 `max_failure_skips` 额度。默认值：`true`。
 
 #### 图片可编辑 {#cli-save-text}
 
@@ -119,6 +119,14 @@ CLI 示例：`python -m manga_translator local -i ./manga_folder --concurrent --
 #### 图像保存质量 {#cli-save-quality}
 
 “图像保存质量”是整数输入框，作用于图片、修复和编辑器保存；值越高通常文件越大，具体语义由编码器决定。默认值：`100`。
+
+#### 无损图像保存 {#cli-save-lossless}
+
+“无损图像保存”开关对 WebP、AVIF 和 HEIC/HEIF 启用无损编码，此时“图像保存质量”被忽略。AVIF 走 pylibheif 内置的 AOM 编码器，使用全范围 4:4:4 与可逆 RGB 存储，并保留源图 ICC。输出固定为 8 位；16 位或浮点输入会先量化到 8 位再编码（与 JPEG/BMP/HEIC/WebP 的既有行为一致），不会中断整批任务。默认值：`true`。
+
+#### 压缩努力程度 {#cli-compression-effort}
+
+“压缩努力程度”是 `0–100` 的整数输入框，作用于 PNG 和无损 WebP/AVIF/HEIC/HEIF。AVIF 将该值映射为 AOM 编码速度（9 到 0），HEIC/HEIF 映射为 x265 预设；`0` 最快、`100` 压缩率最高也最慢。清空或输入非法时恢复默认值 `100`。
 
 #### 输出到原图目录 {#cli-save-to-source-dir}
 
@@ -138,7 +146,19 @@ CLI 示例：`python -m manga_translator local -i ./manga_folder --concurrent --
 
 #### 翻译完成后卸载模型 {#app-unload-models-after-translation}
 
-“翻译完成后卸载模型”开关开启后，桌面端在任务完成后主动卸载模型，降低常驻内存，但会增加下次任务的加载时间。默认值：`false`。
+“翻译完成后卸载模型”开关开启后，桌面端在任务完成后主动卸载模型，降低常驻内存，但会增加下次任务的加载时间。默认值：`true`。
+
+该开关只在桌面端生效：CLI 与服务器没有对应的"任务结束后卸载"实现，服务端改由管理员在清理面板触发模型释放。
+
+#### Web 端的并发 {#web-concurrency}
+
+`cli.batch_size` 与 `cli.use_gpu` 属于服务器端控制项，被列入 `server/routes/config.py#SERVER_HIDDEN_CONFIG_KEYS`，不会出现在 Web 配置表单中；Web 的整体并发度由服务器设置 `max_concurrent_tasks` 决定。
+
+`cli.batch_concurrent`、`cli.translation_concurrency` 与 `cli.context_size` 已对 Web 可见，并且按请求生效：服务端为每个任务创建独立的 `MangaTranslator` 实例（模型权重与空闲计时仍是进程级共享），因此并发流水线、上下文和取消状态不会在请求之间互相污染。
+
+全局默认来自服务器配置文件 `config/config.json` 的 `cli` 段（缺失时用内置默认：并发开启、翻译并发 `3`、上下文 `3`），Web 表单也显示这组值；请求里显式携带的值会覆盖它。单任务的 `translation_concurrency` 会被 `max_concurrent_tasks` 封顶，总在途请求约等于 `max_concurrent_tasks × translation_concurrency`，显存或 API 速率紧张时可在表单里关闭或调小。
+
+仅超分、仅上色、仅修复、导入翻译渲染与两种导出端点现在真正按各自工作流执行（不再退化为普通翻译）；这些特殊工作流仍强制串行。
 
 ## 参数如何生效 {#runtime-behavior}
 

@@ -336,17 +336,16 @@ def _get_params_hash(params: dict) -> str:
 
 def get_global_translator(params: dict = None):
     """
-    获取全局翻译器实例，复用模型避免重复加载。
-    
-    模型复用原理：
-    1. MangaTranslator 内部会缓存已加载的模型（OCR、检测器、修复器等）
-    2. 通过复用同一个 MangaTranslator 实例，模型只需加载一次
-    3. 每次翻译时传入不同的 Config，翻译器会根据配置选择对应的模型
-    4. models_ttl 参数控制模型在内存中保留的时间
-    
+    获取进程级共享的翻译器实例。
+
+    注意：翻译请求已改为每个任务创建独立的 MangaTranslator（见
+    ``request_extraction.build_task_translator_params``），以便按请求开启并发
+    流水线并隔离上下文；模型权重本身在模块级缓存中共享，因此独立实例并不会
+    重复加载模型。此函数保留给管理员“释放内存”流程与兼容调用方使用。
+
     Args:
         params: 翻译器参数（use_gpu, verbose, models_ttl 等）
-    
+
     Returns:
         MangaTranslator 实例
     """

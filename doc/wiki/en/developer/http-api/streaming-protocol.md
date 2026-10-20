@@ -124,6 +124,8 @@ The status-0 payload depends on the transform function bound to the endpoint:
 
 Top-level `TranslationResponse` JSON fields: `regions` (rendering and translation fields per text region), `original_width`, `original_height`, plus optional `upscale_ratio`, `upscaler`, `colorizer`, `mask_raw` (base64 PNG of the refined mask) and `mask_is_refined`.
 
+Skip state (`skipped`, `skip_reason`, `skip_message`) is reported on the JSON endpoints only. The bytes payload keeps its documented layout, so a skipped page encodes exactly like a page with no text; the server logs every skip on the streaming path instead of extending the wire format. Clients that must tell the two apart should call the JSON endpoints.
+
 Note: the endpoint comment for `/with-form/image/stream/web` claims a "placeholder optimization" for faster responses, but in the current source `_web_frontend_optimized` is only written into the config and never read by any consumer, and `use_placeholder` appears only in the legacy `mode/share.py`. In the current Web path this endpoint should return the full PNG. This may vary by release.
 
 ## Cancellation and abnormal termination {#cancellation}
@@ -197,7 +199,7 @@ The `message` field of progress frames is hardcoded in `request_extraction.py` (
 | --- | --- | --- |
 | Frame encoding | `manga_translator/server/request_extraction.py` | `while_streaming()`, `pack_message()`, progress/error frames, and the stage list |
 | Stream endpoints | `manga_translator/server/routes/translation.py` | The 14 stream endpoints, multipart/JSON request bodies, `transform_to_*`, and workflows |
-| Result payloads | `manga_translator/server/server_utils.py`, `to_json.py` | PNG / JSON / binary transforms and the `TranslationResponse` fields |
+| Result payloads | `manga_translator/server/core/response_utils.py`, `to_json.py` | PNG / JSON / binary transforms and the `TranslationResponse` fields |
 | Cancellation | `manga_translator/server/core/task_manager.py`, `routes/admin.py` | `is_task_cancelled`, `cancel_task`, `/admin/tasks/{task_id}/cancel` |
 | Non-framed batch | `manga_translator/server/routes/translation.py` | `/batch/images` ZIP, `X-Content-Type: application/zip`, `499` |
 | Client parsing | `manga_translator/server/static/script.js` | `processStream()` frame splitting, error abort, and `task_id` log fetch |
