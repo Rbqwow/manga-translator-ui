@@ -1,7 +1,5 @@
 # import copy
 import re
-from concurrent.futures import ThreadPoolExecutor
-from concurrent.futures import TimeoutError as FuturesTimeoutError
 from functools import cached_property
 from typing import Any, List, Tuple
 
@@ -750,7 +748,8 @@ def sort_regions(
     regions: List[TextBlock],
     right_to_left: bool = True,
     img: np.ndarray = None,
-    force_simple_sort: bool = False
+    force_simple_sort: bool = False,
+    cancel_check=None,
 ) -> List[TextBlock]:
     
     if not regions:
@@ -765,19 +764,9 @@ def sort_regions(
         from ..utils import get_logger
         logger = get_logger('textblock')
         try:
-            timeout_sec = 60.0
-            executor = ThreadPoolExecutor(max_workers=1)
-            try:
-                future = executor.submit(get_panels_from_array, img, right_to_left, logger)
-                try:
-                    panels_raw = future.result(timeout=timeout_sec)
-                except FuturesTimeoutError:
-                    future.cancel()
-                    logger.warning(f'Panel detection timeout ({timeout_sec:.0f}s), using simple text sorting')
-                    return _simple_sort(regions, right_to_left)
-            finally:
-                # Do not block current pipeline thread when panel worker is stuck.
-                executor.shutdown(wait=False, cancel_futures=True)
+            panels_raw = get_panels_from_array(
+                img, right_to_left, logger, cancel_check=cancel_check,
+            )
             # Convert to [x1, y1, x2, y2]
             panels = [(x, y, x + w, y + h) for x, y, w, h in panels_raw]
             # Use the customised sorter that keeps vertically stacked panels together.
