@@ -221,7 +221,11 @@ async def startup_event():
     from manga_translator.server.core.cleanup_service import get_cleanup_service
     cleanup_service = get_cleanup_service()
     cleanup_service.start()
-    
+
+    # One process-wide idle-model monitor for every launch path (idempotent).
+    from manga_translator.server.core import task_manager as _task_manager
+    _task_manager.start_model_monitor()
+
     logger.info("Services initialized successfully")
     add_log("Server startup complete; all services initialized", "INFO")
 
@@ -401,8 +405,9 @@ def run_server(args):
     
     print(f"[SERVER CONFIG] use_gpu={task_manager.server_config['use_gpu']}, verbose={task_manager.server_config['verbose']}, models_ttl={task_manager.server_config['models_ttl']}, retry_attempts={task_manager.server_config['retry_attempts']}, max_concurrent_tasks={task_manager.server_config['max_concurrent_tasks']}")
     
-    # 初始化并发控制
+    # 初始化并发控制与进程级模型空闲监控
     task_manager.init_semaphore()
+    task_manager.start_model_monitor()
     
     # web 模式不启动独立的翻译实例（与旧版本保持一致）
     args.start_instance = False

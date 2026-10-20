@@ -5,6 +5,7 @@ This module contains all /admin/* endpoints for the manga translator server.
 Updated to use the new session-based authentication system.
 """
 
+import asyncio
 import io
 import logging
 import os
@@ -124,6 +125,27 @@ async def cancel_task(
                 return {"success": True, "message": "取消请求已发送（协作式取消）"}
         else:
             raise HTTPException(404, detail="任务不存在或已完成")
+
+
+@router.post("/translator/reset")
+async def reset_translator_endpoint(session: Session = Depends(require_admin)):
+    """Release cached inference models without stopping the server.
+
+    Unloading runs model teardown and GPU synchronisation, so it is dispatched
+    to a worker thread; blocking the event loop here would stall every other
+    request, including the status polling the admin UI does while waiting.
+    """
+    # Imported lazily: task_manager pulls in the model stack, and this module is
+    # imported by the server bootstrap before that stack is needed.
+    from manga_translator.server.core.task_manager import reset_global_translator
+
+    result = await asyncio.to_thread(reset_global_translator)
+    add_log(
+        f"Administrator {session.username} released cached models: "
+        f"{result.get('unloaded', 0)} cache(s)",
+        "INFO",
+    )
+    return result
 
 
 # ============================================================================

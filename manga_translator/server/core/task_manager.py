@@ -14,6 +14,7 @@ from datetime import datetime, timezone
 from typing import Any, Callable, Optional
 
 from manga_translator.server.core.logging_manager import add_log
+from manga_translator.utils import model_cleanup
 
 logger = logging.getLogger('manga_translator.server')
 
@@ -65,6 +66,49 @@ def init_semaphore():
     translation_semaphore = asyncio.Semaphore(max_concurrent)
     
     logger.info(f"Translation thread pool initialized: maximum threads = {max_concurrent}")
+
+
+_model_monitor_thread: Optional[threading.Thread] = None
+_model_monitor_stop = threading.Event()
+
+
+def start_model_monitor():
+    """Start the single process-wide idle-model monitor.
+
+    Server tasks each own a short-lived MangaTranslator, so their per-instance
+    cleanup jobs cannot track idle time across requests. One daemon thread owns
+    that responsibility instead, reading the shared usage timestamps.
+    """
+    global _model_monitor_thread
+    with _translator_lock:
+        if _model_monitor_thread is not None and _model_monitor_thread.is_alive():
+            return
+
+        def _loop():
+            import asyncio
+
+            from manga_translator.manga_translator import (
+                MODEL_CLEANUP_MIN_INTERVAL_S,
+                unload_idle_models,
+            )
+
+            while not _model_monitor_stop.is_set():
+                try:
+                    ttl = float(server_config.get('models_ttl', 0) or 0)
+                except (TypeError, ValueError):
+                    ttl = 0.0
+                if ttl > 0:
+                    try:
+                        asyncio.run(unload_idle_models(ttl))
+                    except Exception as exc:
+                        logger.warning(f"Idle model cleanup failed: {exc}")
+                _model_monitor_stop.wait(MODEL_CLEANUP_MIN_INTERVAL_S)
+
+        _model_monitor_thread = threading.Thread(
+            target=_loop, name='model-ttl-monitor', daemon=True,
+        )
+        _model_monitor_thread.start()
+        logger.info("Idle-model monitor started")
 
 
 def get_semaphore() -> Optional[asyncio.Semaphore]:
@@ -280,7 +324,12 @@ def shutdown_executor():
 
 def _get_params_hash(params: dict) -> str:
     """计算参数哈希，用于判断是否需要重建翻译器"""
-    key_params = ['use_gpu', 'verbose', 'models_ttl']
+    # The skip policy is part of the translator's initial state, so a change
+    # must rebuild it rather than leave the old defaults in place.
+    key_params = [
+        'use_gpu', 'verbose', 'models_ttl',
+        'skip_failed_after_retries', 'max_failure_skips',
+    ]
     values = tuple(params.get(k) for k in key_params)
     return str(values)
 
@@ -315,6 +364,16 @@ def get_global_translator(params: dict = None):
         retry_attempts = server_config.get('retry_attempts')
         if retry_attempts is not None:
             params['attempts'] = retry_attempts
+        # Without these the shared server translator kept the code defaults
+        # regardless of the admin-configured policy.
+        if 'skip_failed_after_retries' in server_config:
+            params['skip_failed_after_retries'] = bool(
+                server_config.get('skip_failed_after_retries')
+            )
+        if 'max_failure_skips' in server_config:
+            params['max_failure_skips'] = max(
+                0, int(server_config.get('max_failure_skips') or 0)
+            )
     
     params_hash = _get_params_hash(params)
     
@@ -333,40 +392,66 @@ def get_global_translator(params: dict = None):
         return _global_translator
 
 
-def reset_global_translator():
+def _unload_model_caches() -> int:
+    """Unload every cached model and return how many were released.
+
+    The caches are module-level dictionaries shared with the desktop app, so
+    clearing them is what actually frees the weights; dropping the translator
+    instance alone does not.
     """
-    重置全局翻译器（用于管理员手动释放内存）
+    return model_cleanup.cleanup_model_caches_sync(True)
+
+
+def reset_global_translator():
+    """Release cached models and drop the shared translator instance.
+
+    Called by the admin "release memory" endpoint. `unload_models()` does not
+    exist on MangaTranslator, and the previous hasattr guard silently skipped
+    every unload, so only the reference was dropped while the model caches kept
+    the weights resident.
+
+    The caches are unloaded unconditionally: a settings change resets
+    `_global_translator` but not the caches, so skipping the unload whenever the
+    instance is already None would leave the largest allocations resident.
     """
     global _global_translator, _translator_params_hash
-    
+
     with _translator_lock:
-        if _global_translator is not None:
+        had_translator = _global_translator is not None
+        if had_translator:
             logger.info("Resetting the global translator...")
-            try:
-                if hasattr(_global_translator, 'unload_models'):
-                    _global_translator.unload_models()
-            except Exception as e:
-                logger.warning(f"Error unloading models: {e}")
-            
-            _global_translator = None
-            _translator_params_hash = None
-            
-            # 强制垃圾回收
-            import gc
-            gc.collect()
-            # 清理 GPU 显存
-            try:
-                import torch
-                if torch.cuda.is_available():
-                    torch.cuda.empty_cache()
-                    logger.info("GPU memory cleared")
-            except Exception:
-                pass
-            
-            logger.info("Global translator reset")
-            return {"success": True, "message": "翻译器已重置，模型已卸载"}
-        else:
-            return {"success": True, "message": "翻译器未初始化，无需重置"}
+
+        try:
+            unloaded = _unload_model_caches()
+            logger.info(f"Unloaded {unloaded} cached model(s)")
+        except Exception as e:
+            logger.warning(f"Error unloading models: {e}")
+            unloaded = 0
+
+        _global_translator = None
+        _translator_params_hash = None
+
+        # 强制垃圾回收
+        import gc
+        gc.collect()
+        # 清理 GPU 显存
+        try:
+            import torch
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+                logger.info("GPU memory cleared")
+        except Exception:
+            pass
+
+        if not had_translator and not unloaded:
+            return {"success": True, "unloaded": 0, "message": "翻译器未初始化，无需重置"}
+
+        logger.info("Global translator reset")
+        return {
+            "success": True,
+            "unloaded": unloaded,
+            "message": f"已卸载 {unloaded} 个模型缓存",
+        }
 
 
 def get_translator_status() -> dict:
