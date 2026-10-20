@@ -315,6 +315,32 @@ def test_cli_exposes_independent_batch_size_and_concurrency():
     assert parser.parse_args(['local', '-i', 'pages']).translation_concurrency is None
 
 
+def test_cli_failure_skip_switches_are_symmetric_and_default_to_none():
+    """`--force-simple-sort` used to be store_true, so it could only ever turn
+    the setting on; its siblings accept a matching `--no-` form."""
+    parser = create_parser()
+
+    defaults = parser.parse_args(['local', '-i', 'pages'])
+    assert defaults.skip_failed_after_retries is None
+    assert defaults.max_failure_skips is None
+    assert defaults.force_simple_sort is None
+
+    enabled = parser.parse_args([
+        'local', '-i', 'pages',
+        '--skip-failed-after-retries', '--max-failure-skips', '0', '--force-simple-sort',
+    ])
+    assert enabled.skip_failed_after_retries is True
+    assert enabled.max_failure_skips == 0
+    assert enabled.force_simple_sort is True
+
+    disabled = parser.parse_args([
+        'local', '-i', 'pages',
+        '--no-skip-failed-after-retries', '--no-force-simple-sort',
+    ])
+    assert disabled.skip_failed_after_retries is False
+    assert disabled.force_simple_sort is False
+
+
 def test_engine_uses_batch_snapshot_without_mutating_shared_history(monkeypatch):
     translator = MangaTranslator.__new__(MangaTranslator)
     shared_history = [[{'text': 'global', 'translation': 'Global history'}]]
