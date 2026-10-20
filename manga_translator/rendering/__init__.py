@@ -1642,7 +1642,12 @@ def _layout_regions_to_font_size(
             layout_candidate_font_size = int(max(target_font_size, layout_min_font_size))
             remove_linebreak_punctuation = bool(getattr(config.render, 'remove_linebreak_punctuation', False))
             region_layout_mode = mode
-            if mode == 'balloon_fill' and not lines_fully_enclosed:
+            if bool(getattr(config.render, 'force_strict_layout', False)):
+                # `force_strict_layout` was declared but never consumed. Honour
+                # it here, the single place the per-region layout mode is
+                # decided, so it behaves like the --load-text layout.
+                region_layout_mode = 'strict'
+            elif mode == 'balloon_fill' and not lines_fully_enclosed:
                 # Text outside a complete bubble uses the same line-breaking
                 # and box-fit font rules as an explicitly selected strict mode.
                 region_layout_mode = 'strict'
