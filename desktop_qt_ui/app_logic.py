@@ -1100,6 +1100,8 @@ class MainAppLogic(QObject):
             parent_obj = config_obj
             for key in keys[:-1]:
                 parent_obj = getattr(parent_obj, key)
+            if getattr(parent_obj, keys[-1]) == value:
+                return
             setattr(parent_obj, keys[-1], value)
             
             self.config_service.set_config(config_obj)
@@ -2224,10 +2226,9 @@ class MainAppLogic(QObject):
             if config.app.last_output_path:
                 self.output_path_updated.emit(config.app.last_output_path)
             
-            # Ensure the config path is stored in the state manager
-            default_config_path = self.config_service.get_default_config_path()
-            if os.path.exists(default_config_path):
-                self.state_manager.set_state(AppStateKey.CONFIG_PATH, default_config_path)
+            # Track the active configuration rather than its default template.
+            config_path = self.config_service.config_path or self.config_service.get_user_config_path()
+            self.state_manager.set_state(AppStateKey.CONFIG_PATH, config_path)
 
             self.state_manager.set_app_ready(True)
             self.state_manager.set_status_message("就绪")

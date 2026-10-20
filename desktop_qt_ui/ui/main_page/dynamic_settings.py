@@ -1,5 +1,6 @@
 import json
 import os
+import time
 
 from manga_translator.image_formats import (
     LOSSLESS_SWITCHABLE_PIL_FORMATS,
@@ -189,6 +190,16 @@ _FIXED_PROMPT_KEYS = frozenset({
     "colorizer.ai_colorizer_prompt_path",
     "render.ai_renderer_prompt_path",
 })
+
+# Client-side bounds for integer settings that the config models validate.
+# Without them an out-of-range value is accepted here and only fails later:
+# config_service silently falls back to the old value with a warning, and
+# ConcurrentPipeline.__init__ raises for a concurrency of 0.
+_INT_INPUT_BOUNDS = {
+    "cli.max_failure_skips": (0, 2147483647),
+    "cli.translation_concurrency": (1, 32),
+    "cli.batch_size": (1, 2147483647),
+}
 
 _SKIPPED_SETTING_KEYS = frozenset({
     "cli.load_text",
@@ -670,6 +681,13 @@ def set_parameters(self, config: dict):
     structure_signature = _settings_structure_signature(self, config)
 
     if (
+        getattr(self, "_settings_row_iterator", None) is not None
+        and getattr(self, "_settings_pending_signature", None) == config_signature
+        and getattr(self, "_settings_pending_structure_signature", None) == structure_signature
+    ):
+        return
+
+    if (
         config_signature is not None
         and getattr(self, "_settings_ui_ready", False)
         and getattr(self, "_settings_rendered_signature", None) == config_signature
@@ -699,26 +717,47 @@ def set_parameters(self, config: dict):
     # 避免二次 config_loaded 并发开出第二条构建链导致控件重复。
     self._settings_build_seq = getattr(self, "_settings_build_seq", 0) + 1
     build_seq = self._settings_build_seq
+    self._settings_row_iterator = None
+    if hasattr(self, "_settings_loading_bar"):
+        self._settings_loading_bar.show()
+        self._settings_loading_bar.start()
 
     # Clear existing widgets immediately（补回底部 stretch，保持 spacer 约定）
-    for panel in self.tab_frames.values():
-        _clear_layout_widgets(panel.layout(), restore_stretch=True)
-    _drop_cached_settings_widget_refs(self)
+    # The spinner is stopped on every failure path: an exception while clearing
+    # or scheduling used to leave it spinning forever with no retry possible.
+    try:
+        for panel in self.tab_frames.values():
+            _clear_layout_widgets(panel.layout(), restore_stretch=True)
+        _drop_cached_settings_widget_refs(self)
 
-    if getattr(self, "_settings_tabs_use_reclassify", False):
-        _populate_settings_by_reclassify_layout(self, config)
-        self._finalize_settings_ui(build_seq)
-        return
+        if getattr(self, "_settings_tabs_use_reclassify", False):
+            self._settings_row_iterator = _iter_reclassified_settings(self, config)
+            QTimer.singleShot(0, lambda: self._process_next_setting_chunk(build_seq))
+            return
 
-    # Store config and sections to process
-    self._config_to_process = config
-    self._sections_to_process = [
-        "translator", "cli", "detector", "inpainter",
-        "render", "upscale", "colorizer", "ocr", "app", "global"
-    ]
+        # Store config and sections to process
+        self._config_to_process = config
+        self._sections_to_process = [
+            "translator", "cli", "detector", "inpainter",
+            "render", "upscale", "colorizer", "ocr", "app", "global"
+        ]
+    except Exception:
+        _stop_settings_loading_bar(self)
+        raise
 
     # Schedule the first chunk of work
     QTimer.singleShot(0, lambda: self._process_next_setting_chunk(build_seq))
+
+
+def _stop_settings_loading_bar(widget) -> None:
+    """Stop the spinner if it exists; safe to call more than once."""
+    bar = getattr(widget, "_settings_loading_bar", None)
+    if bar is None:
+        return
+    try:
+        bar.stop()
+    except Exception:
+        pass
 
 
 def _resolve_config_value(config: dict, full_key: str):
@@ -773,7 +812,10 @@ def _create_widget_from_full_key(self, config: dict, full_key: str, parent_layou
 
 
 def _populate_settings_by_reclassify_layout(self, config: dict):
-    rendered_rows = 0
+    return sum(_iter_reclassified_settings(self, config))
+
+
+def _iter_reclassified_settings(self, config: dict):
     for tab in getattr(self, "settings_tab_layout", []) or []:
         tab_id = str(tab.get("id", "")).strip()
         panel = self.tab_frames.get(tab_id)
@@ -793,14 +835,13 @@ def _populate_settings_by_reclassify_layout(self, config: dict):
                 _add_settings_divider(self, panel_layout, title, is_sub=is_sub)
                 if not is_sub:
                     has_primary_divider = True
+                yield 0
                 continue
 
             full_key = str(item or "").strip()
             if not full_key:
                 continue
-            if _create_widget_from_full_key(self, config, full_key, panel_layout):
-                rendered_rows += 1
-    return rendered_rows
+            yield int(_create_widget_from_full_key(self, config, full_key, panel_layout))
 
 
 def _process_next_setting_chunk(self, build_seq: int):
@@ -809,6 +850,18 @@ def _process_next_setting_chunk(self, build_seq: int):
     build_seq 与当前构建代号不一致时说明本链已过期，直接终止。
     """
     if build_seq != getattr(self, "_settings_build_seq", None):
+        return
+    rows = getattr(self, "_settings_row_iterator", None)
+    if rows is not None:
+        deadline = time.perf_counter() + 0.008
+        while time.perf_counter() < deadline:
+            try:
+                next(rows)
+            except StopIteration:
+                self._settings_row_iterator = None
+                self._finalize_settings_ui(build_seq)
+                return
+        QTimer.singleShot(0, lambda: self._process_next_setting_chunk(build_seq))
         return
     if not self._sections_to_process:
         self._finalize_settings_ui(build_seq)
@@ -849,6 +902,20 @@ def _finalize_settings_ui(self, build_seq: int | None = None):
     """
     if build_seq is not None and build_seq != getattr(self, "_settings_build_seq", None):
         return
+    # Everything below builds dependent rows, any of which can raise. The
+    # spinner must be cleared on all of those paths, so it is stopped from a
+    # finally that starts before the first row is touched.
+    try:
+        _finalize_settings_body(self)
+    finally:
+        _stop_settings_loading_bar(self)
+        bar = getattr(self, "_settings_loading_bar", None)
+        if bar is not None:
+            bar.hide()
+
+
+def _finalize_settings_body(self):
+    """Build the dependent settings sections; caller owns spinner cleanup."""
     # 在 CLI 配置区域最上面添加"翻译完成后卸载模型"复选框
     cli_panel = self.tab_frames.get("Basic Settings")
     if cli_panel and not getattr(self, "_settings_tabs_use_reclassify", False):
@@ -931,6 +998,8 @@ def _finalize_settings_ui(self, build_seq: int | None = None):
     )
 
     
+    # The spinner is stopped by _finalize_settings_ui's wrapper, which also
+    # covers the rows built above this point.
     _refresh_env_api_groups(self, force=True)
     self._refresh_api_feature_selectors()
 
@@ -1362,8 +1431,9 @@ def _create_param_widgets(self, data, parent_layout, prefix=""):
         
         elif isinstance(value, (int, float)):
             widget = QLineEdit(str(value))
-            if full_key == "cli.max_failure_skips":
-                widget.setValidator(QIntValidator(0, 2147483647, widget))
+            bounds = _INT_INPUT_BOUNDS.get(full_key)
+            if bounds is not None:
+                widget.setValidator(QIntValidator(bounds[0], bounds[1], widget))
             widget.editingFinished.connect(lambda k=full_key, w=widget: self._on_numeric_input_changed(w.text(), k, float if isinstance(value, float) else int))
 
         elif value is None and key in _OPTIONAL_INPUT_KEYS:

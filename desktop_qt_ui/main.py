@@ -5,6 +5,14 @@ import logging
 import os
 import sys
 import warnings
+from time import perf_counter
+
+_STARTUP_STARTED_AT = perf_counter()
+
+if __name__ == '__main__' and sys.argv[1:2] == ['--font-catalog-worker']:
+    from desktop_qt_ui.font_catalog_worker import main as font_catalog_main
+
+    raise SystemExit(font_catalog_main())
 
 # Frozen panel workers must branch before Qt, torch or services are imported.
 if __name__ == '__main__' and sys.argv[1:2] == ['--panel-detection-worker']:
@@ -55,12 +63,10 @@ if getattr(sys, 'frozen', False) and hasattr(sys, '_MEIPASS'):
         if os.path.exists(onnx_capi_dir):
             os.add_dll_directory(onnx_capi_dir)
 
-# 在 PyQt6 之前加载 PyTorch，避免 PyQt6 的 Qt DLL 路径干扰 c10.dll 的加载
-# 参考: https://github.com/pytorch/pytorch/issues/166628
-try:
-    import torch  # noqa: F401
-except ImportError:
-    pass
+# 只预加载 Windows 所需的 DLL；完整 PyTorch 留给后台推理任务。
+from desktop_qt_ui.torch_bootstrap import prepare_torch_dlls
+
+prepare_torch_dlls()
 
 # qfluentwidgets 会在导入时无条件打印推广信息，桌面入口只静默这一次导入。
 with redirect_stdout(StringIO()):
@@ -73,6 +79,8 @@ from services import init_services
 from utils.app_version import get_app_version
 from utils.resource_helper import iter_existing_resource_paths, load_icon_from_resources
 from ui.secondary_pages.themed_message_box import install_themed_message_boxes
+
+_STARTUP_IMPORT_SECONDS = perf_counter() - _STARTUP_STARTED_AT
 
 
 # 全局异常处理器，捕获未处理的异常并记录到日志
@@ -223,6 +231,7 @@ def main():
     atexit.register(shutdown_queue_logging)
     
     logging.info(f"UI log file: {log_file_path}")
+    logging.info("Startup imports completed in %.3fs", _STARTUP_IMPORT_SECONDS)
     
     # --- 确保配置文件存在 ---
     try:
@@ -256,6 +265,9 @@ def main():
     
     # 1. 创建 QApplication 实例
     app = QApplication(sys.argv)
+    from ui.theme import configure_ui_font
+
+    configure_ui_font(app)
     app.setApplicationName("Manga Translator UI")
     app.setOrganizationName("Manga Translator UI")
     app_version = get_app_version()
@@ -315,12 +327,16 @@ def main():
         # 开发环境：资源在项目根目录
         root_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
 
+    services_started_at = perf_counter()
     if not init_services(root_dir):
         logging.fatal("Fatal: Service initialization failed.")
         sys.exit(1)
+    logging.info("Startup services initialized in %.3fs", perf_counter() - services_started_at)
 
     # 3. 创建并显示主窗口
+    window_started_at = perf_counter()
     main_window = MainWindow()
+    logging.info("Startup main window constructed in %.3fs", perf_counter() - window_started_at)
 
     # FluentTitleBar 只监听 windowIconChanged，不会读取已继承的应用图标。
     if app_icon and not app_icon.isNull():
@@ -332,6 +348,7 @@ def main():
     
 
     main_window.show()
+    logging.info("Startup window shown after %.3fs (Python entry)", perf_counter() - _STARTUP_STARTED_AT)
 
     # 避免在 Windows 初始 show 流程内同步处理事件。
     # 这会触发 Qt/Windows 的重入消息处理，可能导致 RPC_E_CANTCALLOUT_ININPUTSYNCCALL。

@@ -5,8 +5,6 @@ import os
 # import json
 from typing import Any, Dict, List
 
-from google.genai import types
-
 from ..api_key_rotation import APIRotationExhaustedError, run_with_api_candidates
 from ..api_request_params import apply_gemini_sdk_generation_params
 from ..runtime_api_resolver import resolve_runtime_api_config
@@ -47,6 +45,8 @@ class GeminiTranslator(CommonTranslator):
     _GLOBAL_LAST_REQUEST_TS = {}  # {model_name: timestamp}
     
     def __init__(self):
+        from google.genai import types
+
         super().__init__()
         self.client = None
         self.prev_context = ""  # 用于存储多页上下文
@@ -281,6 +281,8 @@ class GeminiTranslator(CommonTranslator):
         """批量翻译方法（纯文本）"""
         if not texts:
             return []
+
+        from google.genai import types
         
         if not self.client:
             self._setup_client()

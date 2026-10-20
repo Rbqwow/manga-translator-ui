@@ -11,6 +11,7 @@ from qfluentwidgets import (
     BodyLabel,
     CaptionLabel,
     HorizontalSeparator,
+    IndeterminateProgressBar,
     PushButton,
     ScrollArea,
     SegmentedWidget,
@@ -101,6 +102,9 @@ def create_settings_page(self) -> QWidget:
     header_layout.addWidget(self.export_config_button)
     header_layout.addWidget(self.import_config_button)
     page_layout.addWidget(header)
+    self._settings_loading_bar = IndeterminateProgressBar(page, start=False)
+    self._settings_loading_bar.hide()
+    page_layout.addWidget(self._settings_loading_bar)
 
     self.export_config_button.clicked.connect(self.controller.export_config)
     self.import_config_button.clicked.connect(self.controller.import_config)

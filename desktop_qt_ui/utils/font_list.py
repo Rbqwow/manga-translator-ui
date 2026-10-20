@@ -9,12 +9,18 @@ QFont 匹配固定落到同一字体；注册层会自动改写为去掉方括�
 """
 
 import hashlib
+import json
 import logging
 import os
+import subprocess
+import sys
+import tempfile
+import threading
 import unicodedata
 import weakref
 from collections import Counter
 from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from functools import lru_cache
 
@@ -22,6 +28,7 @@ from manga_translator.rendering.text_render import (
     font_registry_revision,
     qt_family_is_ambiguous,
     register_font_file,
+    registered_font_files,
     strip_qt_foundry_brackets,
     unregister_font_file,
 )
@@ -44,15 +51,18 @@ from PyQt6.QtCore import (
     pyqtSignal,
 )
 from PyQt6.QtGui import (
+    QColor,
+    QCursor,
     QFont,
     QFontDatabase,
     QGuiApplication,
     QRawFont,
+    QPalette,
     QRegion,
     QWheelEvent,
 )
 from PyQt6.QtWidgets import QListView, QVBoxLayout, QWidget
-from qfluentwidgets import LineEdit, MenuAnimationType
+from qfluentwidgets import CaptionLabel, IndeterminateProgressBar, LineEdit, MenuAnimationType, isDarkTheme
 from qfluentwidgets.components.widgets.combo_box import ComboBoxMenu
 from qfluentwidgets.components.widgets.menu import (
     IndicatorMenuItemDelegate,
@@ -86,9 +96,28 @@ _FONT_REGISTRY_REVISION = -1
 _FONT_DATABASE_APP = None
 _FONT_FILE_LIST_CACHE: tuple[tuple[str, str], ...] = ()
 _FONT_FAMILY_CACHE: dict[bool, tuple[str, ...]] = {}
+_FONT_CATALOG_SERVICE = None
+_FONT_LOADING_TEXTS = {
+    "zh_CN": "正在加载字体…",
+    "zh_TW": "正在載入字型…",
+    "ja_JP": "フォントを読み込み中…",
+    "ko_KR": "글꼴 불러오는 중…",
+    "es_ES": "Cargando fuentes…",
+    "en_US": "Loading fonts…",
+}
+_FONT_ERROR_TEXTS = {
+    "zh_CN": "字体加载失败，请关闭后重试",
+    "zh_TW": "字型載入失敗，請關閉後重試",
+    "ja_JP": "読み込み失敗。閉じて再試行してください",
+    "ko_KR": "불러오기 실패. 닫고 다시 시도하세요",
+    "es_ES": "Error al cargar. Cierre y reintente",
+    "en_US": "Loading failed. Close and retry",
+}
 
 
-def _clear_font_catalog_caches() -> None:
+def _clear_font_catalog_caches(invalidate_service=True) -> None:
+    if invalidate_service and _FONT_CATALOG_SERVICE is not None:
+        _FONT_CATALOG_SERVICE.invalidate()
     _FONT_FAMILY_CACHE.clear()
     _font_name_records.cache_clear()
     _font_family_name_records.cache_clear()
@@ -113,20 +142,24 @@ def list_font_files() -> list[tuple[str, str]]:
     fonts_dir = fonts_directory()
     signatures = {}
     font_files = []
+
+    def scan_error(error):
+        if not isinstance(error, FileNotFoundError):
+            raise error
+
     try:
-        with os.scandir(fonts_dir) as entries:
-            for entry in entries:
-                if not entry.name.lower().endswith(FONT_FILE_EXTENSIONS):
+        for directory, _subdirectories, filenames in os.walk(fonts_dir, onerror=scan_error):
+            for filename in filenames:
+                if not filename.lower().endswith(FONT_FILE_EXTENSIONS):
                     continue
+                path = os.path.normcase(os.path.abspath(os.path.join(directory, filename)))
                 try:
-                    if not entry.is_file():
-                        continue
-                    stat = entry.stat()
+                    stat = os.stat(path)
                 except FileNotFoundError:
                     continue  # A file may disappear while the directory is scanned.
-                path = os.path.normcase(os.path.abspath(entry.path))
                 signatures[path] = (stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns)
-                font_files.append((os.path.splitext(entry.name)[0], entry.name))
+                relative_path = os.path.relpath(os.path.join(directory, filename), fonts_dir)
+                font_files.append((os.path.splitext(filename)[0], relative_path))
     except FileNotFoundError:
         pass
     except OSError as exc:
@@ -158,10 +191,16 @@ def list_font_files() -> list[tuple[str, str]]:
                 continue
             _REGISTERED_FONT_FAMILIES[path] = register_font_file(path)
             _FONT_FILE_SIGNATURES[path] = signatures[path]
+        # The renderer also registers files outside this directory. Refresh
+        # those registrations so replacements/deletions invalidate both the
+        # parent Qt database and the subprocess catalog before taking a snapshot.
+        for path in registered_font_files():
+            if os.path.normcase(os.path.abspath(path)) not in signatures:
+                register_font_file(path)
         revision = font_registry_revision()
         if files_changed or revision != _FONT_REGISTRY_REVISION:
             _ORIGINAL_FONT_DISPLAY_NAMES.clear()
-            for path in _REGISTERED_FONT_FAMILIES:
+            for path in registered_font_files():
                 _remember_original_font_names(path)
             _clear_font_catalog_caches()
             _FONT_REGISTRY_REVISION = revision
@@ -187,8 +226,8 @@ def list_font_families(include_system: bool | None = None) -> list[str]:
     if not include_system:
         project_families = {
             family
-            for families_for_file in _REGISTERED_FONT_FAMILIES.values()
-            for family in families_for_file
+            for path in registered_font_files(include_system=False)
+            for family in register_font_file(path)
         }
         families.intersection_update(project_families)
     result = tuple(sorted(families, key=str.casefold))
@@ -484,6 +523,10 @@ def _list_font_style_entries_cached(
     locale_code: str,
     include_system: bool,
 ) -> tuple[_FontCatalogEntry, ...]:
+    return _build_font_style_entries(locale_code, list_font_families(include_system))
+
+
+def _build_font_style_entries(locale_code, families, cancel=None, progress=None):
     """Merge equivalent physical faces only after enumerating every style.
 
     Search names are deliberately separate from the verified Qt selectors used
@@ -491,7 +534,13 @@ def _list_font_style_entries_cached(
     that a saved selector can be redirected to another entry.
     """
     candidates: dict[tuple, list[_FontCatalogEntry]] = {}
-    for family in list_font_families(include_system=include_system):
+    # Stable denominator for both passes; see the merge-pass progress call.
+    total_steps = max(len(families), 1) * 2
+    for number, family in enumerate(families):
+        if cancel is not None and cancel.is_set():
+            return ()
+        if cancel is not None and number % 10 == 0 and cancel.wait(0.001):
+            return ()
         styles = _font_styles(family)
         for style in styles:
             display, family_aliases = localized_font_family(family, locale_code, style)
@@ -510,11 +559,17 @@ def _list_font_style_entries_cached(
             )
             key = ("candidate", candidate) if candidate else ("entry", value)
             candidates.setdefault(key, []).append(entry)
+        if progress is not None:
+            progress(number + 1, total_steps)
 
     merged = []
-    for entries in candidates.values():
+    for number, entries in enumerate(candidates.values()):
+        if cancel is not None and number % 10 == 0 and cancel.wait(0.001):
+            return ()
         groups: dict[tuple, list[_FontCatalogEntry]] = {}
         for entry in entries:
+            if cancel is not None and cancel.is_set():
+                return ()
             identity = (
                 _resolved_font_identity(*split_font_value(entry.value))
                 if len(entries) > 1 else ()
@@ -529,6 +584,12 @@ def _list_font_style_entries_cached(
                 tuple(sorted({alias for item in group for alias in item.selection_aliases})),
                 canonical.candidate_key,
             ))
+        if progress is not None:
+            # The merge pass has fewer steps than the enumeration pass, so a
+            # per-pass denominator made the reported percentage jump backwards
+            # when `candidates` was smaller than `families`. One stable total
+            # keeps the counter monotonic.
+            progress(len(families) + number + 1, total_steps)
 
     counts = Counter(_search_key(entry.display) for entry in merged)
     return tuple(sorted((
@@ -541,10 +602,191 @@ def _list_font_style_entries_cached(
     ), key=lambda entry: (_search_key(entry.display), entry.value)))
 
 
+def _font_catalog_worker_command():
+    if getattr(sys, "frozen", False):
+        return [sys.executable, "--font-catalog-worker"]
+    worker = os.path.join(os.path.dirname(os.path.dirname(__file__)), "font_catalog_worker.py")
+    return [sys.executable, "-u", worker]
+
+
+def _load_font_catalog(locale, include_system, font_paths, cancel, progress):
+    """Run Qt/fontTools in a separate process so they cannot stall GUI painting."""
+    if cancel.is_set():
+        return ()
+    request = {"locale": locale, "include_system": include_system, "font_paths": font_paths}
+    # A file for stderr avoids a full pipe deadlocking a fontTools warning burst.
+    with tempfile.TemporaryFile() as errors:
+        process = subprocess.Popen(
+            _font_catalog_worker_command(),
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=errors,
+            text=True, encoding="utf-8", bufsize=1,
+            # Pin the working directory: the worker resolves project-relative
+            # font paths, and a packaged app can inherit an unrelated cwd.
+            cwd=os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
+            creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0,
+        )
+        finished = threading.Event()
+
+        def watch_cancel():
+            while not finished.wait(0.05):
+                if cancel.is_set():
+                    try:
+                        process.terminate()
+                    except OSError:
+                        pass
+                    return
+
+        watcher = threading.Thread(target=watch_cancel, name="font-catalog-cancel", daemon=True)
+        watcher.start()
+        entries = None
+        try:
+            process.stdin.write(json.dumps(request, ensure_ascii=False))
+            process.stdin.close()
+            for line in process.stdout:
+                if cancel.is_set():
+                    break
+                message = json.loads(line)
+                if "progress" in message:
+                    progress(*message["progress"])
+                if "entries" in message:
+                    entries = tuple(
+                        _FontCatalogEntry(
+                            item["display"], item["value"], tuple(item["search_aliases"]),
+                            tuple(item["selection_aliases"]), (),
+                        ) for item in message["entries"]
+                    )
+            if cancel.is_set():
+                return ()
+            code = process.wait()
+            if code or entries is None:
+                errors.seek(max(0, errors.seek(0, os.SEEK_END) - 4096))
+                detail = errors.read().decode("utf-8", errors="replace").strip()
+                raise RuntimeError(detail or f"Font catalog worker exited with code {code}")
+            return entries
+        finally:
+            if process.poll() is None:
+                process.terminate()
+            try:
+                process.wait(timeout=2)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.wait()
+            finished.set()
+            watcher.join(timeout=0.2)
+            process.stdout.close()
+            if not process.stdin.closed:
+                process.stdin.close()
+
+
+class _FontCatalogService(QObject):
+    """Share subprocess results and marshal progress/results onto the GUI thread."""
+
+    ready = pyqtSignal(object, object, str)
+    progress = pyqtSignal(object, int, int)
+    invalidated = pyqtSignal(int)
+    _completed = pyqtSignal(object, int, object, str)
+
+    def __init__(self, app):
+        super().__init__(app)
+        self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="font-catalog")
+        self._generation = 0
+        self._cache = {}
+        self._pending = {}
+        self._closed = False
+        self._invalidation_timer = QTimer(self)
+        self._invalidation_timer.setSingleShot(True)
+        self._invalidation_timer.timeout.connect(lambda: self.invalidated.emit(self._generation))
+        self._completed.connect(self._on_completed, type=Qt.ConnectionType.QueuedConnection)
+        app.aboutToQuit.connect(self.shutdown)
+
+    def invalidate(self):
+        self._generation += 1
+        self._cache.clear()
+        for cancel, future in self._pending.values():
+            cancel.set()
+            future.cancel()
+        self._pending.clear()
+        if not self._closed:
+            self._invalidation_timer.start(0)
+
+    def request(self, locale, include_system):
+        # Project registrations stay on the GUI thread. The worker never mutates
+        # the renderer's registry or hands a QRawFont to another thread.
+        list_font_files()
+        key = (locale, bool(include_system), self._generation)
+        if self._closed:
+            return key
+        if key in self._cache:
+            QTimer.singleShot(0, lambda: self.ready.emit(key, self._cache.get(key), ""))
+            return key
+        if key in self._pending:
+            return key
+        font_paths = registered_font_files(include_system=include_system)
+        cancel = threading.Event()
+        generation = self._generation
+
+        def build():
+            def report(done, total):
+                if not cancel.is_set():
+                    self.progress.emit(key, done, total)
+            return _load_font_catalog(locale, include_system, font_paths, cancel, report)
+
+        future = self._executor.submit(build)
+        self._pending[key] = (cancel, future)
+
+        def done(completed):
+            if cancel.is_set():
+                return
+            try:
+                entries, error = completed.result(), ""
+            except Exception as exc:
+                entries, error = (), str(exc)
+                logger.exception("Failed to load font catalog")
+            try:
+                self._completed.emit(key, generation, entries, error)
+            except RuntimeError:
+                pass  # Application was destroyed while a job was finishing.
+
+        future.add_done_callback(done)
+        return key
+
+    def _on_completed(self, key, generation, entries, error):
+        self._pending.pop(key, None)
+        if self._closed or generation != self._generation:
+            return
+        if not error:
+            self._cache[key] = entries
+        self.ready.emit(key, entries, error)
+
+    def shutdown(self):
+        self._closed = True
+        self._invalidation_timer.stop()
+        self.invalidate()
+        self._executor.shutdown(wait=False, cancel_futures=True)
+
+
+def _font_catalog_service():
+    global _FONT_CATALOG_SERVICE
+    if _FONT_CATALOG_SERVICE is None:
+        _FONT_CATALOG_SERVICE = _FontCatalogService(QGuiApplication.instance())
+    return _FONT_CATALOG_SERVICE
+
+
 def _selection_key(value: str) -> str:
     # Qt names are case insensitive; search-only NFKC folding must not collapse
     # distinct persisted font names (e.g. full-width and ASCII characters).
     return str(value or "").casefold()
+
+
+def _left_mouse_button_down():
+    if QGuiApplication.mouseButtons() & Qt.MouseButton.LeftButton:
+        return True
+    if sys.platform == "win32":
+        # WindowDeactivate can precede Qt's MouseButtonPress on Windows.
+        import ctypes
+
+        return bool(ctypes.windll.user32.GetAsyncKeyState(0x01) & 0x8000)
+    return False
 
 
 @lru_cache(maxsize=4096)
@@ -595,7 +837,7 @@ def qfont_for_value(value: str) -> QFont:
 
 
 def populate_font_combo(
-    combo, current: str | None = None, locale_code: str = "en_US"
+    combo, current: str | None = None, locale_code: str = "en_US", *, entries=None
 ) -> None:
     """清空并填充字体下拉框：显示本地化名称，userData 保留 family/style。
 
@@ -604,22 +846,31 @@ def populate_font_combo(
     """
     combo.clear()
     combo._font_search_terms = {}
-    list_font_files()
     include_system = getattr(combo, "_include_system_fonts", _SYSTEM_FONTS_ENABLED)
-    for entry in _list_font_style_entries_cached(locale_code, include_system):
+    if entries is None:
+        list_font_files()
+        entries = _list_font_style_entries_cached(locale_code, include_system)
+    for entry in entries:
         display, value, aliases = entry.display, entry.value, entry.search_aliases
         combo.addItem(display, userData=value)
         combo._font_search_terms[value] = _search_key(" ".join((display, *aliases)))
+    # Saved bare families and unavailable styles remain explicit selections.
+    # Resolving them by hashing font tables here would block the GUI again.
+    selections = {
+        _selection_key(alias): entry.value
+        for entry in entries for alias in entry.selection_aliases
+    }
+    combo._font_selection_aliases = selections
     if not current:
         return
-    current = _resolve_catalog_value(current, locale_code, include_system)
+    current = selections.get(_selection_key(current), current)
     for index in range(combo.count()):
         item_data = combo.itemData(index)
         if item_data == current:
             combo.setCurrentIndex(index)
             return
     family, style = split_font_value(current)
-    display, aliases = localized_font_family(family, locale_code)
+    display, aliases = _original_font_display_name(family), (family,)
     if style:
         display = f"{display} - {style}"
     combo.addItem(display, userData=current)
@@ -638,6 +889,11 @@ class _FontMenuModel(QAbstractListModel):
 
     def rowCount(self, parent=QModelIndex()):
         return 0 if parent.isValid() else len(self._entries)
+
+    def set_entries(self, entries):
+        self.beginResetModel()
+        self._entries = tuple(entries)
+        self.endResetModel()
 
     def data(self, index, role=Qt.ItemDataRole.DisplayRole):
         if not index.isValid() or not 0 <= index.row() < len(self._entries):
@@ -836,6 +1092,7 @@ class _FontComboBoxMenu(ComboBoxMenu):
 
     fontHovered = pyqtSignal(str)
     fontSelected = pyqtSignal(int)
+    _STATUS_HEIGHT = 76
 
     def __init__(self, font_entries, placeholder, parent=None):
         self._font_entries = tuple(font_entries)
@@ -858,13 +1115,32 @@ class _FontComboBoxMenu(ComboBoxMenu):
         self.view.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         self.setShadowEffect()
         self._container = QWidget(self)
+        # RoundMenu itself is translucent. Give both the status and the input
+        # an opaque surface so disabled controls never expose text behind them.
+        palette = self._container.palette()
+        palette.setColor(QPalette.ColorRole.Window, QColor("#2d2d2d" if isDarkTheme() else "#ffffff"))
+        self._container.setPalette(palette)
+        self._container.setAutoFillBackground(True)
         self._content_layout = QVBoxLayout(self._container)
         self._content_layout.setContentsMargins(0, 0, 0, 0)
         self._content_layout.setSpacing(6)
         self.search_edit = LineEdit(self._container)
         self.search_edit.setPlaceholderText(placeholder)
         self.search_edit.setClearButtonEnabled(True)
+        self._search_placeholder = placeholder
+        self._status_panel = QWidget(self._container)
+        self._status_panel.setFixedHeight(self._STATUS_HEIGHT)
+        status_layout = QVBoxLayout(self._status_panel)
+        status_layout.setContentsMargins(12, 8, 12, 12)
+        self.status_label = CaptionLabel(self._status_panel)
+        self.status_label.setWordWrap(True)
+        self._loading_bar = IndeterminateProgressBar(self._status_panel, start=False)
+        self._loading_bar.setFixedHeight(3)
+        status_layout.addWidget(self.status_label, 1)
+        status_layout.addWidget(self._loading_bar)
+        self._status_panel.hide()
         self._content_layout.addWidget(self.search_edit)
+        self._content_layout.addWidget(self._status_panel)
         self._content_layout.addWidget(self.view)
         self.hBoxLayout.addWidget(self._container, 1)
         self.search_edit.textChanged.connect(self._filter_items)
@@ -876,8 +1152,47 @@ class _FontComboBoxMenu(ComboBoxMenu):
         self.view.setStyleSheet(
             self.styleSheet().replace("MenuActionListWidget", "_FontMenuListView")
         )
-        self.view.recalculateNaturalWidth()
+        # The popup follows the combo width; measuring every installed font's
+        # display name here can trigger another global glyph-fallback scan.
         self.view.adjustSize()
+
+    def set_loading(self, text, *, error=False):
+        self.status_label.setText(text)
+        self.status_label.setToolTip(text)
+        self._status_panel.show()
+        self.search_edit.setEnabled(False)
+        self.view.setEnabled(False)
+        self.view.hide()
+        self.view._font_model.set_entries(())
+        if error:
+            self._loading_bar.stop()
+            self._loading_bar.hide()
+        else:
+            self._loading_bar.show()
+            self._loading_bar.start()
+        self._layout_for_anchor()
+
+    def set_entries(self, entries, current_row):
+        _stop_popup_animation(self)
+        self.clearMask()
+        self._loading_bar.stop()
+        self._loading_bar.hide()
+        self._status_panel.hide()
+        self.search_edit.setEnabled(True)
+        self.search_edit.setPlaceholderText(self._search_placeholder)
+        self.view.setEnabled(True)
+        self._font_entries = tuple(entries)
+        self.view._font_model.set_entries(self._font_entries)
+        self.view.show()
+        self.view.setCurrentRow(current_row)
+        self._layout_for_anchor()
+        self._focus_search_if_active()
+
+    def _focus_search_if_active(self) -> None:
+        # Loading disables the search field, so the initial focus request may
+        # have been ignored. Only retry while this popup still owns focus.
+        if self.isVisible() and QGuiApplication.focusWindow() is self.windowHandle():
+            self.search_edit.setFocus(Qt.FocusReason.PopupFocusReason)
 
     def bind_to_anchor(self, anchor) -> None:
         """Keep this independent tool window attached to its combo box."""
@@ -897,7 +1212,7 @@ class _FontComboBoxMenu(ComboBoxMenu):
         self._layout_for_anchor()
 
     def _layout_for_anchor(self) -> None:
-        """Size and place the list around the input instead of below the menu."""
+        """Keep the entire popup above/below the combo, including loading text."""
         anchor = self._anchor
         if anchor is None:
             return
@@ -917,52 +1232,41 @@ class _FontComboBoxMenu(ComboBoxMenu):
         available = screen.availableGeometry()
         margins = self.layout().contentsMargins()
         spacing = self._content_layout.spacing()
-        desired_view_height = self.view.itemsHeight() + 3
-        available_below = max(
-            1,
-            available.bottom()
-            + 1
-            - anchor_top_left.y()
-            - anchor_height
-            - spacing
-            - margins.bottom(),
-        )
-        available_above = max(
-            1,
-            anchor_top_left.y() - available.top() - spacing - margins.top(),
-        )
-        if self._opens_upward is None:
-            below_height = min(desired_view_height, available_below)
-            above_height = min(desired_view_height, available_above)
-            self._opens_upward = above_height > below_height
-        maximum_view_height = available_above if self._opens_upward else available_below
+        loading = not self._status_panel.isHidden()
+        desired_view_height = self._STATUS_HEIGHT if loading else max(40, self.view.itemsHeight() + 3)
+        chrome_height = anchor_height + spacing + margins.top() + margins.bottom()
+        gap = 4
+        available_below = max(0, available.bottom() + 1 - anchor_top_left.y() - anchor_height - gap)
+        available_above = max(0, anchor_top_left.y() - available.top() - gap)
+        # Loading and the final list can have very different heights. Recompute
+        # direction for the current body, including when the anchor moves.
+        below_height = min(desired_view_height + chrome_height, available_below)
+        above_height = min(desired_view_height + chrome_height, available_above)
+        opens_upward = above_height > below_height
+        if self._opens_upward != opens_upward:
+            _stop_popup_animation(self)
+            self.clearMask()
+        self._opens_upward = opens_upward
+        maximum_view_height = max(1, (available_above if self._opens_upward else available_below) - chrome_height)
         view_height = max(1, min(desired_view_height, maximum_view_height))
-
-        if self._content_opens_upward != self._opens_upward:
-            self._content_layout.removeWidget(self.search_edit)
-            self._content_layout.removeWidget(self.view)
-            if self._opens_upward:
-                self._content_layout.addWidget(self.view)
-                self._content_layout.addWidget(self.search_edit)
-            else:
-                self._content_layout.addWidget(self.search_edit)
-                self._content_layout.addWidget(self.view)
-            self._content_opens_upward = self._opens_upward
 
         # The original combo menu makes its inner content inherit the combo
         # width. Do not let long font names or platform size hints widen it.
-        self.search_edit.setFixedSize(anchor_width, anchor_height)
-        self.view.setFixedSize(anchor_width, view_height)
+        content_width = max(1, min(anchor_width, available.width() - margins.left() - margins.right()))
+        self.search_edit.setFixedSize(content_width, anchor_height)
+        self._status_panel.setFixedSize(content_width, view_height if loading else self._STATUS_HEIGHT)
+        self.view.setFixedSize(content_width, view_height)
         self._content_layout.activate()
         self.layout().activate()
         self.adjustSize()
 
         x = anchor_top_left.x() - margins.left()
         if self._opens_upward:
-            y = anchor_top_left.y() - margins.top() - self.view.height() - spacing
+            y = anchor_top_left.y() - self.height() - gap
         else:
-            y = anchor_top_left.y() - margins.top()
+            y = anchor_top_left.y() + anchor_height + gap
         x = max(available.left(), min(x, available.right() - self.width() + 1))
+        y = max(available.top(), min(y, available.bottom() - self.height() + 1))
         self.move(x, y)
 
     def _follow_anchor(self) -> None:
@@ -1027,22 +1331,9 @@ class _FontComboBoxMenu(ComboBoxMenu):
         if self._reveal_progress >= 1.0:
             self.clearMask()
             return
-        search_top = self.search_edit.mapTo(self, QPoint()).y()
-        search_bottom = search_top + self.search_edit.height()
-        if self._opens_upward:
-            start_top = max(0, search_top - self.layout().contentsMargins().top())
-            top = round(start_top * (1.0 - self._reveal_progress))
-            visible = QRect(0, top, self.width(), self.height() - top)
-        else:
-            margins = self.layout().contentsMargins()
-            start_bottom = min(
-                self.height(),
-                search_bottom + self._content_layout.spacing() + margins.top(),
-            )
-            bottom = round(
-                start_bottom + (self.height() - start_bottom) * self._reveal_progress
-            )
-            visible = QRect(0, 0, self.width(), bottom)
+        height = max(1, round(self.height() * self._reveal_progress))
+        top = self.height() - height if self._opens_upward else 0
+        visible = QRect(0, top, self.width(), height)
         self.setMask(QRegion(visible))
 
     def _get_reveal_progress(self) -> float:
@@ -1063,7 +1354,7 @@ class _FontComboBoxMenu(ComboBoxMenu):
         self.raise_()
         self.activateWindow()
         animation.start()
-        QTimer.singleShot(0, self.search_edit.setFocus)
+        QTimer.singleShot(0, self._focus_search_if_active)
 
     @staticmethod
     def _belongs_to(obj, root) -> bool:
@@ -1122,13 +1413,14 @@ class _FontComboBoxMenu(ComboBoxMenu):
         super().keyPressEvent(e)
 
     def closeEvent(self, event):
+        self._loading_bar.stop()
         self._detach_anchor()
         _stop_popup_animation(self)
         super().closeEvent(event)
 
 
 class FontComboBox(TopLevelComboBox):
-    """QFontComboBox-compatible selector backed by Fluent ComboBox styling."""
+    """Fluent font selector; enumerate the full catalog only when opened."""
 
     currentFontChanged = pyqtSignal(QFont)
     fontPreviewChanged = pyqtSignal(str)
@@ -1138,7 +1430,15 @@ class FontComboBox(TopLevelComboBox):
         self._cached_locale_code: str | None = None
         self._include_system_fonts = _SYSTEM_FONTS_ENABLED
         self._font_search_terms: dict[str, str] = {}
+        self._catalog_loaded = False
+        self._catalog_key = None
+        self._catalog_service = None
+        self._font_selection_aliases = {}
         super().__init__(parent)
+        self._close_popup_on_release = False
+        self._popup_close_click_timer = QTimer(self)
+        self._popup_close_click_timer.setInterval(20)
+        self._popup_close_click_timer.timeout.connect(self._clear_finished_close_click)
         _FONT_COMBO_INSTANCES.add(self)
         self.currentIndexChanged.connect(self._emit_current_font_changed)
         self.refresh(QFont().family())
@@ -1167,9 +1467,6 @@ class FontComboBox(TopLevelComboBox):
         return menu
 
     def _showComboMenu(self):
-        self.refresh()
-        if not self.items:
-            return
         menu = self._createComboMenu()
         menu.setMaxVisibleItems(self.maxVisibleItems())
         menu.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
@@ -1177,15 +1474,110 @@ class FontComboBox(TopLevelComboBox):
         self.dropMenu = menu
         menu.view.setCurrentRow(self.currentIndex())
         menu.bind_to_anchor(self)
+        self._request_catalog()
         menu.show_for_anchor()
+
+    def _menu_entries(self):
+        return [
+            (item.text, str(item.userData or item.text),
+             self._font_search_terms.get(str(item.userData), _search_key(item.text)))
+            for item in self.items
+        ]
+
+    def _request_catalog(self):
+        if self._catalog_service is None:
+            self._catalog_service = _font_catalog_service()
+            self._catalog_service.ready.connect(self._on_catalog_ready)
+            self._catalog_service.progress.connect(self._on_catalog_progress)
+            self._catalog_service.invalidated.connect(self._on_catalog_invalidated)
+        self._catalog_loaded = False
+        menu = self.dropMenu
+        if menu is not None:
+            menu.set_loading(_FONT_LOADING_TEXTS.get(self._locale_code(), _FONT_LOADING_TEXTS["en_US"]))
+        self._catalog_key = self._catalog_service.request(self._locale_code(), self._include_system_fonts)
+
+    def _on_catalog_progress(self, key, done, total):
+        if key == self._catalog_key and self.dropMenu is not None:
+            text = _FONT_LOADING_TEXTS.get(self._locale_code(), _FONT_LOADING_TEXTS["en_US"])
+            self.dropMenu.status_label.setText(f"{text} {done}/{total}")
+
+    def _on_catalog_ready(self, key, entries, error):
+        if key != self._catalog_key or entries is None:
+            return
+        if error:
+            if self.dropMenu is not None:
+                self.dropMenu.set_loading(
+                    _FONT_ERROR_TEXTS.get(self._locale_code(), _FONT_ERROR_TEXTS["en_US"]), error=True,
+                )
+            return
+        blocker = QSignalBlocker(self)
+        try:
+            current = self.currentFamily()
+            populate_font_combo(self, current, self._locale_code(), entries=entries)
+            if not current:
+                self.setCurrentIndex(-1)
+            self._catalog_loaded = True
+        finally:
+            del blocker
+        if self.dropMenu is not None:
+            self.dropMenu.set_entries(self._menu_entries(), self.currentIndex())
+
+    def _on_catalog_invalidated(self, generation):
+        # A request may already use the latest generation before this coalesced
+        # notification reaches the GUI. Do not cancel that fresh subscription.
+        if self._catalog_key is not None and self._catalog_key[2] == generation:
+            return
+        reload_pending = self._catalog_key is not None and not self._catalog_loaded
+        self._catalog_loaded = False
+        self._catalog_key = None
+        self._font_selection_aliases = {}
+        if self.dropMenu is not None or reload_pending:
+            self._request_catalog()
+
+    def _onDropMenuClosed(self):
+        # Never retain a deleted WA_DeleteOnClose menu for a worker callback.
+        self.dropMenu = None
+        if _left_mouse_button_down() and self.rect().contains(self.mapFromGlobal(QCursor.pos())):
+            self._remember_popup_close_click()
+
+    def _remember_popup_close_click(self):
+        # Preserve the gesture, not the soon-to-be-deleted popup wrapper.
+        self._close_popup_on_release = True
+        self._popup_close_click_timer.start()
+
+    def _clear_finished_close_click(self):
+        if not _left_mouse_button_down():
+            self._close_popup_on_release = False
+            self._popup_close_click_timer.stop()
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton and self.dropMenu is not None:
+            self._remember_popup_close_click()
+        super().mousePressEvent(event)
+
+    def _toggleComboMenu(self):
+        if self._close_popup_on_release:
+            self._close_popup_on_release = False
+            self._popup_close_click_timer.stop()
+            self._closeComboMenu()
+            return
+        super()._toggleComboMenu()
 
     def _on_menu_font_selected(self, row: int):
         if 0 <= row < self.count():
             self._onItemClicked(row)
 
-    def refresh(self, current_family: str | None = None, force: bool = False) -> None:
+    def refresh(
+        self,
+        current_family: str | None = None,
+        force: bool = False,
+        *,
+        load_catalog: bool = False,
+    ) -> None:
         if force:
             _clear_font_catalog_caches()
+            self._catalog_loaded = False
+            self._catalog_key = None
         family = (
             self.currentFamily()
             if current_family is None
@@ -1193,14 +1585,28 @@ class FontComboBox(TopLevelComboBox):
         )
         blocker = QSignalBlocker(self)
         try:
-            populate_font_combo(self, family or None, self._locale_code())
+            if not self._catalog_loaded:
+                # Hidden editor/settings controls only need their saved value.
+                # Register project fonts for previewing that value, but avoid
+                # enumerating and hashing every installed font on startup.
+                list_font_files()
+                self.clear()
+                self._font_search_terms = {}
+                self._font_selection_aliases = {}
+                self.setCurrentFamily(family)
+            else:
+                self.setCurrentFamily(family)
             if not family:
                 self.setCurrentIndex(-1)
         finally:
             del blocker
+        if load_catalog or self.dropMenu is not None:
+            self._request_catalog()
 
     def refresh_ui_texts(self) -> None:
         self._cached_locale_code = None
+        self._catalog_loaded = False
+        self._catalog_key = None
         self.refresh()
 
     def set_include_system_fonts(self, enabled: bool) -> None:
@@ -1209,6 +1615,8 @@ class FontComboBox(TopLevelComboBox):
             return
         current = self.currentFamily()
         self._include_system_fonts = enabled
+        self._catalog_loaded = False
+        self._catalog_key = None
         self.refresh(current)
 
     def wheelEvent(self, event: QWheelEvent) -> None:
@@ -1230,16 +1638,28 @@ class FontComboBox(TopLevelComboBox):
     def currentFamily(self) -> str:
         return str(self.currentData() or self.currentText() or "")
 
+    def setCurrentIndex(self, index):
+        # Fluent's base combo ignores -1, while font fields use it to mean
+        # inherit/default. Loading a catalog must not choose a font implicitly.
+        if index == -1:
+            if self._currentIndex != -1:
+                self._currentIndex = -1
+                self.setText("")
+                self.currentTextChanged.emit("")
+                self.currentIndexChanged.emit(-1)
+            return
+        super().setCurrentIndex(index)
+
     def setCurrentFamily(self, family: str) -> None:
         value = str(family or "")
         if not value:
             self.setCurrentIndex(-1)
             return
-        value = _resolve_catalog_value(value, self._locale_code(), self._include_system_fonts)
+        value = self._font_selection_aliases.get(_selection_key(value), value)
         index = self.findData(value)
         if index < 0:
             family_name, style = split_font_value(value)
-            display, aliases = localized_font_family(family_name, self._locale_code())
+            display, aliases = _original_font_display_name(family_name), (family_name,)
             if style:
                 display = f"{display} - {style}"
             self.addItem(display, userData=value)

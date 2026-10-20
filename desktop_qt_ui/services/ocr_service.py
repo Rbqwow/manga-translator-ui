@@ -56,21 +56,22 @@ class OcrService:
             from . import get_config_service
             self.config_service = get_config_service()
         
-        # 设备配置
+        # CUDA 探测会导入 PyTorch，留到后台 OCR 任务中执行。
         self.device = 'cpu'
-        if self._check_gpu_available():
-            self.device = 'cuda'
             
         # OCR模型缓存
         self.model_prepared = False
         self.current_prepared_ocr = None
+        # Device the cached model was actually loaded on; a GPU toggle must
+        # reload instead of reusing a model pinned to the previous device.
+        self.current_prepared_device = None
 
         # YOLO OBB 检测缓存
         self._yolo_detector = None
         self._yolo_cache_image_id = None
         self._yolo_cache = None
         
-        self.logger.info(f"OCR service initialized on device: {self.device}")
+        self.logger.info("OCR service initialized; device selection deferred until first task")
 
     @staticmethod
     def _resolve_ocr_config(config: Any) -> Any:
@@ -100,7 +101,6 @@ class OcrService:
             config = self.config_service.get_config()
             resolved_ocr_config = self._resolve_ocr_config(config)
             ocr_config_dict = resolved_ocr_config.model_dump() if hasattr(resolved_ocr_config, 'model_dump') else {}
-            cli_config_dict = config.cli.model_dump() if hasattr(config, 'cli') else {}
 
             try:
                 ocr_config = OcrConfig(**ocr_config_dict)
@@ -113,12 +113,6 @@ class OcrService:
                     prob=0.3,
                 )
             
-            # GPU设置从CLI配置获取
-            if cli_config_dict.get('use_gpu', False) and self._check_gpu_available():
-                self.device = 'cuda'
-            else:
-                self.device = 'cpu'
-                
             return ocr_config
             
         except Exception as e:
@@ -130,6 +124,17 @@ class OcrService:
                 prob=0.3,
             )
         
+    def _update_device(self):
+        """Resolve the CLI preference inside an OCR task, including explicit models."""
+        self.device = 'cpu'
+        if self.config_service:
+            try:
+                config = self.config_service.get_config()
+                if getattr(getattr(config, 'cli', None), 'use_gpu', False) and self._check_gpu_available():
+                    self.device = 'cuda'
+            except Exception as exc:
+                self.logger.warning(f"Failed to select OCR device; using CPU: {exc}")
+
     def _check_gpu_available(self) -> bool:
         """检查GPU是否可用"""
         try:
@@ -143,6 +148,7 @@ class OcrService:
         if not OCR_AVAILABLE:
             raise RuntimeError("OCR后端模块不可用")
             
+        self._update_device()
         ocr_to_use = ocr_type or self._get_current_config().ocr
         if isinstance(ocr_to_use, str):
             try:
@@ -159,6 +165,19 @@ class OcrService:
             except Exception as e:
                 self.logger.warning(f"Failed to unload previous OCR model {self.current_prepared_ocr}: {e}")
             self.model_prepared = False
+        elif self.model_prepared and self.device != self.current_prepared_device:
+            # The GPU toggle changes the device but not the model name, so the
+            # early return used to keep a CUDA-resident model while requests
+            # were dispatched to `self.device` (or the reverse).
+            self.logger.info(
+                f"OCR device changed: {self.current_prepared_device} -> {self.device}; reloading "
+                f"{getattr(ocr_to_use, 'value', ocr_to_use)}"
+            )
+            try:
+                await unload_ocr(ocr_to_use)
+            except Exception as e:
+                self.logger.warning(f"Failed to unload OCR model after a device change: {e}")
+            self.model_prepared = False
 
         if self.model_prepared and self.current_prepared_ocr == ocr_to_use:
             return
@@ -167,6 +186,7 @@ class OcrService:
             await prepare_ocr(ocr_to_use, self.device)
             self.model_prepared = True
             self.current_prepared_ocr = ocr_to_use
+            self.current_prepared_device = self.device
             self.logger.info(f"OCR model ready: {getattr(ocr_to_use, 'value', ocr_to_use)}")
         except Exception as e:
             self.logger.error(f"Failed to prepare OCR model: {e}")
@@ -182,8 +202,9 @@ class OcrService:
                 self.logger.warning(f"Failed to unload current OCR model {self.current_prepared_ocr}: {e}")
             finally:
                 self.current_prepared_ocr = None
+                self.current_prepared_device = None
                 self.model_prepared = False
-    
+
     def _region_to_quadrilateral(self, region: Dict[str, Any], image_shape: Tuple[int, int]) -> Quadrilateral:
         """将文本框区域转换为OCR所需的Quadrilateral格式"""
         try:
@@ -359,8 +380,7 @@ class OcrService:
                     poly[i] = [int(round(point[0])), int(round(point[1]))]
         # --- END FIX ---
             
-        if not self.model_prepared or self.current_prepared_ocr != ocr_key:
-            await self.prepare_model(ocr_key)
+        await self.prepare_model(ocr_key)
         
         # Convert PIL Image to numpy array if necessary
         if isinstance(image, Image.Image):
@@ -466,8 +486,7 @@ class OcrService:
         ocr_config = self._resolve_ocr_config(config)
         ocr_key = ocr_config.ocr if hasattr(ocr_config, 'ocr') else ocr_config
               
-        if not self.model_prepared or self.current_prepared_ocr != ocr_key:
-            await self.prepare_model(ocr_key)
+        await self.prepare_model(ocr_key)
         
         try:
             start_time = asyncio.get_event_loop().time()

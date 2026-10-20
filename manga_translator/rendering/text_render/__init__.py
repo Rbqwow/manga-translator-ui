@@ -31,6 +31,7 @@ from ._fonts import (
     load_font_file,
     qt_family_is_ambiguous,
     register_font_file,
+    registered_font_files,
     select_hyphenator,
     set_bold,
     set_font,

@@ -4,7 +4,6 @@ import cv2
 import numpy as np
 import torch
 from PIL import Image
-from torchvision.transforms import ToTensor
 
 from ..utils.image_modes import normalize_rgb_image
 from .common import OfflineColorizer
@@ -49,6 +48,8 @@ class MangaColorizationV2(OfflineColorizer):
         del self.denoiser
 
     async def _infer(self, image: Image.Image, colorization_size: int, denoise_sigma=25, **kwargs) -> Image.Image:
+        from torchvision.transforms import ToTensor
+
         # Size has to be multiple of 32
         img = np.array(normalize_rgb_image(image))
         original_size = image.size  # 保存原始尺寸 (width, height)

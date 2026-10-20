@@ -11,20 +11,6 @@ from PIL import Image
 from .resources import ImageResource
 
 
-def _release_gpu_memory():
-    """释放GPU显存"""
-    try:
-        import torch
-
-        if torch.cuda.is_available():
-            pass
-            pass
-    except ImportError:
-        pass
-    except Exception:
-        pass
-
-
 def _trim_working_set() -> bool:
     """提示 Windows 回收当前进程工作集。"""
     try:
@@ -268,7 +254,6 @@ class ResourceManager:
             for resource in self._image_cache.values():
                 resource.release()
             self._image_cache.clear()
-        _release_gpu_memory()
 
     def release_image_cache_except_current(self, force: bool = False) -> int:
         """只保留当前图，释放 image_cache 中的其他图片。"""
@@ -312,8 +297,6 @@ class ResourceManager:
 
         if release_from_cache:
             self.clear_image_cache()
-
-        _release_gpu_memory()
 
         self.logger.debug("Image unloaded and memory released")
 
@@ -381,7 +364,6 @@ class ResourceManager:
             for resource in self._image_cache.values():
                 resource.release()
             self._image_cache.clear()
-        _release_gpu_memory()
 
     def release_memory_after_export(self) -> None:
         """Trim process memory under pressure while retaining the image LRU."""
@@ -390,7 +372,6 @@ class ResourceManager:
         import gc
 
         gc.collect()
-        _release_gpu_memory()
         _trim_working_set()
 
     def __del__(self):
