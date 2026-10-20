@@ -6,6 +6,7 @@ import stat
 import sys
 import tempfile
 from abc import ABC, abstractmethod
+from copy import deepcopy
 from functools import cached_property
 
 import torch
@@ -387,11 +388,19 @@ class ModelWrapper(ABC):
         '''
         Loads models into memory. Has to be called before `forward`.
         '''
+        from .onnx_runtime import is_onnx_gpu_disabled
+
         if not self.is_downloaded():
             await self.download()
+        # Retained models must reflect both per-model options and provider policy.
+        # Snapshot options before loading so mutations cannot alter the cache key.
+        load_config = (str(device), deepcopy(kwargs), is_onnx_gpu_disabled())
+        if self.is_loaded() and getattr(self, '_loaded_config', None) != load_config:
+            await self.unload()
         if not self.is_loaded():
             await self._load(device=device, **kwargs)
             self._loaded = True
+            self._loaded_config = load_config
 
     async def unload(self):
         if self.is_loaded():
@@ -401,11 +410,8 @@ class ModelWrapper(ABC):
             try:
                 import gc
                 gc.collect()
-                import torch
-                if torch.cuda.is_available():
-                    torch.cuda.empty_cache()
-                    if hasattr(torch.cuda, 'ipc_collect'):
-                        torch.cuda.ipc_collect()
+                from .gpu_memory import release_gpu_memory
+                release_gpu_memory()
             except Exception:
                 pass
 

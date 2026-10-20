@@ -344,6 +344,7 @@ class MangaTranslator:
         'img_alpha',
         'mask',
         'mask_raw',
+        'raw_mask_mask',
         'textlines',
     )
 
@@ -2217,10 +2218,8 @@ class MangaTranslator:
         import gc
         gc.collect()
         
-        # 卸载后主动回收 CUDA 缓存并同步 GPU 任务
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
-            torch.cuda.synchronize()
+        from .utils.gpu_memory import release_gpu_memory
+        release_gpu_memory()
         
         logger.info(f"Model {tool}/{model} unloaded; memory released")
 
@@ -2243,19 +2242,8 @@ class MangaTranslator:
             gc.collect()
             MangaTranslator._last_gc_collect_ts = now
 
-        # 仅在 CUDA 设备下执行显存清理；MPS 目前无等价 empty_cache。
-        device_str = str(getattr(self, 'device', ''))
-        if device_str.startswith('cuda'):
-            try:
-                import torch
-                if torch.cuda.is_available():
-                    if aggressive:
-                        torch.cuda.empty_cache()
-                        if hasattr(torch.cuda, 'ipc_collect'):
-                            torch.cuda.ipc_collect()
-                    torch.cuda.synchronize()
-            except Exception:
-                pass
+        from .utils.gpu_memory import release_gpu_memory
+        release_gpu_memory(getattr(self, 'device', ''), aggressive=aggressive)
 
     def _get_cuda_memory_snapshot(self) -> Optional[dict]:
         """获取当前 CUDA 显存快照。非 CUDA 设备返回 None。"""
@@ -2384,54 +2372,38 @@ class MangaTranslator:
             translated_contexts: List[(ctx, config)] - 翻译后的上下文
             keep_results: bool - 是否保留 ctx.result（用于返回结果）
         """
-#         import gc
-        
-        # 1. 清理原始图片
-        if current_batch_images:
-            for image, _ in current_batch_images:
-                is_result = False
-                if keep_results and translated_contexts:
-                    for t_ctx, _ in translated_contexts:
-                        if hasattr(t_ctx, 'result') and t_ctx.result is image:
-                            is_result = True
-                            break
-                if not is_result:
-                    if hasattr(image, 'close'):
-                        try:
-                            image.close()
-                        except Exception:
-                            pass
-            current_batch_images.clear()
-        
-        # 2. 清理预处理上下文中的输入图像
-        if preprocessed_contexts:
-            for ctx, _ in preprocessed_contexts:
-                if hasattr(ctx, 'input') and ctx.input is not None:
-                    is_result = False
-                    if keep_results and translated_contexts:
-                        for t_ctx, _ in translated_contexts:
-                            if hasattr(t_ctx, 'result') and t_ctx.result is ctx.input:
-                                is_result = True
-                                break
-                    if not is_result:
-                        # 先关闭再删除
-                        if hasattr(ctx.input, 'close'):
-                            try:
-                                ctx.input.close()
-                            except Exception:
-                                pass
-                    del ctx.input
-                    ctx.input = None
-            preprocessed_contexts.clear()
-        
-        # 3. 清理翻译上下文中的中间图像
-        if translated_contexts:
-            for ctx, _ in translated_contexts:
-                # 清理中间处理图像（使用 del 显式删除）
-                self._clear_context_intermediate_fields(ctx, include_result=not keep_results)
-            
-            translated_contexts.clear()
-        
+        # Snapshot both lists before clearing either: some modes pass the same
+        # list twice, while HQ mode only supplies preprocessed_contexts.
+        contexts = {}
+        for items in (preprocessed_contexts, translated_contexts):
+            for ctx, _ in items or ():
+                contexts[id(ctx)] = ctx
+        result_ids = {
+            id(ctx.result) for ctx in contexts.values()
+            if keep_results and getattr(ctx, 'result', None) is not None
+        }
+        closed_ids = set()
+
+        def close_input(image):
+            if image is None or id(image) in result_ids or id(image) in closed_ids:
+                return
+            closed_ids.add(id(image))
+            if hasattr(image, 'close'):
+                try:
+                    image.close()
+                except Exception:
+                    pass
+
+        for image, _ in current_batch_images or ():
+            close_input(image)
+        for ctx in contexts.values():
+            close_input(getattr(ctx, 'input', None))
+            ctx.input = None
+            self._clear_context_intermediate_fields(ctx, include_result=not keep_results)
+        for items in (current_batch_images, preprocessed_contexts, translated_contexts):
+            if items is not None:
+                items.clear()
+
         # 4. 强制垃圾回收和GPU显存清理
         # 批次边界执行激进显存回收，避免长批处理中显存持续增长。
         self._cleanup_gpu_memory(aggressive=True)
@@ -3048,7 +3020,8 @@ class MangaTranslator:
             text_regions,
             right_to_left=config.render.rtl,
             img=ctx.img_rgb,
-            force_simple_sort=config.force_simple_sort
+            force_simple_sort=config.force_simple_sort,
+            cancel_check=self._check_cancelled,
         )   
         
         
@@ -6085,225 +6058,215 @@ class MangaTranslator:
                 await self._report_progress(progress_state)
                 continue
 
-            # 阶段一：预处理当前批次
             preprocessed_contexts = []
-            for i, (image, config) in enumerate(current_batch_images):
-                # 检查是否被取消
-                await asyncio.sleep(0)
-                self._check_cancelled()  # 检查取消标志
-                try:
-                    self._set_image_context(config, image)
-                    # ✅ 保存context以便渲染阶段复用，避免生成两个文件夹
-                    from .utils.generic import get_image_md5
-                    image_md5 = get_image_md5(image)
-                    self._save_current_image_context(image_md5)
-                    ctx = await self._translate_until_translation(image, config)
-                    if hasattr(image, 'name'):
-                        ctx.image_name = image.name
-                    preprocessed_contexts.append((ctx, config))
-                except Exception as e:
-                    logger.error(f"Error pre-processing image {i+1} in batch: {e}", exc_info=True)
-                    ctx = self._build_stage_error_context(image, e, config, stage='preprocessing')
-                    preprocessed_contexts.append((ctx, config))
-
-            # 阶段二：翻译当前批次
             batch_data = []
-            global_text_index = 1  # 全局文本编号从1开始（与提示词中的编号一致）
-            for ctx, config in preprocessed_contexts:
-                num_regions = len(ctx.text_regions) if ctx.text_regions else 0
-                # 为当前图片生成全局连续的文本编号
-                text_order = list(range(global_text_index, global_text_index + num_regions))
-                global_text_index += num_regions
-                
-                # 获取超分后的尺寸（用于坐标转换）
-                upscaled_size = None
-                if hasattr(ctx, 'img_rgb') and ctx.img_rgb is not None:
-                    upscaled_size = ctx.img_rgb.shape[:2]  # (height, width)
-                
-                image_data = {
-                    'image': ctx.input,
-                    'text_regions': ctx.text_regions if ctx.text_regions else [],
-                    'original_texts': [region.text for region in ctx.text_regions if region.text is not None] if ctx.text_regions else [],
-                    'text_order': text_order,
-                    'upscaled_size': upscaled_size
-                }
-                batch_data.append(image_data)
+            try:
+                # 阶段一：预处理当前批次
+                for i, (image, config) in enumerate(current_batch_images):
+                    # 检查是否被取消
+                    await asyncio.sleep(0)
+                    self._check_cancelled()  # 检查取消标志
+                    try:
+                        self._set_image_context(config, image)
+                        # ✅ 保存context以便渲染阶段复用，避免生成两个文件夹
+                        from .utils.generic import get_image_md5
+                        image_md5 = get_image_md5(image)
+                        self._save_current_image_context(image_md5)
+                        ctx = await self._translate_until_translation(image, config)
+                        if hasattr(image, 'name'):
+                            ctx.image_name = image.name
+                        preprocessed_contexts.append((ctx, config))
+                    except Exception as e:
+                        logger.error(f"Error pre-processing image {i+1} in batch: {e}", exc_info=True)
+                        ctx = self._build_stage_error_context(image, e, config, stage='preprocessing')
+                        preprocessed_contexts.append((ctx, config))
 
-            if any(data['original_texts'] for data in batch_data):
-                try:
-                    sample_config = preprocessed_contexts[0][1] if preprocessed_contexts else None
-                    if sample_config:
-                        # ✅ 创建新的Context用于enhanced_ctx，避免污染第一张图片的context
-                        enhanced_ctx = Context()
-                        # 复制第一张图片的必要属性
-                        if preprocessed_contexts:
-                            first_ctx = preprocessed_contexts[0][0]
-                            if hasattr(first_ctx, 'input'):
-                                enhanced_ctx.input = first_ctx.input
-                            if hasattr(first_ctx, 'img_rgb'):
-                                enhanced_ctx.img_rgb = first_ctx.img_rgb
-                        
-                        enhanced_ctx.high_quality_batch_data = batch_data
-
-                        # ✅ 合并所有页面的text_regions到enhanced_ctx（用于AI断句）
-                        all_regions = []
-                        for ctx, _ in preprocessed_contexts:
-                            if ctx.text_regions:
-                                all_regions.extend(ctx.text_regions)
-                        enhanced_ctx.text_regions = all_regions
-                        logger.debug(f"[HQ Batch] Merged {len(all_regions)} text regions from {len(preprocessed_contexts)} pages")
-
-                        # Centralized prompt loading logic
-                        enhanced_ctx = await self._load_and_prepare_prompts(sample_config, enhanced_ctx)
-                        
-                        all_texts = [text for data in batch_data for text in data['original_texts']]
-                        text_mapping = [(img_idx, region_idx) for img_idx, data in enumerate(batch_data) for region_idx, _ in enumerate(data['original_texts'])]
-                        
-                        logger.info(f"Sending batch data with {len(preprocessed_contexts)} images, {len(all_texts)} text regions to high quality translator")
-                        
-                        # History already contains every completed non-empty page before this batch.
-                        page_index = len(self.all_page_translations)
-                        
-                        # 高质量翻译模式：批量翻译
-                        translated_texts = await self._batch_translate_texts(
-                            all_texts, 
-                            sample_config, 
-                            enhanced_ctx,
-                            page_index=page_index,
-                            batch_index=None,  # 不使用批次内上下文
-                            batch_original_texts=None
-                        )
-                        
-                        for text_idx, (img_idx, region_idx) in enumerate(text_mapping):
-                            if text_idx < len(translated_texts):
-                                ctx, config = preprocessed_contexts[img_idx]
-                                if ctx.text_regions and region_idx < len(ctx.text_regions):
-                                    region = ctx.text_regions[region_idx]
-                                    region.translation = translated_texts[text_idx]
-                                    region.target_lang = config.translator.target_lang
-                                    region._alignment = config.render.alignment
-                                    region._direction = config.render.direction
-                        
-                        for ctx, config in preprocessed_contexts:
-                            if ctx.text_regions:
-                                ctx.text_regions = await self._apply_post_translation_processing(ctx, config)
-                        
-                        # ✅ 立即保存当前批次的翻译结果到all_page_translations，供下一个批次使用上下文
-                        for ctx, config in preprocessed_contexts:
-                            if ctx.text_regions:
-                                # 保存译文和原始区域数量，供历史上下文与 AI 断句复用
-                                page_entries = self._build_page_context_entries(ctx)
-                                self.all_page_translations.append(page_entries)
-                                logger.debug(f"[HQ Batch Context] Saved {len(page_entries)} translations for next batch context")
-                                
-                                # 保存原文（用于并发模式的上下文）
-                                page_original_texts = {i: (r.text_raw if hasattr(r, "text_raw") else r.text)
-                                                      for i, r in enumerate(ctx.text_regions)}
-                                self._original_page_texts.append(page_original_texts)
-                                logger.debug(f"[HQ Batch Context] Saved {len(page_original_texts)} original texts for next batch context")
-                                
-                                # Prune history to prevent memory leak
-                                self._prune_context_history()
-                                
-                except Exception as e:
-                    logger.error(f"Error in high quality batch translation: {e}")
-                    if not self._can_continue_after_error(e):
-                        raise
-                    for ctx_idx, (ctx, config) in enumerate(preprocessed_contexts):
-                        if not batch_data[ctx_idx]['original_texts'] or getattr(ctx, 'translation_error', None):
-                            continue
-                        self._mark_context_failure(ctx, FileTranslationFailure("translation", e), stage='translation')
-                        ctx.text_regions = []
-            # --- NEW: Handle Generate and Export for High-Quality Mode ---
-            if self.generate_and_export:
-                logger.info("'Generate and Export' mode enabled. Skipping rendering.")
+                # 阶段二：翻译当前批次
+                global_text_index = 1  # 全局文本编号从1开始（与提示词中的编号一致）
                 for ctx, config in preprocessed_contexts:
+                    num_regions = len(ctx.text_regions) if ctx.text_regions else 0
+                    # 为当前图片生成全局连续的文本编号
+                    text_order = list(range(global_text_index, global_text_index + num_regions))
+                    global_text_index += num_regions
+                
+                    # 获取超分后的尺寸（用于坐标转换）
+                    upscaled_size = None
+                    if hasattr(ctx, 'img_rgb') and ctx.img_rgb is not None:
+                        upscaled_size = ctx.img_rgb.shape[:2]  # (height, width)
+                
+                    image_data = {
+                        'image': ctx.input,
+                        'text_regions': ctx.text_regions if ctx.text_regions else [],
+                        'original_texts': [region.text for region in ctx.text_regions if region.text is not None] if ctx.text_regions else [],
+                        'text_order': text_order,
+                        'upscaled_size': upscaled_size
+                    }
+                    batch_data.append(image_data)
+
+                if any(data['original_texts'] for data in batch_data):
+                    try:
+                        sample_config = preprocessed_contexts[0][1] if preprocessed_contexts else None
+                        if sample_config:
+                            # ✅ 创建新的Context用于enhanced_ctx，避免污染第一张图片的context
+                            enhanced_ctx = Context()
+                            # 复制第一张图片的必要属性
+                            if preprocessed_contexts:
+                                first_ctx = preprocessed_contexts[0][0]
+                                if hasattr(first_ctx, 'input'):
+                                    enhanced_ctx.input = first_ctx.input
+                                if hasattr(first_ctx, 'img_rgb'):
+                                    enhanced_ctx.img_rgb = first_ctx.img_rgb
+                        
+                            enhanced_ctx.high_quality_batch_data = batch_data
+
+                            # ✅ 合并所有页面的text_regions到enhanced_ctx（用于AI断句）
+                            all_regions = []
+                            for ctx, _ in preprocessed_contexts:
+                                if ctx.text_regions:
+                                    all_regions.extend(ctx.text_regions)
+                            enhanced_ctx.text_regions = all_regions
+                            logger.debug(f"[HQ Batch] Merged {len(all_regions)} text regions from {len(preprocessed_contexts)} pages")
+
+                            # Centralized prompt loading logic
+                            enhanced_ctx = await self._load_and_prepare_prompts(sample_config, enhanced_ctx)
+                        
+                            all_texts = [text for data in batch_data for text in data['original_texts']]
+                            text_mapping = [(img_idx, region_idx) for img_idx, data in enumerate(batch_data) for region_idx, _ in enumerate(data['original_texts'])]
+                        
+                            logger.info(f"Sending batch data with {len(preprocessed_contexts)} images, {len(all_texts)} text regions to high quality translator")
+                        
+                            # History already contains every completed non-empty page before this batch.
+                            page_index = len(self.all_page_translations)
+                        
+                            # 高质量翻译模式：批量翻译
+                            translated_texts = await self._batch_translate_texts(
+                                all_texts,
+                                sample_config,
+                                enhanced_ctx,
+                                page_index=page_index,
+                                batch_index=None,  # 不使用批次内上下文
+                                batch_original_texts=None
+                            )
+                        
+                            for text_idx, (img_idx, region_idx) in enumerate(text_mapping):
+                                if text_idx < len(translated_texts):
+                                    ctx, config = preprocessed_contexts[img_idx]
+                                    if ctx.text_regions and region_idx < len(ctx.text_regions):
+                                        region = ctx.text_regions[region_idx]
+                                        region.translation = translated_texts[text_idx]
+                                        region.target_lang = config.translator.target_lang
+                                        region._alignment = config.render.alignment
+                                        region._direction = config.render.direction
+                        
+                            for ctx, config in preprocessed_contexts:
+                                if ctx.text_regions:
+                                    ctx.text_regions = await self._apply_post_translation_processing(ctx, config)
+                        
+                            # ✅ 立即保存当前批次的翻译结果到all_page_translations，供下一个批次使用上下文
+                            for ctx, config in preprocessed_contexts:
+                                if ctx.text_regions:
+                                    # 保存译文和原始区域数量，供历史上下文与 AI 断句复用
+                                    page_entries = self._build_page_context_entries(ctx)
+                                    self.all_page_translations.append(page_entries)
+                                    logger.debug(f"[HQ Batch Context] Saved {len(page_entries)} translations for next batch context")
+                                
+                                    # 保存原文（用于并发模式的上下文）
+                                    page_original_texts = {i: (r.text_raw if hasattr(r, "text_raw") else r.text)
+                                                          for i, r in enumerate(ctx.text_regions)}
+                                    self._original_page_texts.append(page_original_texts)
+                                    logger.debug(f"[HQ Batch Context] Saved {len(page_original_texts)} original texts for next batch context")
+                                
+                                    # Prune history to prevent memory leak
+                                    self._prune_context_history()
+                                
+                    except Exception as e:
+                        logger.error(f"Error in high quality batch translation: {e}")
+                        if not self._can_continue_after_error(e):
+                            raise
+                        for ctx_idx, (ctx, config) in enumerate(preprocessed_contexts):
+                            if not batch_data[ctx_idx]['original_texts'] or getattr(ctx, 'translation_error', None):
+                                continue
+                            self._mark_context_failure(ctx, FileTranslationFailure("translation", e), stage='translation')
+                            ctx.text_regions = []
+                # --- NEW: Handle Generate and Export for High-Quality Mode ---
+                if self.generate_and_export:
+                    logger.info("'Generate and Export' mode enabled. Skipping rendering.")
+                    for ctx, config in preprocessed_contexts:
+                        if getattr(ctx, 'translation_error', None):
+                            results.append(ctx)
+                            await report_completed_image_progress()
+                            continue
+                        await self._handle_generate_and_export(ctx, config)
+
+                        # ✅ 标记成功（导出翻译完成）
+                        ctx.success = True
+                        results.append(ctx)
+                        await report_completed_image_progress()
+                
+                    await self._report_progress(progress_state)
+                
+                    continue # BUG FIX: Continue to the next batch instead of returning
+
+                # 阶段三：渲染并保存当前批次
+                for ctx, config in preprocessed_contexts:
+                    # 检查是否被取消
+                    await asyncio.sleep(0)
+                    self._check_cancelled()  # 检查取消标志
                     if getattr(ctx, 'translation_error', None):
                         results.append(ctx)
                         await report_completed_image_progress()
                         continue
-                    await self._handle_generate_and_export(ctx, config)
+                    try:
+                        if hasattr(ctx, 'input'):
+                            from .utils.generic import get_image_md5
+                            image_md5 = get_image_md5(ctx.input)
+                            if not self._restore_image_context(image_md5):
+                                self._set_image_context(config, ctx.input)
+                    
+                        # Colorize/Upscale/Inpaint Only Mode: Skip rendering pipeline
+                        if not self.colorize_only and not self.upscale_only and not self.inpaint_only:
+                            ctx = await self._complete_translation_pipeline(ctx, config)
+                    
+                        # --- BEGIN SAVE LOGIC ---
+                        if save_info and ctx.result:
+                            try:
+                                self._save_and_cleanup_context(ctx, save_info, config, "HQ")
+                            except Exception as save_err:
+                                logger.error(f"Error saving high-quality result for {os.path.basename(ctx.image_name)}: {save_err}")
+                                import traceback
+                                logger.error(traceback.format_exc())
+                        # --- END SAVE LOGIC ---
 
-                    # ✅ 标记成功（导出翻译完成）
-                    ctx.success = True
-                    results.append(ctx)
-                    await report_completed_image_progress()
-                
-                # ✅ 批次完成后立即清理内存
+                        # 只在save_text或text_output_file启用时保存JSON（包括空的text_regions）
+                        if not getattr(ctx, 'skipped', False) and (self.save_text or self.text_output_file) and hasattr(ctx, 'text_regions') and ctx.text_regions is not None and hasattr(ctx, 'image_name') and ctx.image_name:
+                            # 使用循环变量中的config，而不是从ctx中获取
+                            self._save_text_to_file(ctx.image_name, ctx, config)
+
+                        # ✅ 标记成功
+                        if not save_info:
+                            ctx.success = True
+                        # ✅ 清理中间处理图像（保留text_regions等元数据）
+                        self._cleanup_context_memory(ctx, keep_result=True)
+
+                        results.append(ctx)
+                        await report_completed_image_progress()
+                    except Exception as e:
+                        logger.error(f"Error rendering image: {e}")
+                        if not self._can_continue_after_error(e):
+                            raise RuntimeError(f"Rendering failed for {os.path.basename(ctx.image_name) if hasattr(ctx, 'image_name') else 'Unknown'}: {e}") from e
+                        ctx = self._mark_context_failure(ctx, e, stage='rendering')
+                        results.append(ctx)
+                        await report_completed_image_progress()
+            
+            finally:
+                for data in batch_data:
+                    data['image'] = None
+                batch_data.clear()
                 self._cleanup_batch_memory(
                     current_batch_images=current_batch_images,
                     preprocessed_contexts=preprocessed_contexts,
-                    keep_results=True
+                    keep_results=True,
                 )
-                await self._report_progress(progress_state)
-                
-                continue # BUG FIX: Continue to the next batch instead of returning
-
-            # 阶段三：渲染并保存当前批次
-            for ctx, config in preprocessed_contexts:
-                # 检查是否被取消
-                await asyncio.sleep(0)
-                self._check_cancelled()  # 检查取消标志
-                if getattr(ctx, 'translation_error', None):
-                    results.append(ctx)
-                    await report_completed_image_progress()
-                    continue
-                try:
-                    if hasattr(ctx, 'input'):
-                        from .utils.generic import get_image_md5
-                        image_md5 = get_image_md5(ctx.input)
-                        if not self._restore_image_context(image_md5):
-                            self._set_image_context(config, ctx.input)
-                    
-                    # Colorize/Upscale/Inpaint Only Mode: Skip rendering pipeline
-                    if not self.colorize_only and not self.upscale_only and not self.inpaint_only:
-                        ctx = await self._complete_translation_pipeline(ctx, config)
-                    
-                    # --- BEGIN SAVE LOGIC ---
-                    if save_info and ctx.result:
-                        try:
-                            self._save_and_cleanup_context(ctx, save_info, config, "HQ")
-                        except Exception as save_err:
-                            logger.error(f"Error saving high-quality result for {os.path.basename(ctx.image_name)}: {save_err}")
-                            import traceback
-                            logger.error(traceback.format_exc())
-                    # --- END SAVE LOGIC ---
-
-                    # 只在save_text或text_output_file启用时保存JSON（包括空的text_regions）
-                    if not getattr(ctx, 'skipped', False) and (self.save_text or self.text_output_file) and hasattr(ctx, 'text_regions') and ctx.text_regions is not None and hasattr(ctx, 'image_name') and ctx.image_name:
-                        # 使用循环变量中的config，而不是从ctx中获取
-                        self._save_text_to_file(ctx.image_name, ctx, config)
-
-                    # ✅ 标记成功
-                    if not save_info:
-                        ctx.success = True
-                    # ✅ 清理中间处理图像（保留text_regions等元数据）
-                    self._cleanup_context_memory(ctx, keep_result=True)
-
-                    results.append(ctx)
-                    await report_completed_image_progress()
-                except Exception as e:
-                    logger.error(f"Error rendering image: {e}")
-                    if not self._can_continue_after_error(e):
-                        raise RuntimeError(f"Rendering failed for {os.path.basename(ctx.image_name) if hasattr(ctx, 'image_name') else 'Unknown'}: {e}") from e
-                    ctx = self._mark_context_failure(ctx, e, stage='rendering')
-                    results.append(ctx)
-                    await report_completed_image_progress()
-            
-            # ✅ 批次完成后立即清理内存（但保留翻译历史供下一批次使用）
-#             import gc
-            # 1. 清理batch_data中的图像引用
-            for data in batch_data:
-                if 'image' in data:
-                    data['image'] = None
-            batch_data.clear()
-            
-            # 2. 使用统一清理方法
-            self._cleanup_batch_memory(
-                preprocessed_contexts=preprocessed_contexts,
-                keep_results=True
-            )
-            
             logger.debug(f'[MEMORY] Batch {batch_num} cleanup completed (kept translation history for context)')
             await self._report_progress(progress_state)
 

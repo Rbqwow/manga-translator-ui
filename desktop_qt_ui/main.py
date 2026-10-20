@@ -6,6 +6,14 @@ import os
 import sys
 import warnings
 
+# Frozen panel workers must branch before Qt, torch or services are imported.
+if __name__ == '__main__' and sys.argv[1:2] == ['--panel-detection-worker']:
+    import runpy
+    worker_path = os.path.join(sys._MEIPASS, 'panel_worker', 'worker.py')
+    sys.argv = [worker_path, *sys.argv[2:]]
+    runpy.run_path(worker_path, run_name='__main__')
+    raise SystemExit(0)
+
 # 抑制第三方库的警告（必须在导入其他库之前设置）
 warnings.filterwarnings('ignore', message='.*Triton.*')
 warnings.filterwarnings('ignore', message='.*triton.*')

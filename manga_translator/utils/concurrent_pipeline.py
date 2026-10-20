@@ -9,6 +9,7 @@ import logging
 import os
 import queue
 import threading
+import time
 import traceback
 from collections import deque
 from concurrent.futures import ThreadPoolExecutor, wait
@@ -41,7 +42,7 @@ class ConcurrentPipeline:
     4. 渲染线程 → 翻译+修复完成后渲染出图
     
     batch_size 控制一次翻译的图片数，max_workers 控制同时翻译的批次数。
-    等待队列最多容纳二者乘积数量的图片，避免检测/OCR 无限堆积。
+    从加载到渲染完成的页面总数有界，下游变慢时暂停加载。
     
     使用 queue.Queue 和 threading.Lock 进行线程间通信和同步。
     """
@@ -76,6 +77,9 @@ class ConcurrentPipeline:
         # 结果存储 {image_name: ctx}
         # 使用线程锁保护共享数据
         self._lock = threading.Lock()
+        self.max_inflight_pages = self.batch_size * (max_workers + 1)
+        self._page_slots = threading.BoundedSemaphore(self.max_inflight_pages)
+        self._inflight_pages = set()
         # 仅领取批次时串行，保证每批仍按页面顺序打包；网络请求不持有此锁。
         self._batch_lock = threading.Lock()
         self._pending_translation_batches = deque()
@@ -120,6 +124,64 @@ class ConcurrentPipeline:
     def _emit_status(self, message: str):
         """向主线程发送状态消息（线程安全）"""
         self._status_queue.put(message)
+
+    def _acquire_page_slot(self, image_name):
+        # Acquire before decoding, including pages with no text or failed OCR.
+        while True:
+            if self.stop_workers:
+                raise PipelineAbortError('Pipeline stopped while waiting for page capacity')
+            self._check_cancelled_or_raise('Detection+OCR', 'Waiting for page capacity')
+            if self._page_slots.acquire(timeout=0.1):
+                with self._lock:
+                    self._inflight_pages.add(image_name)
+                return
+
+    def _release_page_slot(self, image_name):
+        with self._lock:
+            if image_name not in self._inflight_pages:
+                return
+            self._inflight_pages.remove(image_name)
+        self._page_slots.release()
+
+    def _finish_context(self, ctx):
+        self.translator._cleanup_context_memory(ctx, keep_result=True)
+        with self._lock:
+            self.base_contexts.pop(ctx.image_name, None)
+            self.translation_done.pop(ctx.image_name, None)
+            self.inpaint_done.pop(ctx.image_name, None)
+            self.pending_redo.discard(ctx.image_name)
+        self._release_page_slot(ctx.image_name)
+
+    def _discard_pending_contexts(self, close_resources: bool = True):
+        """Drop page state; ``close_resources`` frees images only when safe.
+
+        Worker threads that outlived ``_shutdown_executors`` still hold
+        references to their page's images and arrays. Closing those images
+        here would be a use-after-free, so a timed-out stop clears the
+        bookkeeping (freeing slots) but leaves the pixel buffers to the garbage
+        collector. The host process still reclaims them once the stragglers
+        exit; the alternative was either leaking page slots or closing files a
+        worker was still reading.
+        """
+        with self._lock:
+            contexts = list(self.base_contexts.values())
+            self.base_contexts.clear()
+            self.translation_done.clear()
+            self.inpaint_done.clear()
+            self.pending_redo.clear()
+            names = list(self._inflight_pages)
+        if close_resources:
+            for ctx in contexts:
+                self.translator._cleanup_context_memory(ctx, keep_result=False)
+        for name in names:
+            self._release_page_slot(name)
+        for pending_queue in (self.translation_queue, self.inpaint_queue, self.render_queue):
+            while True:
+                try:
+                    pending_queue.get_nowait()
+                except queue.Empty:
+                    break
+        self._pending_translation_batches.clear()
     
     def _flush_status_to_logger(self):
         """将队列中的状态消息输出到 logger（在主线程调用）"""
@@ -304,6 +366,8 @@ class ConcurrentPipeline:
                 if self.stop_workers:
                     logger.warning(f"[Detection+OCR] Stop signal received, processed {idx}/{len(file_paths)} images")
                     break
+
+                self._acquire_page_slot(file_path)
                 
                 image = None
                 ctx = None
@@ -325,6 +389,9 @@ class ConcurrentPipeline:
                     ctx.save_lossless = getattr(self.translator, 'save_lossless', False)
                     ctx.compression_effort = getattr(self.translator, 'compression_effort', 100)
                     ctx.config = config
+                    # Keep ownership even if preprocessing is cancelled/raises.
+                    with self._lock:
+                        self.base_contexts[ctx.image_name] = ctx
                     
                     logger.info(f"[Detection+OCR] Processing {idx+1}/{self.total_images}: {ctx.image_name}")
                     
@@ -527,6 +594,54 @@ class ConcurrentPipeline:
             for order in sorted(self._translation_history)[:-self._history_limit]:
                 del self._translation_history[order]
     
+    # Bounds for the stop path: first wait for the futures, then join the
+    # executor threads without ever blocking on a worker stuck in a request.
+    WORKER_STOP_TIMEOUT = 10.0
+    EXECUTOR_SHUTDOWN_TIMEOUT = 10.0
+
+    def _shutdown_executors(self) -> bool:
+        """Join the stage executors with a bound; return False if any survived.
+
+        ``ThreadPoolExecutor.shutdown`` has no timeout, so a worker blocked in a
+        read-timeout-less request or an ONNX call keeps the whole stop path
+        suspended even though ``cancel_futures`` cancelled the queued work.
+        Threads are daemonized by the interpreter's atexit handler; the wait
+        here only exists so cleanup does not run while a worker holds tensors.
+
+        The return value tells the caller whether it is safe to free page
+        buffers: a surviving worker is still reading them.
+        """
+        executors = (
+            self._detection_executor, self._translation_executor,
+            self._inpaint_executor, self._render_executor,
+        )
+        shared_deadline = time.monotonic() + self.EXECUTOR_SHUTDOWN_TIMEOUT
+        for executor in executors:
+            if executor is None:
+                continue
+            executor.shutdown(wait=False, cancel_futures=True)
+
+        remaining = shared_deadline - time.monotonic()
+        threads = [
+            thread for executor in executors if executor is not None
+            for thread in list(getattr(executor, '_threads', ()))
+        ]
+        for thread in threads:
+            remaining = shared_deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            thread.join(timeout=remaining)
+
+        alive = [thread.name for thread in threads if thread.is_alive()]
+        if alive:
+            logger.warning(
+                f"[Concurrent pipeline] {len(alive)} threads still running after "
+                f"{self.EXECUTOR_SHUTDOWN_TIMEOUT:.0f}s: {', '.join(alive)}. "
+                "Continuing without waiting for them; their page buffers are "
+                "left to the garbage collector."
+            )
+        return not alive
+
     async def _translation_async(self):
         """翻译的异步实现"""
         try:
@@ -922,6 +1037,10 @@ class ConcurrentPipeline:
                         verified_ctx = self.base_contexts.get(ctx.image_name)
                     if not verified_ctx:
                         logger.error(f"[Rendering] Base context not found for {ctx.image_name}, skipping")
+                        # Every other exit releases the page slot; skipping that
+                        # here leaked a slot for the rest of the run, and running
+                        # out of slots blocks _acquire_page_slot forever.
+                        self._finish_context(ctx)
                         continue
                     
                     ctx = verified_ctx
@@ -935,10 +1054,7 @@ class ConcurrentPipeline:
 
                         with self._results_lock:
                             self._results.append(ctx)
-                        self.translator._cleanup_context_memory(ctx, keep_result=True)
-                        with self._lock:
-                            if ctx.image_name in self.base_contexts:
-                                del self.base_contexts[ctx.image_name]
+                        self._finish_context(ctx)
                         continue
                     
                     # 检查渲染所需的数据是否完整
@@ -951,10 +1067,7 @@ class ConcurrentPipeline:
                         self._emit_status(f"[Rendering] Skipping failed file {rendered_count}/{self.total_images}: {os.path.basename(ctx.image_name)}")
                         with self._results_lock:
                             self._results.append(ctx)
-                        self.translator._cleanup_context_memory(ctx, keep_result=True)
-                        with self._lock:
-                            if ctx.image_name in self.base_contexts:
-                                del self.base_contexts[ctx.image_name]
+                        self._finish_context(ctx)
                         continue
                     
                     # Rendering may release context arrays; retain the generated sidecar image.
@@ -1035,13 +1148,7 @@ class ConcurrentPipeline:
 
                     # 清理内存 - 调用统一清理函数
                     logger.debug(f"[Rendering] Releasing memory: {ctx.image_name}")
-                    self.translator._cleanup_context_memory(ctx, keep_result=True)
-
-                    # 清理base_contexts
-                    with self._lock:
-                        if ctx.image_name in self.base_contexts:
-                            del self.base_contexts[ctx.image_name]
-                            logger.debug(f"[Rendering] Cleared base context for {ctx.image_name}")
+                    self._finish_context(ctx)
                     
                 except Exception as e:
                     try:
@@ -1063,10 +1170,7 @@ class ConcurrentPipeline:
                         self._emit_status(f"[Rendering] Skipping failed file {rendered_count}/{self.total_images}: {os.path.basename(ctx.image_name)}")
                         with self._results_lock:
                             self._results.append(ctx)
-                        self.translator._cleanup_context_memory(ctx, keep_result=True)
-                        with self._lock:
-                            if ctx.image_name in self.base_contexts:
-                                del self.base_contexts[ctx.image_name]
+                        self._finish_context(ctx)
                         continue
 
                     self._set_critical_error(f'Rendering thread error: {error_msg}', e)
@@ -1188,7 +1292,7 @@ class ConcurrentPipeline:
             logger.info(f"[Concurrent pipeline] Stopped waiting due to an internal stop signal: {e}")
             self.stop_workers = True
             self._cancel_worker_tasks()
-            done, not_done = wait(futures, timeout=10.0)
+            done, not_done = wait(futures, timeout=self.WORKER_STOP_TIMEOUT)
             self._flush_status_to_logger()
             if not_done:
                 thread_names = []
@@ -1205,7 +1309,7 @@ class ConcurrentPipeline:
             self._cancel_worker_tasks()
             # 等待所有线程停止（最多等待10秒）
             logger.info("[Concurrent pipeline] Waiting for all threads to stop...")
-            done, not_done = wait(futures, timeout=10.0)
+            done, not_done = wait(futures, timeout=self.WORKER_STOP_TIMEOUT)
             self._flush_status_to_logger()
             if not_done:
                 # 显示哪些线程没有停止
@@ -1222,18 +1326,22 @@ class ConcurrentPipeline:
             logger.error(traceback.format_exc())
             self.stop_workers = True
             self._cancel_worker_tasks()
-            wait(futures, timeout=10.0)
+            wait(futures, timeout=self.WORKER_STOP_TIMEOUT)
             raise
         finally:
             self.stop_workers = True
-            if hasattr(self.translator, "set_cancel_check_callback"):
+            # Wait for the workers so model cleanup is not handed control while
+            # a worker still uses its tensors, but never block forever: a
+            # blocking requests/ONNX call ignores cancel_futures, and the
+            # 10-second watchdog above only bounds the futures wait, not this
+            # shutdown. An unbounded join pinned the UI on "stopping...".
+            workers_stopped = self._shutdown_executors()
+            if hasattr(self.translator, 'set_cancel_check_callback'):
                 self.translator.set_cancel_check_callback(original_cancel_callback)
-            # 关闭所有线程池
-            for executor in [self._detection_executor, self._translation_executor, 
-                           self._inpaint_executor, self._render_executor]:
-                if executor:
-                    executor.shutdown(wait=False)
-        
+            # A surviving worker still reads its page's images and arrays, so
+            # freeing them here would close files underneath it.
+            self._discard_pending_contexts(close_resources=workers_stopped)
+
         # 检查是否有严重错误
         if self.has_critical_error:
             error_msg = self.critical_error_msg or 'Unknown error'

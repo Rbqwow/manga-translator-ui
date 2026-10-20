@@ -80,6 +80,9 @@ class FakeTranslator:
     def _can_continue_after_error(self, _error):
         return self.ignore_errors
 
+    def _cleanup_context_memory(self, ctx, keep_result=True):
+        pass  # This test double only carries text metadata.
+
 
 async def wait_until(predicate):
     async with asyncio.timeout(5):
@@ -95,6 +98,7 @@ def build_pipeline(translator, *, count=14, batch_size=3, workers=3, detection_d
         try:
             for name, config in zip(paths, configs):
                 pipeline._check_cancelled_or_raise('Test detection')
+                pipeline._acquire_page_slot(name)
                 if detection_delay:
                     time.sleep(detection_delay)
                 ctx = Context(image_name=name, text_regions=[SimpleNamespace(text=name, translation='')])
@@ -117,6 +121,7 @@ def build_pipeline(translator, *, count=14, batch_size=3, workers=3, detection_d
             with pipeline._results_lock:
                 pipeline._results.append(ctx)
             pipeline.stats['rendering'] += 1
+            pipeline._finish_context(ctx)
 
     pipeline._detection_ocr_thread = detect
     pipeline._inpaint_thread = lambda: None
@@ -427,6 +432,61 @@ def test_rate_limit_spaces_request_starts_across_threads():
     with ThreadPoolExecutor(max_workers=3) as executor:
         starts = sorted(executor.map(lambda _index: start_request(), range(3)))
     assert all(later - earlier >= 0.049 for earlier, later in zip(starts, starts[1:]))
+
+
+def test_cancelled_pipeline_stops_waiting_for_a_blocked_worker(monkeypatch):
+    """A worker stuck in a blocking request must not pin the stop path.
+
+    ``executor.shutdown(wait=True)`` has no timeout, so the 10s watchdog that
+    bounds the futures wait was cancelled out by an unbounded join. The user
+    then saw "stopping..." forever even though cancel_futures had already
+    dropped the queued work.
+    """
+    release = threading.Event()
+    entered = threading.Event()
+
+    async def request(_translator, _names):
+        entered.set()
+        release.wait(timeout=30)
+
+    pipeline, names = build_pipeline(FakeTranslator(request))
+    # Keep the regression test fast while preserving the production shape:
+    # futures wait first, then a bounded executor join.
+    monkeypatch.setattr(pipeline, 'WORKER_STOP_TIMEOUT', 0.2)
+    monkeypatch.setattr(pipeline, 'EXECUTOR_SHUTDOWN_TIMEOUT', 0.2)
+
+    async def scenario():
+        task = asyncio.create_task(pipeline.process_batch(names, [None] * len(names)))
+        await asyncio.get_running_loop().run_in_executor(None, entered.wait, 5)
+        task.cancel()
+        try:
+            with pytest.raises(asyncio.CancelledError):
+                await asyncio.wait_for(task, timeout=10)
+        finally:
+            release.set()
+
+    started = time.monotonic()
+    asyncio.run(scenario())
+    elapsed = time.monotonic() - started
+    assert entered.is_set(), 'the stuck worker never started'
+    assert elapsed < 5, f'stop path still blocked for {elapsed:.1f}s'
+    assert pipeline.stop_workers
+
+
+def test_executor_shutdown_joins_workers_that_finish_in_time():
+    """The bound must not truncate the normal join; cleanup still waits."""
+    pipeline = ConcurrentPipeline(FakeTranslator(lambda *_: None), batch_size=1, max_workers=1)
+    finished = threading.Event()
+
+    def work():
+        time.sleep(0.05)
+        finished.set()
+
+    for executor in (pipeline._detection_executor, pipeline._translation_executor,
+                     pipeline._inpaint_executor, pipeline._render_executor):
+        executor.submit(work)
+    pipeline._shutdown_executors()
+    assert finished.is_set()
 
 
 def test_concurrent_glossary_updates_preserve_every_term(tmp_path, monkeypatch):

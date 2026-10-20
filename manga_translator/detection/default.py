@@ -55,7 +55,10 @@ class DefaultDetector(OfflineDetector):
         MODEL = self.model
 
     async def _unload(self):
-        del self.model
+        global MODEL
+        if MODEL is getattr(self, 'model', None):
+            MODEL = None
+        self.model = None
 
     async def _infer(self, image: np.ndarray, detect_size: int, text_threshold: float, box_threshold: float,
                      unclip_ratio: float, verbose: bool = False, result_path_fn=None,

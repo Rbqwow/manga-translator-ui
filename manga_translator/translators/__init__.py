@@ -155,7 +155,16 @@ LANGDETECT_MAP = {
 }
 
 async def unload(key: Translator):
+    """Drop one cached translator and release its model, if it owns one.
+
+    Only stateless translators are cached (``none``/``original``); model-backed
+    translators are created per request, so this is normally a no-op. Shared
+    memory cleanup no longer routes through here: ``model_cleanup.MODEL_CACHES``
+    lists only caches that actually own inference models.
+    """
     translator = translator_cache.pop(key, None)
-    if isinstance(translator, OfflineTranslator):
+    if translator is None:
         # 参数仅为兼容 OfflineTranslator.unload(device) 签名，内部不依赖具体值。
+        return
+    if isinstance(translator, OfflineTranslator):
         await translator.unload('cuda')

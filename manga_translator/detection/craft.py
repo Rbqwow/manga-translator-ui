@@ -22,6 +22,8 @@ from .craft_utils.vgg16_bn import init_weights, vgg16_bn
 # import einops
 from .default_utils import craft_utils, imgproc
 
+MODEL = None
+
 
 class double_conv(nn.Module):
     def __init__(self, in_ch, mid_ch, out_ch):
@@ -150,7 +152,11 @@ class CRAFTDetector(OfflineDetector):
         MODEL = self.model
 
     async def _unload(self):
-        del self.model
+        global MODEL
+        if MODEL is getattr(self, 'model', None):
+            MODEL = None
+        self.model = None
+        self.model_refiner = None
 
     async def _infer(self, image: np.ndarray, detect_size: int, text_threshold: float, box_threshold: float,
                      unclip_ratio: float, verbose: bool = False, result_path_fn=None,

@@ -71,12 +71,8 @@ async def unload(upscaler_key: Upscaler, **kwargs):
         import gc
         gc.collect()
         try:
-            import torch
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
-                if hasattr(torch.cuda, 'ipc_collect'):
-                    torch.cuda.ipc_collect()
-                torch.cuda.synchronize()
+            from ..utils.gpu_memory import release_gpu_memory
+            release_gpu_memory()
         except Exception:
             pass
 

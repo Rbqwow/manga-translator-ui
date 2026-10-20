@@ -2517,14 +2517,8 @@ class TranslationWorker(QObject):
         if self._current_task and not self._current_task.done():
             self._current_task.cancel()
         
-        # 使用统一的内存清理模块
-        try:
-            from desktop_qt_ui.utils.memory_cleanup import full_memory_cleanup
-            # 使用配置中的卸载模型开关
-            unload_models = self.config_dict.get('app', {}).get('unload_models_after_translation', False)
-            full_memory_cleanup(log_callback=self._log_info, unload_models=unload_models)
-        except Exception as e:
-            self._log_warning(f"--- [CLEANUP] Warning: Failed to cleanup: {e}")
+        # _do_processing's finally awaits cleanup after the workers stop.
+        # Unloading here would race with an in-flight inference call.
 
     @staticmethod
     def _build_friendly_error_message(error_message: str, error_traceback: str) -> str:
@@ -3166,7 +3160,7 @@ class TranslationWorker(QObject):
                 from desktop_qt_ui.utils.memory_cleanup import full_memory_cleanup
                 # 使用配置中的卸载模型开关
                 unload_models = self.config_dict.get('app', {}).get('unload_models_after_translation', False)
-                full_memory_cleanup(log_callback=self._log_info, unload_models=unload_models)
+                await full_memory_cleanup(log_callback=self._log_info, unload_models=unload_models)
             except Exception as e:
                 self._log_warning(f"--- [CLEANUP] Warning: Error cleaning up memory: {e}")
 
