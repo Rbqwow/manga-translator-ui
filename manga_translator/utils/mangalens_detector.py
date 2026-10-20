@@ -5,12 +5,13 @@ import os
 import threading
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Optional, Sequence, Tuple, Union
+from typing import TYPE_CHECKING, Any, Optional, Sequence, Tuple, Union
 
 import cv2
 import numpy as np
-import torch
-from ultralytics import YOLO
+
+if TYPE_CHECKING:
+    import torch
 
 from .generic import (
     BASE_PATH,
@@ -93,6 +94,8 @@ class MangaLensBubbleDetector(ModelWrapper):
         auto_download: bool = True,
         auto_load: bool = True,
     ):
+        import torch
+
         self.logger = get_logger(self.__class__.__name__)
         self._custom_model_path = Path(model_path) if model_path else None
         self.auto_download = auto_download
@@ -211,6 +214,8 @@ class MangaLensBubbleDetector(ModelWrapper):
         return self._auto_select_device()
 
     def _resolve_torch_device(self, runtime_device: str) -> torch.device:
+        import torch
+
         wanted = self._normalize_device(runtime_device)
         if wanted == "cuda" and torch.cuda.is_available():
             return torch.device(runtime_device)
@@ -239,7 +244,12 @@ class MangaLensBubbleDetector(ModelWrapper):
         if not os.path.exists(load_path):
             load_path = str(self.model_path)
 
-        model = self.model or YOLO(load_path, task="segment")
+        model = self.model
+        if model is None:
+            # Importing YOLO also loads TorchVision/SAM; only detection needs it.
+            from ultralytics import YOLO
+
+            model = YOLO(load_path, task="segment")
         model.to(str(torch_device))
         self.model = model
         self._torch_device = torch_device
@@ -248,6 +258,8 @@ class MangaLensBubbleDetector(ModelWrapper):
         return self.model
 
     def unload_model(self):
+        import torch
+
         self.model = None
         self._session_device = "cpu"
         self._torch_device = torch.device("cpu")

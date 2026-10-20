@@ -2,11 +2,24 @@ from PIL import Image
 
 from ..config import Colorizer
 from .common import CommonColorizer, OfflineColorizer
-from .manga_colorization_v2 import MangaColorizationV2
 from .model_api_colorizer import GeminiColorizer, OpenAIColorizer
 
+
+def _create_manga_colorization_v2(*args, **kwargs):
+    from .manga_colorization_v2 import MangaColorizationV2
+    return MangaColorizationV2(*args, **kwargs)
+
+
+def __getattr__(name):
+    if name == "MangaColorizationV2":
+        from .manga_colorization_v2 import MangaColorizationV2
+        globals()[name] = MangaColorizationV2
+        return MangaColorizationV2
+    raise AttributeError(f"module '{__name__}' has no attribute '{name}'")
+
+
 COLORIZERS = {
-    Colorizer.mc2: MangaColorizationV2,
+    Colorizer.mc2: _create_manga_colorization_v2,
     Colorizer.openai_colorizer: OpenAIColorizer,
     Colorizer.gemini_colorizer: GeminiColorizer,
 }

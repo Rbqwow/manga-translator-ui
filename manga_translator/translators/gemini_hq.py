@@ -6,7 +6,6 @@ import os
 from io import BytesIO
 from typing import Any, Dict, List
 
-from google.genai import types
 from PIL import Image
 
 from ..api_key_rotation import APIRotationExhaustedError, run_with_api_candidates
@@ -72,6 +71,8 @@ class GeminiHighQualityTranslator(CommonTranslator):
     _GLOBAL_LAST_REQUEST_TS = {}  # {model_name: timestamp}
     
     def __init__(self):
+        from google.genai import types
+
         super().__init__()
         self.client = None
         self.prev_context = ""  # 用于存储多页上下文
@@ -311,6 +312,9 @@ class GeminiHighQualityTranslator(CommonTranslator):
         """高质量批量翻译方法"""
         if not texts:
             return []
+
+        from google.genai import types
+
         if batch_data is None:
             batch_data = []
         

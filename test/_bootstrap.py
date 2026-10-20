@@ -8,11 +8,12 @@
 
 1. ``sys.path`` —— 仓库根 + ``desktop_qt_ui``（不然 ``No module named 'editor'``）；
 2. ``QT_QPA_PLATFORM=offscreen`` —— 必须早于任何 PyQt6 导入；
-3. **torch 必须在 PyQt6 之前加载**。这条是 Windows 上的硬约束：PyQt6 的
-   Qt DLL 搜索路径会顶掉 ``c10.dll`` 的依赖解析，反过来导入会得到
+3. Windows 需要在 PyQt6 之前准备 ``c10.dll``。直接先导入 PyQt6、再导入
+   torch 可能破坏 DLL 初始化顺序，得到
    ``OSError: [WinError 1114] 动态链接库(DLL)初始化例程失败``。
-   桌面端正式入口 ``desktop_qt_ui/main.py`` 里做的就是这件事（见那里引用的
-   https://github.com/pytorch/pytorch/issues/166628），测试沿用同一套。
+   正式入口仅预加载 c10，测试公共环境仍完整预载 torch。
+   启动与后台导入顺序由独立子进程测试覆盖。参考：
+   https://github.com/pytorch/pytorch/issues/166628。
 
 没装 torch 的环境照常跑 —— 预载失败就跳过，不影响纯 Qt 测试。
 """
