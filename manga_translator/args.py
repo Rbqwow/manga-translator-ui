@@ -77,6 +77,14 @@ def create_parser():
                              help='同时执行的翻译批次数（需开启并发处理；默认 3）')
     local_parser.add_argument('--attempts', type=int, default=None,
                              help='翻译失败重试次数，-1表示无限重试（覆盖配置文件）')
+    local_parser.add_argument('--skip-failed-after-retries', action=argparse.BooleanOptionalAction,
+                             default=None,
+                             help='重试耗尽后跳过该页并继续（覆盖配置文件）')
+    local_parser.add_argument('--max-failure-skips', type=int, default=None,
+                             help='整个任务允许跳过的页数上限，0 表示不限制（覆盖配置文件）')
+    local_parser.add_argument('--force-simple-sort', action=argparse.BooleanOptionalAction,
+                             default=None,
+                             help='不使用分格检测，按从上到下、从右到左的简单顺序排列文本框（覆盖配置文件）')
     # 内存管理参数（子进程模式）
     local_parser.add_argument('--subprocess', action='store_true',
                              help='启用子进程模式（支持内存管理和断点续传）')
