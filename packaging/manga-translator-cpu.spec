@@ -1,6 +1,13 @@
 # -*- mode: python ; coding: utf-8 -*-
 from PyInstaller.utils.hooks import collect_data_files, collect_all, get_package_paths
 import os
+from pathlib import Path
+
+panel_root = Path(SPECPATH).parent / 'manga_translator' / 'utils' / 'panel'
+panel_worker_datas = [
+    (str(path), str(Path('panel_worker') / path.relative_to(panel_root).parent))
+    for path in panel_root.rglob('*.py')
+]
 
 # Collect data files dynamically instead of using a hardcoded path
 # Use try-except to handle cases where packages might not be found
@@ -31,7 +38,12 @@ except Exception:
     opencc_datas = []
 
 # Lossless AVIF uses pylibheif's bundled AOM encoder and native extension.
-pylibheif_datas, pylibheif_binaries, pylibheif_hiddenimports = collect_all('pylibheif')
+# Guarded like every other optional collect_all: an environment without the
+# package must still evaluate this spec instead of failing the whole build.
+try:
+    pylibheif_datas, pylibheif_binaries, pylibheif_hiddenimports = collect_all('pylibheif')
+except Exception:
+    pylibheif_datas, pylibheif_binaries, pylibheif_hiddenimports = [], [], []
 
 # 使用collect_all自动收集onnxruntime的所有内容
 try:
@@ -53,7 +65,7 @@ a = Analysis(
     ['../desktop_qt_ui/main.py'],  # 相对于packaging目录
     pathex=[],
     binaries=onnx_binaries + pythainlp_binaries + nlpo3_binaries + pylibheif_binaries,
-    datas=py3langid_datas + unidic_datas + pythainlp_datas + nlpo3_datas + onnx_datas + opencc_datas + pylibheif_datas,  # 添加所有数据文件
+    datas=panel_worker_datas + py3langid_datas + unidic_datas + pythainlp_datas + nlpo3_datas + onnx_datas + opencc_datas + pylibheif_datas,  # 添加所有数据文件
     hiddenimports=[
         'pydensecrf.eigen', 
         'bsdiff4.core', 
