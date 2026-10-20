@@ -5,12 +5,14 @@ import re
 # import json
 from typing import Any, Dict, List
 
+from ..api_key_rotation import APIRotationExhaustedError, run_with_api_candidates
+
 # import openai
 from ..api_request_params import merge_openai_chat_request_params
-from ..api_key_rotation import APIRotationExhaustedError, run_with_api_candidates
 from ..runtime_api_resolver import resolve_runtime_api_config
-from ..utils.dotenv_utils import load_app_dotenv
 from ..utils.curl_cffi_transport import OPENAI_CURL_HEADERS
+from ..utils.dotenv_utils import load_app_dotenv
+from ..utils.retry import RetryExhaustedError
 from .common import (
     VALID_LANGUAGES,
     AsyncOpenAICurlCffi,
@@ -282,7 +284,7 @@ class OpenAITranslator(CommonTranslator):
                 self.logger.error("Reached global attempt limit. Stopping translation.")
                 # 包含最后一次错误的真正原因
                 last_error_msg = str(last_exception) if last_exception else "Unknown error"
-                raise Exception(f"Maximum attempts reached ({self._max_total_attempts}). Last error: {last_error_msg}")
+                raise RetryExhaustedError(f"Maximum attempts reached ({self._max_total_attempts}). Last error: {last_error_msg}")
 
             local_attempt += 1
             attempt += 1
@@ -540,7 +542,7 @@ class OpenAITranslator(CommonTranslator):
 
                 if not is_infinite and attempt >= max_retries:
                     self.logger.error("OpenAI translation still failed after multiple retries. Terminating.")
-                    raise last_exception
+                    raise RetryExhaustedError(str(last_exception)) from last_exception
                 
                 # 重试前断开连接，重建客户端
                 self.logger.info("Closing the previous connection and rebuilding the client before retrying...")
@@ -556,7 +558,7 @@ class OpenAITranslator(CommonTranslator):
                 
                 if not is_infinite and attempt >= max_retries:
                     self.logger.error("OpenAI translation still failed after multiple retries. Terminating.")
-                    raise last_exception
+                    raise RetryExhaustedError(str(last_exception)) from last_exception
                 
                 # 重试前断开连接，重建客户端
                 self.logger.info("Closing the previous connection and rebuilding the client before retrying...")
@@ -564,7 +566,8 @@ class OpenAITranslator(CommonTranslator):
                 await self._sleep_with_cancel_polling(1)
 
         # 只有在所有重试都失败后才会执行到这里
-        raise last_exception if last_exception else Exception("OpenAI translation failed after all retries")
+        raise RetryExhaustedError(str(last_exception) if last_exception else "Translation failed after all retries") from last_exception
+
 
     async def _translate(self, from_lang: str, to_lang: str, queries: List[str], ctx=None) -> List[str]:
         """主翻译方法"""

@@ -679,6 +679,9 @@ class MainWindow(FluentWindow):
             self._request_main_file_snapshot()
 
             if not self._should_prompt_open_results_in_editor():
+                summary = getattr(self.app_logic, "task_skip_summary", "")
+                if summary:
+                    self.app_logic.warning_dialog_requested.emit(summary)
                 return
 
             # qfluentwidgets 的无边框对话框若以最小化主窗口为父窗口弹出，
@@ -688,14 +691,18 @@ class MainWindow(FluentWindow):
 
             from PyQt6.QtWidgets import QMessageBox
 
+            completion_message = self._t(
+                "Translation completed, {count} files saved.\n\nOpen results in editor?",
+                count=len(saved_files),
+            )
+            summary = getattr(self.app_logic, "task_skip_summary", "")
+            if summary:
+                completion_message = summary + "\n\n" + completion_message
             reply = show_error_dialog(
                 self,
                 self._t("Task Completed"),
                 "",
-                self._t(
-                    "Translation completed, {count} files saved.\n\nOpen results in editor?",
-                    count=len(saved_files),
-                ),
+                completion_message,
                 icon=QMessageBox.Icon.Question,
                 buttons=QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
                 default_button=QMessageBox.StandardButton.No,

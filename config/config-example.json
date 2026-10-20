@@ -29,7 +29,7 @@
   "filter_text_enabled": false,
   "kernel_size": 3,
   "mask_dilation_offset": 50,
-  "use_custom_api_params": true,
+  "use_custom_api_params": false,
   "translator": {
     "translator": "openai",
     "target_lang": "CHS",
@@ -58,7 +58,7 @@
     "merge_sigma": 2.5,
     "merge_edge_ratio_threshold": 0.0,
     "merge_special_require_full_wrap": true,
-    "ocr_vl_language_hint": "Japanese",
+    "ocr_vl_language_hint": "auto",
     "ocr_vl_custom_prompt": null,
     "ai_ocr_concurrency": 10,
     "ai_ocr_custom_prompt": null

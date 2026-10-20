@@ -7,8 +7,11 @@
 import multiprocessing
 import os
 import sys
+from copy import deepcopy
 from pathlib import Path
 from typing import List, Tuple
+
+from ..utils.failure_policy import FailureSkipLimitExceeded
 
 ROOT_DIR = (
     Path(sys.executable).resolve().parent
@@ -53,6 +56,30 @@ def get_system_memory_percent() -> float:
 
 
 
+def _classify_partial_contexts(contexts) -> Tuple[List[str], List[str], List[str]]:
+    """Split finished contexts into completed/skipped/failed file names."""
+    completed: List[str] = []
+    skipped: List[str] = []
+    failed: List[str] = []
+    for ctx in contexts:
+        image_name = getattr(ctx, 'image_name', '') or ''
+        file_name = os.path.basename(image_name) or '未知图片'
+        if getattr(ctx, 'skipped', False):
+            skipped.append(image_name)
+            reason = getattr(ctx, 'skip_message', None) or '后端已跳过该文件'
+            print(f"⏭️  跳过: {file_name} - {reason}")
+        elif getattr(ctx, 'translation_error', None):
+            failed.append(image_name)
+            print(f"❌ 失败: {file_name} - {ctx.translation_error}")
+        elif getattr(ctx, 'success', False) or getattr(ctx, 'result', None):
+            completed.append(image_name)
+            print(f"✅ 完成: {file_name}")
+        else:
+            failed.append(image_name)
+            print(f"❌ 失败: {file_name} - 无返回结果")
+    return completed, skipped, failed
+
+
 def worker_translate_batch(
     file_paths: List[str],
     output_dir: str,
@@ -67,8 +94,11 @@ def worker_translate_batch(
     子进程工作函数：翻译一批图片
     """
     import asyncio
+    translator = None
+    failure_skips = []
     
     async def _do_translate():
+        nonlocal translator, failure_skips, partial_contexts
         # 添加路径
         sys.path.insert(0, str(ROOT_DIR))
         sys.path.insert(0, str(ROOT_DIR / 'desktop_qt_ui'))
@@ -116,31 +146,22 @@ def worker_translate_batch(
             'input_folders': set()
         }
         
-        completed = []
-        skipped = []
-        failed = []
         items = [(file_path, manga_config) for file_path in file_paths]
-        contexts = await translator.translate_batch(items, save_info=save_info)
+        try:
+            contexts = await translator.translate_batch(items, save_info=save_info)
+        finally:
+            # The policy belongs to this async task, so capture its summary
+            # before asyncio.run restores the caller's context.
+            failure_skips = translator.failure_skip_policy.skipped_items
+            # A skip-limit abort replaces the return value with an exception;
+            # pages already written must still reach the parent's counters.
+            partial_contexts = list(
+                getattr(translator, '_last_batch_partial_results', None) or []
+            )
 
-        for ctx in contexts:
-            image_name = getattr(ctx, 'image_name', '') or ''
-            file_name = os.path.basename(image_name) or '未知图片'
-            if getattr(ctx, 'skipped', False):
-                skipped.append(image_name)
-                reason = getattr(ctx, 'skip_message', None) or '后端已跳过该文件'
-                print(f"⏭️  跳过: {file_name} - {reason}")
-            elif getattr(ctx, 'translation_error', None):
-                failed.append(image_name)
-                print(f"❌ 失败: {file_name} - {ctx.translation_error}")
-            elif getattr(ctx, 'success', False) or getattr(ctx, 'result', None):
-                completed.append(image_name)
-                print(f"✅ 完成: {file_name}")
-            else:
-                failed.append(image_name)
-                print(f"❌ 失败: {file_name} - 无返回结果")
+        return _classify_partial_contexts(contexts)
 
-        return completed, skipped, failed
-    
+    partial_contexts = []
     try:
         completed, skipped, failed = asyncio.run(_do_translate())
         result_queue.put({
@@ -148,17 +169,20 @@ def worker_translate_batch(
             'completed': completed,
             'skipped': skipped,
             'failed': failed,
+            'failure_skips': failure_skips,
         })
     except Exception as e:
         import traceback
         print(f"\n❌ 子进程异常: {e}")
+        completed, skipped, failed = _classify_partial_contexts(partial_contexts)
         result_queue.put({
-            'status': 'error',
+            'status': 'failure_skip_limit' if isinstance(e, FailureSkipLimitExceeded) else 'error',
             'error': str(e),
             'traceback': traceback.format_exc(),
-            'completed': [],
-            'skipped': [],
-            'failed': []
+            'completed': completed,
+            'skipped': skipped,
+            'failed': failed,
+            'failure_skips': failure_skips,
         })
 
 
@@ -183,11 +207,21 @@ async def translate_with_subprocess(
     Returns:
         (success_count, skipped_count, failed_count)
     """
+    # Match FailureSkipPolicy's path identity, including Windows case aliases,
+    # so the same page cannot spend the budget twice in separate workers.
+    unique_files = {}
+    for path in all_files:
+        unique_files.setdefault(os.path.normcase(os.path.abspath(path)), path)
+    all_files = list(unique_files.values())
     completed_files = set()
     total_files = len(all_files)
     success_count = 0
     failed_count = 0
     skipped_count = 0
+    cli_config = config_dict.get('cli', {})
+    skip_failures = bool(cli_config.get('skip_failed_after_retries', False))
+    failure_skip_limit = max(0, int(cli_config.get('max_failure_skips', 5)))
+    failure_skips = {}
     
     # 获取系统总内存用于显示
     total_mem = get_total_memory_mb()
@@ -226,6 +260,13 @@ async def translate_with_subprocess(
         print(f"{'='*40}")
         
         result_queue = multiprocessing.Queue()
+        # Each worker owns a fresh translator. Carry the remaining task-wide
+        # budget across restarts without changing the caller's configuration.
+        batch_config = deepcopy(config_dict)
+        if skip_failures and failure_skip_limit:
+            batch_config.setdefault('cli', {})['max_failure_skips'] = (
+                failure_skip_limit - len(failure_skips)
+            )
         
         process = multiprocessing.Process(
             target=worker_translate_batch,
@@ -234,7 +275,7 @@ async def translate_with_subprocess(
                 output_dir,
                 verbose,
                 overwrite,
-                config_dict,
+                batch_config,
                 memory_limit_mb,
                 memory_limit_percent,
                 result_queue
@@ -242,35 +283,55 @@ async def translate_with_subprocess(
         )
         
         process.start()
+        stop_error = None
         
         try:
             # 先尝试从队列获取结果（子进程会在发送结果后退出）
             timeout = len(batch_files) * 600
             try:
                 result = result_queue.get(timeout=timeout)
+                for item in result.get('failure_skips', []):
+                    key = os.path.normcase(os.path.abspath(item['original_path']))
+                    failure_skips.setdefault(key, item)
+                if result['status'] == 'failure_skip_limit' or (
+                    skip_failures and failure_skip_limit
+                    and len(failure_skips) >= failure_skip_limit
+                ):
+                    last_error = next(reversed(failure_skips.values()), {}).get('skip_message', '')
+                    stop_error = FailureSkipLimitExceeded(
+                        f"Failure skip limit reached ({len(failure_skips)}/{failure_skip_limit}). "
+                        f"Last error: {last_error or result.get('error', '')}"
+                    )
                 
+                # A limit abort still leaves the whole batch on disk, so its
+                # per-file outcomes must be counted before the limit is
+                # re-raised; otherwise the last batch is neither success nor
+                # failure and the CLI summary under-reports.
+                batch_completed = result.get('completed', [])
+                batch_skipped = result.get('skipped', [])
+                batch_failed = result.get('failed', [])
+
+                success_count += len(batch_completed)
+                skipped_count += len(batch_skipped)
+                failed_count += len(batch_failed)
+                completed_files.update(batch_completed)
+                completed_files.update(batch_skipped)
+                completed_files.update(batch_failed)
+
                 if result['status'] == 'success':
-                    batch_completed = result.get('completed', [])
-                    batch_skipped = result.get('skipped', [])
-                    batch_failed = result.get('failed', [])
-
-                    success_count += len(batch_completed)
-                    skipped_count += len(batch_skipped)
-                    failed_count += len(batch_failed)
-                    completed_files.update(batch_completed)
-                    completed_files.update(batch_skipped)
-                    completed_files.update(batch_failed)
-
                     print(
                         f"\n📊 批次完成: 成功 {len(batch_completed)}, "
                         f"跳过 {len(batch_skipped)}, 失败 {len(batch_failed)}"
                     )
-                else:
+                elif stop_error is None:
                     print(f"\n❌ 批次错误: {result.get('error', '未知错误')}")
                     if verbose and 'traceback' in result:
                         print(result['traceback'])
-                    failed_count += len(batch_files)
-                    completed_files.update(batch_files)
+                    # Nothing reached this batch's result payload, so charge
+                    # every file of the batch as failed instead.
+                    if not (batch_completed or batch_skipped or batch_failed):
+                        failed_count += len(batch_files)
+                        completed_files.update(batch_files)
                     
             except Exception as e:
                 print(f"\n⚠️ 无法获取子进程结果: {e}")
@@ -295,6 +356,14 @@ async def translate_with_subprocess(
             if process.is_alive():
                 process.kill()
             raise
+        finally:
+            result_queue.close()
+            result_queue.join_thread()
+
+        # Propagate only after joining the child, outside the generic IPC error
+        # handler, so reaching the limit cannot start another batch.
+        if stop_error is not None:
+            raise stop_error
         
         main_mem = get_memory_usage_mb()
         if main_mem > 0:

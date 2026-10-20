@@ -11,12 +11,12 @@ from email.utils import parsedate_to_datetime
 from typing import Any, Awaitable, Callable, Iterable, Optional, TypeVar
 
 from .utils.retry import (
+    RetryExhaustedError,
     get_retry_attempts_from_config,
     normalize_retry_attempts,
     resolve_total_attempts,
     summarize_exception_message,
 )
-
 
 DEFAULT_ROTATION_SLOTS = 3
 MAX_ROTATION_SLOTS = 30
@@ -38,7 +38,7 @@ _STATUS_KEY_SECRET = secrets.token_bytes(32)
 T = TypeVar("T")
 
 
-class APIRotationExhaustedError(RuntimeError):
+class APIRotationExhaustedError(RetryExhaustedError):
     """Raised after all API candidates have exhausted their configured attempts."""
 
 

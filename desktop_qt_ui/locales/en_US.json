@@ -1527,5 +1527,11 @@
   "api_test_error_remote_image": "Failed to download the generated image: HTTP {status}",
   "api_test_error_sakura_base": "Please configure SAKURA_API_BASE first.",
   "api_test_error_unsupported": "This translator does not support API testing.",
-  "Clear Selected": "Clear Selected"
+  "Clear Selected": "Clear Selected",
+  "label_skip_failed_after_retries": "Skip after retries are exhausted",
+  "label_max_failure_skips": "Failure skip limit",
+  "desc_cli_skip_failed_after_retries": "Skip affected images after existing request retries and API failover are exhausted. Failed batches count each affected image. Other errors still follow Ignore Errors. Retries set to -1 remain unlimited.",
+  "desc_cli_max_failure_skips": "Stop the task when this many images have been skipped after exhausted retries (default 3; 0 means unlimited). Only applies when skipping after retries is enabled, and takes precedence over Ignore Errors. Existing outputs and other normal skips do not count.",
+  "task_skipped_summary": "Skipped {count} files after exhausted retries:",
+  "failure_skip_limit_reached": "Task stopped: the limit of {count} images skipped after exhausted retries was reached. Adjust the failure skip limit or resolve the errors below before retrying."
 }

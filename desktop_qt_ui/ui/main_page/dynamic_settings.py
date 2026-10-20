@@ -8,6 +8,7 @@ from manga_translator.image_formats import (
     resolve_pil_image_format,
 )
 from PyQt6.QtCore import QSignalBlocker, Qt, QTimer, pyqtSlot
+from PyQt6.QtGui import QIntValidator
 from PyQt6.QtWidgets import (
     QGridLayout,
     QHBoxLayout,
@@ -1032,6 +1033,16 @@ def _on_upscale_ratio_changed(self, text, full_key):
 
 def _on_numeric_input_changed(self, text, full_key, value_type):
     """统一处理数值类型输入框的变化（支持 int 和 float）"""
+    if full_key == "cli.max_failure_skips":
+        try:
+            value = max(0, int(text))
+        except (TypeError, ValueError):
+            value = 3
+        self.setting_changed.emit(full_key, value)
+        binding = getattr(self, "_settings_value_bindings", {}).get(full_key)
+        if binding:
+            binding[0].setText(str(value))
+        return
     if full_key == "cli.compression_effort":
         self.setting_changed.emit(full_key, normalize_compression_effort(text))
         return
@@ -1351,6 +1362,8 @@ def _create_param_widgets(self, data, parent_layout, prefix=""):
         
         elif isinstance(value, (int, float)):
             widget = QLineEdit(str(value))
+            if full_key == "cli.max_failure_skips":
+                widget.setValidator(QIntValidator(0, 2147483647, widget))
             widget.editingFinished.connect(lambda k=full_key, w=widget: self._on_numeric_input_changed(w.text(), k, float if isinstance(value, float) else int))
 
         elif value is None and key in _OPTIONAL_INPUT_KEYS:

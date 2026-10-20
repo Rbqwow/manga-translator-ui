@@ -7,11 +7,12 @@ from typing import Any, Dict, List
 
 from google.genai import types
 
-from ..api_request_params import apply_gemini_sdk_generation_params
 from ..api_key_rotation import APIRotationExhaustedError, run_with_api_candidates
+from ..api_request_params import apply_gemini_sdk_generation_params
 from ..runtime_api_resolver import resolve_runtime_api_config
-from ..utils.dotenv_utils import load_app_dotenv
 from ..utils.curl_cffi_transport import GEMINI_CURL_HEADERS
+from ..utils.dotenv_utils import load_app_dotenv
+from ..utils.retry import RetryExhaustedError
 from .common import (
     VALID_LANGUAGES,
     AsyncGeminiCurlCffi,
@@ -315,7 +316,7 @@ class GeminiTranslator(CommonTranslator):
             if not self._increment_global_attempt():
                 self.logger.error("Reached global attempt limit. Stopping translation.")
                 last_error_msg = str(last_exception) if last_exception else "Unknown error"
-                raise Exception(f"Maximum attempts reached ({self._max_total_attempts}). Last error: {last_error_msg}")
+                raise RetryExhaustedError(f"Maximum attempts reached ({self._max_total_attempts}). Last error: {last_error_msg}")
 
             local_attempt += 1
             attempt += 1
@@ -616,11 +617,12 @@ class GeminiTranslator(CommonTranslator):
                 # 检查是否达到最大重试次数
                 if not is_infinite and attempt >= max_retries:
                     self.logger.error("Gemini translation still failed after multiple retries. Terminating.")
-                    raise e
+                    raise RetryExhaustedError(str(e)) from e
                 
                 await self._sleep_with_cancel_polling(1)
         
-        raise last_exception if last_exception else RuntimeError("Gemini translation failed without a response")
+        raise RetryExhaustedError(str(last_exception) if last_exception else "Translation failed after all retries") from last_exception
+
 
     async def _translate(self, from_lang: str, to_lang: str, queries: List[str], ctx=None) -> List[str]:
         """主翻译方法"""

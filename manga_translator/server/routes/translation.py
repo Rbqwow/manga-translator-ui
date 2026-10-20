@@ -40,7 +40,11 @@ from manga_translator.server.routes.translation_auth import (
     track_task_start,
     verify_translation_auth,
 )
-from manga_translator.server.to_json import TranslationResponse, to_translation
+from manga_translator.server.to_json import (
+    TranslationResponse,
+    build_skip_summary,
+    to_translation,
+)
 from manga_translator.utils import open_pil_image, save_pil_image
 
 router = APIRouter(prefix="/translate", tags=["translation"])
@@ -420,6 +424,16 @@ async def translate_batch_json(req: Request, data: BatchTranslateRequest):
                 except Exception as e:
                     add_log(f"Failed to save history (image {i+1}): {e}", "WARNING")
         
+        skip_summary = build_skip_summary(results)
+        if skip_summary.count:
+            add_log(f"{skip_summary.count} page(s) skipped after exhausting retries", "WARNING")
+            for item in skip_summary.items:
+                add_log(
+                    f"Skipped {item['original_path']}: {item['skip_message'] or item['skip_reason']}",
+                    "WARNING",
+                )
+        # Every result stays in list order; skipped pages now carry their own
+        # skip_* fields instead of being filtered into silence.
         return [to_translation(ctx) for ctx in results]
     except asyncio.CancelledError:
         add_log("Batch translation (JSON) forcibly cancelled", "WARNING")

@@ -10,6 +10,7 @@ import logging
 from typing import Callable, List, Tuple
 
 from ..runtime_api_resolver import get_runtime_api_override
+from ..utils.retry import RetryExhaustedError
 from ..utils.system_proxy import openai_http_client_kwargs
 from .common import CommonTranslator, validate_openai_response
 from .keys import SAKURA_API_BASE, SAKURA_DICT_PATH
@@ -556,22 +557,22 @@ class SakuraTranslator(CommonTranslator):
                 request_task = asyncio.create_task(self._request_translation(prompt))
                 response = await asyncio.wait_for(request_task, timeout=self._TIMEOUT)
                 break
-            except asyncio.TimeoutError:
+            except asyncio.TimeoutError as e:
                 timeout_attempt += 1
                 if timeout_attempt >= self._TIMEOUT_RETRY_ATTEMPTS:
-                    raise Exception('Sakura request timed out.')
+                    raise RetryExhaustedError('Sakura request timed out.') from e
                 self.logger.warning(f'Sakura retrying after a timeout. Attempts: {timeout_attempt}')
-            except openai.RateLimitError:
+            except openai.RateLimitError as e:
                 ratelimit_attempt += 1
                 if ratelimit_attempt >= self._RATELIMIT_RETRY_ATTEMPTS:
-                    raise
+                    raise RetryExhaustedError(f'Sakura rate limit retries exhausted: {e}') from e
                 self.logger.warning(f'Sakura retrying due to rate limiting. Attempt: {ratelimit_attempt}')
                 await asyncio.sleep(2)
             except (openai.APIError, openai.APIConnectionError) as e:
                 server_error_attempt += 1
                 if server_error_attempt >= self._RETRY_ATTEMPTS:
                     self.logger.error(f'Sakura API request failed. URL: {self.api_base}, error: {e}')
-                    raise Exception(f'Sakura API request failed (URL: {self.api_base}): {e}') from e
+                    raise RetryExhaustedError(f'Sakura API request failed (URL: {self.api_base}): {e}') from e
                 self.logger.warning(f'Sakura retrying due to a server error. URL: {self.api_base}, attempt: {server_error_attempt}, error: {e}')
 
         return response

@@ -1516,5 +1516,11 @@
   "api_test_error_model_unavailable": "La conexión se ha realizado correctamente, pero el modelo {model} no está disponible: {error}",
   "api_test_error_remote_image": "Error al descargar la imagen generada: HTTP {status}",
   "api_test_error_sakura_base": "Configura primero SAKURA_API_BASE.",
-  "api_test_error_unsupported": "Este traductor no admite pruebas de API."
+  "api_test_error_unsupported": "Este traductor no admite pruebas de API.",
+  "label_skip_failed_after_retries": "Omitir al agotar reintentos",
+  "label_max_failure_skips": "Límite de omisiones por fallo",
+  "desc_cli_skip_failed_after_retries": "Omite las imágenes afectadas cuando se agotan los reintentos y la rotación de API existentes. Cuenta cada imagen del lote fallido. Los demás errores siguen Ignorar errores. El valor -1 mantiene los reintentos ilimitados.",
+  "desc_cli_max_failure_skips": "Detiene la tarea al alcanzar este número de imágenes omitidas por reintentos agotados (3 por defecto; 0 sin límite). Solo se aplica al activar la omisión y tiene prioridad sobre Ignorar errores. Las salidas existentes y otras omisiones normales no cuentan.",
+  "task_skipped_summary": "Se omitieron {count} archivos por reintentos agotados:",
+  "failure_skip_limit_reached": "Tarea detenida: se alcanzó el límite de {count} imágenes omitidas por reintentos agotados. Ajusta el límite o resuelve los errores siguientes antes de volver a intentarlo."
 }

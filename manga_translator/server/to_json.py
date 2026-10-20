@@ -61,6 +61,13 @@ class Translation(BaseModel):
         # background_bytes 已移除
         return coords_bytes + is_bulleted_list_byte + angle_bytes + prob_bytes + fg + bg + text_bytes
 
+class SkipSummary(BaseModel):
+    """Server-side counterpart of task_summary.build_skip_summary."""
+
+    count: int
+    items: List[dict]
+
+
 class TranslationResponse(BaseModel):
     regions: List[Translation]
     original_width: int
@@ -70,10 +77,40 @@ class TranslationResponse(BaseModel):
     colorizer: str | None = None
     mask_raw: str | None = None
     mask_is_refined: bool = False
+    # A skipped page used to look identical to a page with no text: both
+    # produced zero regions. These fields let a client tell them apart.
+    skipped: bool = False
+    skip_reason: str | None = None
+    skip_message: str | None = None
 
     def to_bytes(self):
+        """Encode the documented binary form: region count plus records.
+
+        This wire format has no trailer, so it cannot carry ``skipped`` /
+        ``skip_reason`` / ``skip_message``: a skipped page encodes exactly like
+        a page with no text. Keeping the layout stable matters more than adding
+        a field here, because external clients decode by offset. Callers that
+        need the distinction must use the JSON endpoints, which do expose these
+        fields; the server also logs every skip on the streaming path.
+        """
         items = [v.to_bytes() for v in self.regions]
         return struct.pack('i', len(items)) + b''.join(items)
+
+def build_skip_summary(contexts) -> SkipSummary:
+    """Summarise skipped pages so history and clients do not silently lose them."""
+    items = []
+    for ctx in contexts or []:
+        if not getattr(ctx, 'skipped', False):
+            continue
+        items.append({
+            'original_path': getattr(ctx, 'skip_display_name', None)
+            or getattr(ctx, 'image_name', None)
+            or 'Unknown',
+            'skip_reason': getattr(ctx, 'skip_reason', None),
+            'skip_message': getattr(ctx, 'skip_message', None),
+        })
+    return SkipSummary(count=len(items), items=items)
+
 
 def to_translation(ctx: Context) -> TranslationResponse:
     text_regions:list[TextBlock] = ctx.text_regions
@@ -100,6 +137,11 @@ def to_translation(ctx: Context) -> TranslationResponse:
         'original_width': original_width,
         'original_height': original_height
     }
+
+    if getattr(ctx, 'skipped', False):
+        response_data['skipped'] = True
+        response_data['skip_reason'] = getattr(ctx, 'skip_reason', None)
+        response_data['skip_message'] = getattr(ctx, 'skip_message', None)
     
     # 添加超分和上色配置信息（如果有）
     if hasattr(ctx, '_config') and ctx._config:

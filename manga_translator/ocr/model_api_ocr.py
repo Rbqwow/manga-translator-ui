@@ -372,7 +372,7 @@ class BaseAPIOCR(OfflineOCR):
         if not runtime_settings.api_key:
             raise RuntimeError(self._missing_api_key_message())
         if not iter_api_candidates(runtime_settings.candidates, runtime_settings.strategy):
-            raise RuntimeError(
+            raise APIRotationExhaustedError(
                 f"{self.PROVIDER_NAME} has no available API candidates for OCR request."
             )
 

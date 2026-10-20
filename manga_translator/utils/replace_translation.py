@@ -28,6 +28,7 @@ import cv2
 import numpy as np
 
 from ..image_formats import SUPPORTED_IMAGE_EXTENSIONS
+from .failure_policy import FailureSkipLimitExceeded
 from .generic import Context, dump_image, imwrite_unicode, open_pil_image, save_pil_image
 from .path_manager import TRANSLATED_IMAGES_SUBDIR, get_work_dir
 from .textblock import TextBlock
@@ -125,7 +126,7 @@ def get_text_to_img_solid_ink(mask_final, cn_text_img, origin_img, mengban=8, pa
     return result_img
 
 
-async def translate_batch_replace_translation(translator, images_with_configs: List[tuple], save_info: dict = None, global_offset: int = 0, global_total: int = None) -> List[Context]:
+async def translate_batch_replace_translation(translator, images_with_configs: List[tuple], save_info: dict = None, global_offset: int = 0, global_total: int = None, skipped_count: int = 0) -> List[Context]:
     """
     替换翻译模式：从翻译图提取OCR结果并应用到生肉图
     
@@ -176,7 +177,7 @@ async def translate_batch_replace_translation(translator, images_with_configs: L
                 ctx.translation_error = str(e)
                 results.append(ctx)
                 failed_count += 1
-                await translator._report_progress(f"batch:{global_idx}:{global_idx}:{display_total}:{failed_count}")
+                await translator._report_progress(f"batch:{global_idx}:{global_idx}:{display_total}:{failed_count}:{skipped_count}")
                 continue
         
         # 强制启用 AI断句 和 严格边框模式
@@ -206,7 +207,7 @@ async def translate_batch_replace_translation(translator, images_with_configs: L
                 ctx.success = False
                 results.append(ctx)
                 failed_count += 1
-                await translator._report_progress(f"batch:{global_idx}:{global_idx}:{display_total}:{failed_count}")
+                await translator._report_progress(f"batch:{global_idx}:{global_idx}:{display_total}:{failed_count}:{skipped_count}")
                 continue
             
             logger.info(f"  Found translated image: {os.path.basename(translated_path)}")
@@ -661,7 +662,7 @@ async def translate_batch_replace_translation(translator, images_with_configs: L
             results.append(raw_ctx)
             if not getattr(raw_ctx, 'success', False):
                 failed_count += 1
-            await translator._report_progress(f"batch:{global_idx}:{global_idx}:{display_total}:{failed_count}")
+            await translator._report_progress(f"batch:{global_idx}:{global_idx}:{display_total}:{failed_count}:{skipped_count}")
             
             # ✅ 每处理完一张图片后立即清理内存
             translator._cleanup_context_memory(raw_ctx, keep_result=True)
@@ -670,6 +671,11 @@ async def translate_batch_replace_translation(translator, images_with_configs: L
             if translated_ctx:
                 translator._cleanup_context_memory(translated_ctx, keep_result=False)
             
+        except FailureSkipLimitExceeded:
+            # The limit is a task-wide stop, not a per-page error: re-raise it
+            # untouched instead of logging "Processing failed" and spending
+            # another budget slot on a throwaway unnamed context.
+            raise
         except Exception as e:
             logger.error(f"  Processing failed: {e}")
             traceback.print_exc()
@@ -677,10 +683,13 @@ async def translate_batch_replace_translation(translator, images_with_configs: L
             ctx.input = image
             ctx.image_name = image_name
             ctx.text_regions = []
-            ctx.success = False
+            ctx = translator._mark_context_failure(ctx, e, stage='replacement')
             results.append(ctx)
-            failed_count += 1
-            await translator._report_progress(f"batch:{global_idx}:{global_idx}:{display_total}:{failed_count}")
+            if getattr(ctx, 'skipped', False):
+                skipped_count += 1
+            else:
+                failed_count += 1
+            await translator._report_progress(f"batch:{global_idx}:{global_idx}:{display_total}:{failed_count}:{skipped_count}")
         finally:
             if translated_image is not None and hasattr(translated_image, 'close'):
                 try:

@@ -77,6 +77,9 @@ class FakeTranslator:
         ctx.success = False
         return ctx
 
+    def _can_continue_after_error(self, _error):
+        return self.ignore_errors
+
 
 async def wait_until(predicate):
     async with asyncio.timeout(5):

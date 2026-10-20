@@ -393,6 +393,10 @@ class CliConfig(BaseModel):
     """CLI-specific configuration options"""
     attempts: int = -1
     """Number of retry attempts for translation. -1 means unlimited retries"""
+    skip_failed_after_retries: bool = False
+    """Skip pages after request retries/failover are exhausted."""
+    max_failure_skips: int = Field(default=3, ge=0)
+    """Stop when this many pages have been skipped due to errors; 0 means unlimited."""
     verbose: bool = False
     """Enable verbose logging"""
     use_gpu: bool = True
