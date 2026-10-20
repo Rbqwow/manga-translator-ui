@@ -4,10 +4,14 @@ from __future__ import annotations
 
 import os
 import sys
+import tempfile
+import time
+import weakref
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Callable, Dict, List, Optional
 
 import yaml
-from PyQt6.QtCore import QItemSelectionModel, Qt, QTimer, pyqtSignal
+from PyQt6.QtCore import QItemSelectionModel, QSize, Qt, QTimer, pyqtSignal
 from PyQt6.QtGui import QFont, QFontDatabase, QSyntaxHighlighter, QTextCharFormat
 from PyQt6.QtWidgets import (
     QHBoxLayout,
@@ -22,6 +26,7 @@ from qfluentwidgets import (
     CardWidget,
     FluentIcon as FIF,
     LineEdit as FluentLineEdit,
+    IndeterminateProgressBar,
     PlainTextEdit,
     PopUpAniStackedWidget,
     PushButton,
@@ -31,6 +36,28 @@ from qfluentwidgets import (
     ToolButton,
 )
 from ui.secondary_pages.themed_message_box import themed_question, themed_warning
+from qfluentwidgets.components.widgets.table_view import TableItemDelegate
+
+_RULE_READ_EXECUTOR = ThreadPoolExecutor(max_workers=2, thread_name_prefix="rule-reader")
+
+
+def _rule_file_signature(path):
+    stat = os.stat(path)
+    return stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns
+
+
+class _RuleTableDelegate(TableItemDelegate):
+    """Paint status symbols as icons, avoiding expensive font fallback for ✓/✗."""
+
+    def initStyleOption(self, option, index):
+        super().initStyleOption(option, index)
+        if index.column() in (0, 3) and option.text in ("✓", "✗"):
+            option.icon = (FIF.ACCEPT if option.text == "✓" else FIF.CLOSE).icon()
+            option.text = ""
+            option.decorationSize = QSize(14, 14)
+            option.decorationAlignment = Qt.AlignmentFlag.AlignCenter
+            option.features &= ~option.ViewItemFeature.HasDisplay
+            option.features |= option.ViewItemFeature.HasDecoration
 
 
 def _fixed_width_font(size: int = 11) -> QFont:
@@ -85,6 +112,8 @@ class BaseYamlRuleEditorPanel(CardWidget):
     """通用 YAML 规则编辑面板基类，支持通用/横排/竖排三分组与表格/源码双模式。"""
 
     data_changed = pyqtSignal()
+    _load_ready = pyqtSignal(int, object, str)
+    _switch_save_ready = pyqtSignal(int, object, str)
     _AUTOSAVE_DELAY_MS = 600
     COL_ENABLED, COL_PATTERN, COL_MIDDLE, COL_REGEX, COL_COMMENT = range(5)
     COL_COUNT = 5
@@ -106,6 +135,24 @@ class BaseYamlRuleEditorPanel(CardWidget):
             raise ValueError("YAML root must be a dict")
         return raw
 
+    @classmethod
+    def _validate_rule_data(cls, data: dict) -> None:
+        for group, _label in cls.GROUPS:
+            rules = data.get(group, [])
+            if not isinstance(rules, list):
+                raise ValueError(f"Rule group '{group}' must be a list")
+            for row, rule in enumerate(rules, 1):
+                if not isinstance(rule, dict):
+                    raise ValueError(f"{group}[{row}]: rule must be a mapping")
+                try:
+                    cls._validate_rule(rule)
+                except (TypeError, ValueError) as exc:
+                    raise ValueError(f"{group}[{row}]: {exc}") from exc
+
+    @classmethod
+    def _validate_rule(cls, rule: dict) -> None:
+        """Validate subclass data before constructing widgets or saving YAML."""
+
     def __init__(self, t_func: Optional[Callable] = None, parent: Optional[QWidget] = None):
         super().__init__(parent)
         self._t = t_func or (lambda value, **kwargs: value.format(**kwargs) if kwargs else value)
@@ -114,6 +161,28 @@ class BaseYamlRuleEditorPanel(CardWidget):
         self._raw_mode = False
         self._mode_route = "table_view"
         self._current_group = "common"
+        self._loading = False
+        self._load_error = ""
+        self._failed_raw_content = None
+        self._load_generation = 0
+        self._load_future = None
+        # Kept apart from `_load_future`: a refresh may supersede a pending
+        # read, but it must never cancel the write that persists edits the user
+        # already made while switching from source view back to the table.
+        self._save_future = None
+        self._edit_revision = 0
+        self._load_revision = 0
+        self._switching_to_table = False
+        self._saving_table_switch = False
+        self._last_loaded_signature = None
+        self._raw_content = ""
+        self._pending_rows = None
+        self._pending_stack = None
+        self._pending_tables = {}
+        self._populate_timer = QTimer(self)
+        self._populate_timer.timeout.connect(self._populate_next_rows)
+        self._load_ready.connect(self._on_load_ready, type=Qt.ConnectionType.QueuedConnection)
+        self._switch_save_ready.connect(self._on_switch_save_ready, type=Qt.ConnectionType.QueuedConnection)
 
         self._timer = QTimer(self)
         self._timer.setSingleShot(True)
@@ -140,7 +209,9 @@ class BaseYamlRuleEditorPanel(CardWidget):
     def _do_restore_default(self) -> None:
         raise NotImplementedError
 
-    def _invalidate_cache(self) -> None:
+    @staticmethod
+    def _invalidate_cache_for_path(path: str) -> None:
+        """Invalidate runtime data without accessing widgets (also used by workers)."""
         pass
 
     def _create_rule_template(self) -> dict:
@@ -311,6 +382,9 @@ class BaseYamlRuleEditorPanel(CardWidget):
 
         # 4. 底部状态栏
         self.status = CaptionLabel("")
+        self._loading_bar = IndeterminateProgressBar(self, start=False)
+        self._loading_bar.hide()
+        layout.addWidget(self._loading_bar)
         layout.addWidget(self.status)
 
         self._set_group("common")
@@ -355,6 +429,7 @@ class BaseYamlRuleEditorPanel(CardWidget):
 
     def _create_table(self) -> TableWidget:
         table = TableWidget()
+        table.setItemDelegate(_RuleTableDelegate(table))
         table.setColumnCount(self.COL_COUNT)
         table.setHorizontalHeaderLabels(self._get_header_labels())
         table.setSelectionBehavior(TableWidget.SelectionBehavior.SelectRows)
@@ -422,9 +497,13 @@ class BaseYamlRuleEditorPanel(CardWidget):
             self._enter_table_mode()
 
     def _enter_raw_mode(self) -> None:
+        if self._loading:
+            return
         if self._modified:
             self._save_current_content(show_errors=False)
-        yaml_content = self._tables_to_yaml()
+        yaml_content = self._raw_content if not self._modified else self._tables_to_yaml()
+        if self._load_error and self._failed_raw_content is not None:
+            yaml_content = self._failed_raw_content
         self.raw_editor.blockSignals(True)
         self.raw_editor.setPlainText(yaml_content)
         self.raw_editor.blockSignals(False)
@@ -437,71 +516,259 @@ class BaseYamlRuleEditorPanel(CardWidget):
         self._update_status()
 
     def _enter_table_mode(self) -> None:
-        raw_text = self.raw_editor.toPlainText()
-        try:
-            data = self._safe_load_yaml(raw_text)
-            for group_key, _ in self.GROUPS:
-                if group_key in data and not isinstance(data[group_key], list):
-                    raise ValueError(self._t(f"Rule group '{group_key}' must be a list"))
-        except Exception as exc:
-            themed_warning(
-                self,
-                self._t("Parse Error"),
-                self._t("YAML syntax error, cannot switch to table view.") + f"\n\n{exc}",
-            )
-            self.mode_segment.setCurrentItem("raw_edit")
-            self._show_mode_page("raw_edit")
-            self._mode_route = "raw_edit"
-            self._set_table_controls_enabled(False)
-            self._update_status()
+        if self._loading or not self._raw_mode:
             return
-
-        if self._modified:
-            self._save_raw_content(raw_text, show_errors=False)
-
-        self._populate_tables_from_dict(data)
-
-        self._raw_mode = False
-        self._mode_route = "table_view"
-        self._show_mode_page("table_view")
-        self.mode_segment.setCurrentItem("table_view")
-        self._set_table_controls_enabled(True)
-        self._apply_filter(self._current_table(), self.search.text())
-        self._update_status()
+        # Keep the source visible until parsing, staged rows and any save succeed.
+        self.mode_segment.setCurrentItem("raw_edit")
+        self._timer.stop()
+        self._load_data(raw_text=self.raw_editor.toPlainText())
 
     # ─── 数据存取与同步 ───
 
-    def _load_data(self) -> None:
-        if not os.path.exists(self._file_path):
-            self.status.setText(self._t("File not found"))
-            return
-        try:
-            with open(self._file_path, "r", encoding="utf-8") as f:
-                raw_content = f.read()
-            data = self._safe_load_yaml(raw_content)
-        except Exception as exc:
-            self.status.setText(f"{self._t('Load error')}: {exc}")
-            return
+    def _set_loading(self, loading):
+        self._loading = loading
+        self._toolbar.setEnabled(not loading)
+        self.mode_segment.setEnabled(not loading)
+        self.group_segment.setEnabled(not loading)
+        self.filter_card.setEnabled(not loading)
+        self.raw_editor.setReadOnly(loading)
+        for table in self.tables.values():
+            table.setEnabled(not loading and not self._load_error)
+        if self._load_error:
+            self._set_table_controls_enabled(False)
+        elif not loading:
+            self._set_table_controls_enabled(not self._raw_mode)
+        self._loading_bar.setVisible(loading)
+        if loading:
+            self._loading_bar.start()
+            self.status.setText(self._t("web_loading") + "…")
+        else:
+            self._loading_bar.stop()
 
-        self._populate_tables_from_dict(data)
-        self.raw_editor.blockSignals(True)
-        self.raw_editor.setPlainText(raw_content)
-        self.raw_editor.blockSignals(False)
+    def _discard_pending_tables(self):
+        self._populate_timer.stop()
+        self._pending_rows = None
+        if self._pending_stack is not None:
+            self._pending_stack.hide()
+            self._pending_stack.deleteLater()
+        self._pending_stack = None
+        self._pending_tables = {}
 
+    def _report_load_error(self, error, raw_content=None):
+        self._discard_pending_tables()
         self._timer.stop()
-        self._modified = False
+        self._switching_to_table = False
+        self._saving_table_switch = False
+        self._load_error = error
+        self._failed_raw_content = raw_content
+        self._set_loading(False)
         self._update_status()
 
-    def _populate_tables_from_dict(self, data: dict) -> None:
-        for group_key, table in self.tables.items():
+    def _prepare_pending_tables(self, data, *, validated=False):
+        if not validated:
+            self._validate_rule_data(data)
+        self._discard_pending_tables()
+        stack = PopUpAniStackedWidget(self.group_stack.parentWidget())
+        self._pending_stack = stack
+        stack.hide()
+        stack.setAnimationEnabled(False)
+        for group, _label in self.GROUPS:
+            table = self._create_table()
+            self._pending_tables[group] = table
+            stack.addWidget(table)
+            table.horizontalHeader().restoreState(self.tables[group].horizontalHeader().saveState())
             table.blockSignals(True)
-            table.setRowCount(0)
-            rules = data.get(group_key, [])
-            if isinstance(rules, list):
-                for rule in rules:
-                    if isinstance(rule, dict):
-                        self._insert_rule_to_table(table, rule)
+            table.setUpdatesEnabled(False)
+            table.setRowCount(len(data.get(group, [])))
+        self._pending_rows = iter(
+            (self._pending_tables[group], row, rule)
+            for group, _label in self.GROUPS
+            for row, rule in enumerate(data.get(group, []))
+        )
+
+    def _commit_pending_tables(self):
+        old_stack = self.group_stack
+        new_stack = self._pending_stack
+        old_stack.parentWidget().layout().replaceWidget(old_stack, new_stack)
+        self.tables.update(self._pending_tables)
+        self.group_stack = self._group_stack = new_stack
+        for table in self.tables.values():
             table.blockSignals(False)
+            table.setUpdatesEnabled(True)
+        new_stack.setCurrentWidget(self._current_table())
+        new_stack.setAnimationEnabled(True)
+        new_stack.show()
+        old_stack.hide()
+        old_stack.deleteLater()
+        self._pending_stack = None
+        self._pending_tables = {}
+        self._pending_rows = None
+        self._load_error = ""
+        self._failed_raw_content = None
+
+    def _load_data(self, force=False, *, raw_text=None) -> None:
+        if self._loading and (not force or self._saving_table_switch):
+            return
+        self._load_generation += 1
+        generation = self._load_generation
+        if self._load_future is not None:
+            self._load_future.cancel()
+        # A pending switch-save is deliberately left running: its result is
+        # dropped by the generation check, but the file still gets written. The
+        # flag is cleared here so a superseded save cannot leave the panel
+        # stuck in its "saving" state.
+        self._saving_table_switch = False
+        self._discard_pending_tables()
+        if force:
+            self._modified = False
+        self._switching_to_table = raw_text is not None
+        self._load_revision = self._edit_revision
+        self._set_loading(True)
+        path = self._file_path
+        previous = None if force or self._load_error else self._last_loaded_signature
+        parse = type(self)._safe_load_yaml
+        validate = type(self)._validate_rule_data
+
+        def read():
+            if raw_text is None:
+                signature = _rule_file_signature(path)
+                if signature == previous:
+                    return (None, None, signature), ""
+                with open(path, "r", encoding="utf-8") as stream:
+                    raw = stream.read()
+            else:
+                raw, signature = raw_text, previous
+            try:
+                data = parse(raw)
+                validate(data)
+            except Exception as exc:
+                return (raw, None, signature), str(exc)
+            return (raw, data, signature), ""
+
+        self._submit_rule_job(read, "_load_ready", generation)
+
+    def _submit_rule_job(self, work, signal_name, generation, *, saving=False):
+        reference = weakref.ref(self)
+
+        def done(future):
+            if future.cancelled():
+                return
+            try:
+                result, error = future.result()
+            except Exception as exc:
+                result, error = None, str(exc)
+            panel = reference()
+            if panel is not None:
+                try:
+                    getattr(panel, signal_name).emit(generation, result, error)
+                except RuntimeError:
+                    pass
+
+        future = _RULE_READ_EXECUTOR.submit(work)
+        if saving:
+            self._save_future = future
+        else:
+            self._load_future = future
+        future.add_done_callback(done)
+
+    def _discard_obsolete_load(self):
+        if self._edit_revision == self._load_revision and (
+            self._switching_to_table or not self._modified
+        ):
+            return False
+        self._discard_pending_tables()
+        self._switching_to_table = False
+        self._set_loading(False)
+        self._update_status()
+        if self._modified:
+            self._timer.start(self._AUTOSAVE_DELAY_MS)
+        return True
+
+    def _on_load_ready(self, generation, result, error):
+        if generation != self._load_generation:
+            return
+        if self._discard_obsolete_load():
+            return
+        if error:
+            self._report_load_error(error, result[0] if result else None)
+            return
+        raw, data, signature = result
+        if data is None:
+            self._set_loading(False)
+            self._update_status()
+            return
+        self._pending_content = (raw, signature)
+        try:
+            self._prepare_pending_tables(data, validated=True)
+        except Exception as exc:
+            self._report_load_error(str(exc), raw)
+            return
+        self._populate_timer.start(0)
+
+    def _populate_next_rows(self):
+        if self._discard_obsolete_load():
+            return
+        deadline = time.perf_counter() + 0.008
+        for _ in range(40):
+            try:
+                table, row, rule = next(self._pending_rows)
+            except StopIteration:
+                self._populate_timer.stop()
+                if self._switching_to_table and self._modified:
+                    self._save_table_switch()
+                else:
+                    self._finish_table_population()
+                return
+            try:
+                self._populate_row(table, row, rule)
+            except Exception as exc:
+                self._report_load_error(str(exc), self._pending_content[0])
+                return
+            if time.perf_counter() >= deadline:
+                break
+
+    def _save_table_switch(self):
+        self._saving_table_switch = True
+        path, raw = self._file_path, self._pending_content[0]
+        write = type(self)._write_rule_snapshot
+
+        def save():
+            return write(path, raw), ""
+
+        self._submit_rule_job(
+            save, "_switch_save_ready", self._load_generation, saving=True,
+        )
+
+    def _on_switch_save_ready(self, generation, result, error):
+        if generation != self._load_generation:
+            return
+        self._saving_table_switch = False
+        if self._discard_obsolete_load():
+            return
+        if error:
+            self._report_load_error(error, self._pending_content[0])
+            return
+        self._pending_content = result
+        self._finish_table_population()
+
+    def _finish_table_population(self):
+        self._commit_pending_tables()
+        self._raw_content, self._last_loaded_signature = self._pending_content
+        if self._switching_to_table:
+            self._switching_to_table = False
+            self._raw_mode = False
+            self._mode_route = "table_view"
+            self._show_mode_page("table_view")
+            self.mode_segment.setCurrentItem("table_view")
+        elif self._raw_mode:
+            self.raw_editor.blockSignals(True)
+            self.raw_editor.setPlainText(self._raw_content)
+            self.raw_editor.blockSignals(False)
+        self._timer.stop()
+        self._modified = False
+        self._set_loading(False)
+        self._apply_filter(self._current_table(), self.search.text())
+        self._update_status()
 
     def _insert_rule_to_table(self, table: TableWidget, rule: dict, row: Optional[int] = None) -> int:
         r = table.rowCount() if row is None else row
@@ -530,7 +797,11 @@ class BaseYamlRuleEditorPanel(CardWidget):
         self._mark_modified()
 
     def _mark_modified(self) -> None:
+        if self._load_error and not self._raw_mode:
+            self._update_status()
+            return
         self._modified = True
+        self._edit_revision += 1
         self.status.setText(self._t("Saving..."))
         self._timer.start(self._AUTOSAVE_DELAY_MS)
         self._update_status()
@@ -541,13 +812,16 @@ class BaseYamlRuleEditorPanel(CardWidget):
             self._save_current_content(show_errors=False)
 
     def _save_current_content(self, show_errors: bool = False) -> bool:
+        if self._loading or (self._load_error and not self._raw_mode):
+            self._update_status()
+            return False
         if self._raw_mode:
             return self._save_raw_content(self.raw_editor.toPlainText(), show_errors=show_errors)
         return self._write_content(self._tables_to_yaml(), show_errors=show_errors)
 
     def _save_raw_content(self, raw_text: str, show_errors: bool = False) -> bool:
         try:
-            self._safe_load_yaml(raw_text)
+            self._validate_rule_data(self._safe_load_yaml(raw_text))
         except Exception as exc:
             msg = self._t("YAML syntax error, changes not saved.")
             if show_errors:
@@ -557,14 +831,34 @@ class BaseYamlRuleEditorPanel(CardWidget):
             return False
         return self._write_content(raw_text, show_errors=show_errors)
 
+    @classmethod
+    def _write_rule_snapshot(cls, path: str, content: str):
+        """Persist a validated snapshot atomically; no Qt objects on this path."""
+        content = content.rstrip() + "\n"
+        directory = os.path.dirname(os.path.abspath(path))
+        os.makedirs(directory, exist_ok=True)
+        temp_path = None
+        try:
+            with tempfile.NamedTemporaryFile(
+                mode="w", encoding="utf-8", newline="\n", dir=directory,
+                prefix=".rules-", suffix=".tmp", delete=False,
+            ) as stream:
+                temp_path = stream.name
+                stream.write(content)
+            os.replace(temp_path, path)
+        finally:
+            if temp_path is not None and os.path.exists(temp_path):
+                os.remove(temp_path)
+        cls._invalidate_cache_for_path(path)
+        return content, _rule_file_signature(path)
+
     def _write_content(self, content: str, show_errors: bool = False) -> bool:
         try:
-            os.makedirs(os.path.dirname(self._file_path), exist_ok=True)
-            with open(self._file_path, "w", encoding="utf-8", newline="\n") as f:
-                f.write(content.rstrip() + "\n")
-            self._invalidate_cache()
+            self._raw_content, self._last_loaded_signature = self._write_rule_snapshot(self._file_path, content)
             self._timer.stop()
             self._modified = False
+            self._load_error = ""
+            self._failed_raw_content = None
             self.status.setText(self._t("All changes saved"))
             return True
         except Exception as exc:
@@ -798,7 +1092,7 @@ class BaseYamlRuleEditorPanel(CardWidget):
         try:
             self._timer.stop()
             self._do_restore_default()
-            self._load_data()
+            self._load_data(force=True)
             self._apply_filter(self._current_table(), self.search.text())
             self.status.setText(self._t("Defaults restored"))
             self.data_changed.emit()
@@ -806,6 +1100,11 @@ class BaseYamlRuleEditorPanel(CardWidget):
             self.status.setText(f"{self._t('Restore default failed')}: {exc}")
 
     def _update_status(self) -> None:
+        if self._loading:
+            return
+        if self._load_error:
+            self.status.setText(f"{self._t('Load error')}: {self._load_error}")
+            return
         group_key = self._current_group
         table = self.tables.get(group_key)
         if not table:
@@ -831,7 +1130,6 @@ class BaseYamlRuleEditorPanel(CardWidget):
     def refresh(self) -> None:
         if not self._modified:
             self._load_data()
-            self._apply_filter(self._current_table(), self.search.text())
 
     def apply_theme(self) -> None:
         if hasattr(self, "highlighter"):

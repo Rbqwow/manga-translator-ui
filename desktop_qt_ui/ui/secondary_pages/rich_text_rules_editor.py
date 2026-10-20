@@ -546,6 +546,14 @@ class RichTextRulesEditorPanel(BaseYamlRuleEditorPanel):
 
     COL_STYLE = 2
 
+    @classmethod
+    def _validate_rule(cls, rule: dict) -> None:
+        style = rule.get("style")
+        if style is not None and not isinstance(style, dict):
+            raise ValueError("style must be a mapping")
+        # The style button stores JSON metadata; validate it before touching UI.
+        json.dumps(style, ensure_ascii=False)
+
     def _get_file_path(self) -> str:
         return _rules_path()
 
@@ -573,14 +581,15 @@ class RichTextRulesEditorPanel(BaseYamlRuleEditorPanel):
 
         reset_rich_text_rules_to_default(self._file_path)
 
-    def _invalidate_cache(self) -> None:
+    @staticmethod
+    def _invalidate_cache_for_path(path: str) -> None:
         from manga_translator.rendering.rich_text_rules import (
             invalidate_rich_text_rules_cache,
             load_rich_text_rules,
         )
 
-        invalidate_rich_text_rules_cache(self._file_path)
-        load_rich_text_rules(self._file_path)
+        invalidate_rich_text_rules_cache(path)
+        load_rich_text_rules(path)
 
     def _create_rule_template(self) -> dict:
         return {

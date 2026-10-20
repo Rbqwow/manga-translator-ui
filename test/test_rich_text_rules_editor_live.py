@@ -8,12 +8,7 @@
 - 整段替换（无操作记录）按渲染管线全量语义。
 """
 
-import sys
-from pathlib import Path
-
-ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT))
-sys.path.insert(0, str(ROOT / "desktop_qt_ui"))
+import _bootstrap  # noqa: F401
 
 import re  # noqa: E402
 
