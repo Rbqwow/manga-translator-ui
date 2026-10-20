@@ -66,11 +66,12 @@ class ReplacementsEditorPanel(BaseYamlRuleEditorPanel):
 
         reset_text_replacements_to_default(self._file_path)
 
-    def _invalidate_cache(self) -> None:
+    @staticmethod
+    def _invalidate_cache_for_path(path: str) -> None:
         module = sys.modules.get("manga_translator.rendering.text_replacements")
         if module and hasattr(module, "invalidate_replacements_cache"):
             try:
-                module.invalidate_replacements_cache(self._file_path)
+                module.invalidate_replacements_cache(path)
             except Exception:
                 pass
 
