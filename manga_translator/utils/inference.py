@@ -9,8 +9,6 @@ from abc import ABC, abstractmethod
 from copy import deepcopy
 from functools import cached_property
 
-import torch
-
 from ..config import TranslatorConfig
 from .generic import (
     BASE_PATH,
@@ -124,6 +122,8 @@ class ModelWrapper(ABC):
         to determine whether a model should be loaded into vram or ram or automatically choose a model size).
         TODO: Use together with `--use-cuda-limited` flag to enforce stricter memory checks
         '''
+        import torch
+
         return torch.cuda.mem_get_info()
 
     def _check_for_malformed_model_mapping(self):

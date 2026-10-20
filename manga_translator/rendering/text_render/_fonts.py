@@ -43,6 +43,7 @@ _font_original_names = {}
 _font_family_aliases = {}
 _font_registry_revision = 0
 _project_font_paths = set()
+_system_font_paths = set()
 _hyphenator_cache = {}
 
 
@@ -140,6 +141,18 @@ def font_registry_revision() -> int:
     return _font_registry_revision
 
 
+def registered_font_files(include_system: bool = True) -> tuple[str, ...]:
+    """Snapshot the files registered with Qt, without enumerating font faces.
+
+    Explicitly loaded files and project fonts are application fonts. Fonts
+    registered by the headless system-font fallback retain their system origin.
+    """
+    return tuple(
+        path for path in tuple(_font_registration_ids)
+        if include_system or path not in _system_font_paths
+    )
+
+
 def _font_registry_changed() -> None:
     global _font_registry_revision
     _font_registry_revision += 1
@@ -165,6 +178,7 @@ def unregister_font_file(path: str) -> bool:
     _font_file_signatures.pop(key, None)
     _font_families_cache.pop(key, None)
     _font_original_names.pop(key, None)
+    _system_font_paths.discard(key)
     _font_registry_changed()
     return True
 
@@ -239,6 +253,7 @@ def register_font_file(path: str) -> list:
     cached = _font_families_cache.get(key)
     if cached is not None and _font_file_signatures.get(key) == signature:
         return cached
+    was_system_font = key in _system_font_paths
     if key in _font_registration_ids and not unregister_font_file(path):
         return cached or []
 
@@ -274,6 +289,8 @@ def register_font_file(path: str) -> list:
         _font_file_signatures[key] = signature
         _font_families_cache[key] = families
         _font_original_names[key] = tuple(original_names)
+        if was_system_font:
+            _system_font_paths.add(key)
         _font_registry_changed()
     return families
 
@@ -326,13 +343,21 @@ def _register_system_fonts() -> bool:
     if app is None or app.platformName() not in ('offscreen', 'minimal'):
         return False
     count = 0
+    origin_changed = False
     for font_dir in _system_font_dirs():
         for root, _, filenames in os.walk(font_dir):
             for filename in filenames:
                 if not filename.lower().endswith(('.ttf', '.otf', '.ttc', '.otc')):
                     continue
-                register_font_file(os.path.join(root, filename))
+                path = os.path.join(root, filename)
+                if register_font_file(path):
+                    key = _font_registration_key(path)
+                    if key not in _system_font_paths:
+                        _system_font_paths.add(key)
+                        origin_changed = True
                 count += 1
+    if origin_changed:
+        _font_registry_changed()
     logger.info('Registered system fonts for headless Qt: %d files', count)
     return count > 0
 

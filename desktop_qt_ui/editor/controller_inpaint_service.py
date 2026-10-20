@@ -5,7 +5,6 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Optional
 
 import numpy as np
-import torch
 
 from editor.commands import MaskEditCommand
 from services import get_config_service
@@ -71,7 +70,8 @@ class EditorControllerInpaintService:
     def _snapshot_inpaint_config(self) -> InpaintConfigSnapshot:
         config = get_config_service().get_config()
         inpainter = config.inpainter
-        device = "cuda" if config.cli.use_gpu and torch.cuda.is_available() else "cpu"
+        # Snapshot only the preference on the GUI thread. Probe CUDA in the job.
+        device = "cuda" if config.cli.use_gpu else "cpu"
         return InpaintConfigSnapshot(
             inpainter=str(inpainter.inpainter),
             inpainting_precision=str(inpainter.inpainting_precision),
@@ -254,6 +254,13 @@ class EditorControllerInpaintService:
         from manga_translator.config import Inpainter, InpainterConfig, InpaintPrecision
         from manga_translator.inpainting import dispatch as inpaint_dispatch
 
+        device = request.config.device
+        if device == "cuda":
+            import torch
+
+            if not torch.cuda.is_available():
+                device = "cpu"
+
         inpainter_config = InpainterConfig()
         inpainter_config.inpainting_precision = InpaintPrecision(
             request.config.inpainting_precision
@@ -271,7 +278,7 @@ class EditorControllerInpaintService:
             mask=mask,
             config=inpainter_config,
             inpainting_size=request.config.inpainting_size,
-            device=request.config.device,
+            device=device,
         )
         rgb = None if result is None else image_like_to_rgb_array(result, copy=True)
         if rgb is not None:

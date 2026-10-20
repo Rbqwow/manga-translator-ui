@@ -1,3 +1,4 @@
+from PyQt6.QtGui import QFont
 from PyQt6.QtWidgets import QGridLayout, QHBoxLayout, QVBoxLayout, QWidget
 from qfluentwidgets import (
     BodyLabel,
@@ -7,6 +8,7 @@ from qfluentwidgets import (
     LineEdit,
     PrimaryPushButton,
     PushButton,
+    setFont,
     FluentIcon as FIF,
 )
 
@@ -24,7 +26,7 @@ def create_translation_page(self) -> QWidget:
     page_header_layout.setContentsMargins(2, 0, 2, 0)
     page_header_layout.setSpacing(10)
     self.translation_page_title = BodyLabel(self._t("Normal Translation"))
-    self.translation_page_title.setStyleSheet("font-size: 16px; font-weight: 600;")
+    setFont(self.translation_page_title, 16, QFont.Weight.DemiBold)
     self.translation_page_subtitle = CaptionLabel(
         self._t("Tip: Standard translation pipeline with detection, OCR, translation and rendering")
     )
@@ -68,7 +70,7 @@ def create_translation_page(self) -> QWidget:
     task_layout.setHorizontalSpacing(8)
     task_layout.setVerticalSpacing(4)
     self.translation_task_title = BodyLabel(self._t("Translation Task"))
-    self.translation_task_title.setStyleSheet("font-weight: 600;")
+    setFont(self.translation_task_title, 14, QFont.Weight.DemiBold)
     task_layout.addWidget(self.translation_task_title, 0, 0, 1, 6)
 
     self.output_folder_label = CaptionLabel(self._t("Output Directory:"))

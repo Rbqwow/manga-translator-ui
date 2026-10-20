@@ -6,7 +6,6 @@ import re
 from io import BytesIO
 from typing import Any, Dict, List
 
-import openai
 from PIL import Image
 
 from ..api_key_rotation import APIRotationExhaustedError, run_with_api_candidates
@@ -285,6 +284,8 @@ class OpenAIHighQualityTranslator(CommonTranslator):
         """高质量批量翻译方法"""
         if not texts:
             return []
+
+        import openai
         
         if not self.client:
             self._setup_client()

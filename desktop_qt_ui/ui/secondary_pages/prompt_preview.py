@@ -1856,7 +1856,7 @@ class PromptEditorDialog(FluentSecondaryDialog):
                 else:
                     content = json.dumps(data, indent=2, ensure_ascii=False)
             except Exception as e:
-                self._status.setText(f"❌ {self._t('Serialize Error')}: {e}")
+                self._status.setText(f"{self._t('Serialize Error')}: {e}")
                 return
         else:
             # 自由编辑
@@ -1868,7 +1868,7 @@ class PromptEditorDialog(FluentSecondaryDialog):
                 try:
                     json.loads(content)
                 except json.JSONDecodeError as e:
-                    self._status.setText(f"❌ JSON {self._t('Format Error')}: {e}")
+                    self._status.setText(f"JSON {self._t('Format Error')}: {e}")
                     return
             elif ext in (".yaml", ".yml"):
                 try:
@@ -1877,14 +1877,14 @@ class PromptEditorDialog(FluentSecondaryDialog):
                 except ImportError:
                     pass
                 except Exception as e:
-                    self._status.setText(f"❌ YAML {self._t('Format Error')}: {e}")
+                    self._status.setText(f"YAML {self._t('Format Error')}: {e}")
                     return
 
         # 写入文件
         try:
             with open(self._file_path, "w", encoding="utf-8") as f:
                 f.write(content)
-            self._status.setText(f"✅ {self._t('Saved successfully')}")
+            self._status.setText(self._t("Saved successfully"))
             self._was_saved = True
             self._original_content = content
             # 同步另一个 tab
@@ -1892,7 +1892,7 @@ class PromptEditorDialog(FluentSecondaryDialog):
                 self._free_editor.setPlainText(content)
             self.accept()
         except Exception as e:
-            self._status.setText(f"❌ {self._t('Save failed')}: {e}")
+            self._status.setText(f"{self._t('Save failed')}: {e}")
 
     def get_was_modified(self) -> bool:
         if self._is_structured:

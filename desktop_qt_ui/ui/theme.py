@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import logging
 
-from PyQt6.QtGui import QFont, QFontDatabase
+from PyQt6.QtGui import QColor, QFont, QFontDatabase
 from PyQt6.QtWidgets import QApplication, QWidget
 
 from theme_registry import AVAILABLE_THEMES, DEFAULT_THEME
@@ -34,6 +34,16 @@ _CURRENT_THEME = DEFAULT_THEME
 
 def normalize_theme(theme: str | None) -> str:
     return theme if theme in _VALID_THEMES else DEFAULT_THEME
+
+
+def configure_ui_font(app: QApplication) -> None:
+    """Use Qt's native UI family without Fluent's costly multi-family lookup."""
+    from qfluentwidgets import setFontFamilies
+
+    # A multi-family request can populate every installed font on Windows just
+    # to size the first label. Qt still handles missing-glyph fallback with a
+    # single family. This affects UI chrome, not saved manga rendering fonts.
+    setFontFamilies([app.font().family()], save=False)
 
 
 def monospace_font(size: int = 11) -> QFont:
@@ -131,8 +141,24 @@ def apply_application_theme(theme: str, app: QApplication | None = None) -> None
 
     set_current_theme(resolved_theme)
 
-    from qfluentwidgets import setTheme, setThemeColor
+    from qfluentwidgets import qconfig, setTheme, setThemeColor
 
-    setTheme(qfluent_theme)
-    accent = resolve_theme_color(resolved_theme)
-    setThemeColor(accent)
+    # Both calls restyle every Fluent widget even if the value is unchanged.
+    # Startup applies the same theme before and after constructing the pages.
+    theme_changed = qconfig.get(qconfig.themeMode) != qfluent_theme
+    if theme_changed:
+        # setTheme() emits themeChangedFinished itself; Fluent's Mica window
+        # listens for it to repaint its background.
+        setTheme(qfluent_theme)
+    accent = QColor(resolve_theme_color(resolved_theme))
+    accent_changed = qconfig.get(qconfig.themeColor) != accent
+    if accent_changed:
+        setThemeColor(accent)
+
+    # Themes that only differ in accent (for example dark and ocean, both
+    # #4A8EE0) skip setTheme, so nothing emitted themeChangedFinished and the
+    # Mica background kept the previous accent. Emit it for the accent-only
+    # path; with neither change there is nothing to repaint, which keeps the
+    # repeated startup call cheap.
+    if accent_changed and not theme_changed:
+        qconfig.themeChangedFinished.emit()

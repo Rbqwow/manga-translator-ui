@@ -661,7 +661,8 @@ class FolderDialog(FluentSecondaryDialog):
 
             for name, path in quick_access_folders:
                 clean_name = self._normalize_shortcut_name(name)
-                item = self._make_shortcut_item(clean_name, path=path, icon=dir_icon)
+                icon = FluentIcon.CLOUD.qicon() if clean_name == "OneDrive" else dir_icon
+                item = self._make_shortcut_item(clean_name, path=path, icon=icon)
                 quick_access_root.appendRow(item)
 
         # 收藏文件夹分组 - 放在快速访问和此电脑之间
@@ -820,7 +821,7 @@ class FolderDialog(FluentSecondaryDialog):
                             # 跳过 OneDrive（稍后单独处理）
                             if not item.name.startswith("OneDrive"):
                                 additional_folders.append(
-                                    (f"📂 {item.name}", str(item))
+                                    (item.name, str(item))
                                 )
 
             # 排序并添加前5个
@@ -835,7 +836,7 @@ class FolderDialog(FluentSecondaryDialog):
             ]
             for onedrive_path in onedrive_paths:
                 if onedrive_path.exists():
-                    quick_access.append(("☁️ OneDrive", str(onedrive_path)))
+                    quick_access.append(("OneDrive", str(onedrive_path)))
                     break
 
         except Exception:

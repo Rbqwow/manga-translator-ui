@@ -13,7 +13,7 @@ from PyQt6.QtGui import (
     QPixmap,
 )
 from PyQt6.QtWidgets import QGraphicsEllipseItem, QGraphicsView
-from qfluentwidgets import Action, RoundMenu
+from qfluentwidgets import Action, FluentIcon as FIF, RoundMenu
 
 from editor.image_utils import image_like_to_rgb_array
 from editor.mask_region import normalize_mask_for_shape
@@ -1022,35 +1022,47 @@ class GraphicsViewInputMixin:
 
         translate = getattr(self.editor_view, "_t", lambda key, **kwargs: key)
 
-        def add_item(text: str, slot):
-            action = Action(text, self)
+        def add_item(text: str, slot, icon=None):
+            action = Action(icon, text, self) if icon is not None else Action(text, self)
             action.triggered.connect(slot)
             menu.addAction(action)
 
         if selection_count > 0:
             add_item(
-                f"🔍 {translate('OCR Selected Regions')}", self._ocr_selected_regions
+                translate("OCR Selected Regions"),
+                self._ocr_selected_regions,
+                FIF.SEARCH,
             )
             add_item(
-                f"🌐 {translate('Translate Selected Regions')}",
+                translate("Translate Selected Regions"),
                 self._translate_selected_regions,
+                FIF.LANGUAGE,
             )
             menu.addSeparator()
 
-            add_item(f"📋 {translate('Copy Region')}", self._copy_selected_region)
+            add_item(
+                translate("Copy Region"),
+                self._copy_selected_region,
+                FIF.COPY,
+            )
             if selection_count == 1:
-                add_item(f"🎨 {translate('Paste Style')}", self._paste_region_style)
+                add_item(
+                    translate("Paste Style"),
+                    self._paste_region_style,
+                    FIF.PALETTE,
+                )
             menu.addSeparator()
 
             add_item(
-                f"🗑️ {translate('Delete Selected Regions', count=selection_count)}",
+                translate("Delete Selected Regions", count=selection_count),
                 self._delete_selected_regions,
+                FIF.DELETE,
             )
         else:
-            add_item(f"➕ {translate('Add Text Box')}", self._add_text_box)
-            add_item(f"📋 {translate('Paste Region')}", self._paste_region)
+            add_item(translate("Add Text Box"), self._add_text_box, FIF.ADD)
+            add_item(translate("Paste Region"), self._paste_region, FIF.PASTE)
             menu.addSeparator()
-            add_item(f"🔄 {translate('Refresh View')}", self._refresh_view)
+            add_item(translate("Refresh View"), self._refresh_view, FIF.SYNC)
 
         menu.exec(event.globalPos())
 

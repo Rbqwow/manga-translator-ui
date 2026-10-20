@@ -7,6 +7,7 @@ import tempfile
 import unicodedata
 from bisect import bisect_left
 from dataclasses import dataclass
+from functools import lru_cache
 from typing import Any, List, Optional, Tuple
 
 import numpy as np
@@ -34,12 +35,14 @@ try:
 except OSError:
     pass
 
-try:
-    from pythainlp.tokenize import word_tokenize as thai_word_tokenize
-    HAS_PYTHAINLP = True
-except Exception:
-    thai_word_tokenize = None
-    HAS_PYTHAINLP = False
+
+@lru_cache(maxsize=1)
+def _get_thai_word_tokenizer():
+    try:
+        from pythainlp.tokenize import word_tokenize
+        return word_tokenize
+    except Exception:
+        return None
 
 
 @dataclass
@@ -802,7 +805,8 @@ def _tokenize_thai_words(text: str) -> List[str]:
     if not text:
         return []
 
-    if HAS_PYTHAINLP:
+    thai_word_tokenize = _get_thai_word_tokenizer()
+    if thai_word_tokenize is not None:
         try:
             tokens = thai_word_tokenize(text, engine='nlpo3', keep_whitespace=True)
             if tokens:

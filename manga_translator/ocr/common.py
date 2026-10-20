@@ -4,7 +4,6 @@ from abc import abstractmethod
 from collections import Counter
 from typing import List, Union
 
-import networkx as nx
 import numpy as np
 
 from ..config import OcrConfig
@@ -25,6 +24,8 @@ class CommonOCR(InfererModule):
                     for line_idx in range(len(blk.lines)):
                         yield blk, line_idx
             else:
+                import networkx as nx
+
                 from ..utils import quadrilateral_can_merge_region
 
                 G = nx.Graph()

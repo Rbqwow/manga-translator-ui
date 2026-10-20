@@ -1,10 +1,6 @@
 import os
 import re
 
-try:
-    import openai
-except ImportError:
-    openai = None
 import asyncio
 import logging
 from typing import Callable, List, Tuple
@@ -242,6 +238,8 @@ class SakuraTranslator(CommonTranslator):
         return normalized
 
     def _setup_client(self):
+        import openai
+
         self.client = openai.AsyncOpenAI(
             api_key="sk-114514",
             base_url=self.api_base,
@@ -549,6 +547,8 @@ class SakuraTranslator(CommonTranslator):
         """
         处理翻译请求,包括错误处理和重试逻辑。
         """
+        import openai
+
         ratelimit_attempt = 0
         server_error_attempt = 0
         timeout_attempt = 0
