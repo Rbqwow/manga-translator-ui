@@ -2536,6 +2536,44 @@ class MangaTranslator:
             ctx.config = config
         return self._mark_context_failure(ctx, error, stage)
 
+    @staticmethod
+    def _should_write_text_sidecar(ctx: Context) -> bool:
+        """Whether a context still needs its JSON/TXT sidecar written.
+
+        Pages skipped because their output already existed (or because retries
+        were exhausted) are not reprocessed, so writing them again would either
+        duplicate work or overwrite a good file. A ``no_text`` skip is
+        different: the page *was* processed, and the editor relies on its empty
+        JSON to open the project. Marking it skipped for counting must not
+        silently drop that file.
+        """
+        if not getattr(ctx, 'skipped', False):
+            return True
+        return getattr(ctx, 'skip_reason', None) == 'no_text'
+
+    def _mark_context_skipped_no_text(self, ctx: Context) -> None:
+        """Report a textless page as skipped when ``cli.skip_no_text`` is on.
+
+        Detection still has to run to know a page is textless; this only
+        decides how the result is counted and summarised. The page keeps its
+        image result and its JSON/TXT sidecar, matching the existing early exit
+        for textless pages; ``_should_write_text_sidecar`` keeps that true.
+        """
+        if not self.skip_no_text:
+            return
+        # `_translate_until_translation` runs before the batch layer assigns
+        # image_name, so fall back to the input image's own name.
+        name = getattr(ctx, 'image_name', None)
+        if not name:
+            source = getattr(ctx, 'input', None)
+            name = getattr(source, 'name', None) if source is not None else None
+        ctx.skipped = True
+        ctx.skip_reason = 'no_text'
+        ctx.skip_message = 'No text detected'
+        ctx.skip_display_name = name or 'Unknown'
+        ctx.success = True
+        logger.info(f"No text detected, counting as skipped: {os.path.basename(str(ctx.skip_display_name))}")
+
     def _mark_context_failure(self, ctx: Context, error: Exception, stage: str = "") -> Context:
         stage, error = self._resolve_pipeline_error(stage, error)
         if ctx is None:
@@ -4555,7 +4593,7 @@ class MangaTranslator:
                                 logger.error(f"Error saving standard batch result for {os.path.basename(ctx.image_name)}: {save_err}")
 
                         # 只在save_text或text_output_file启用时保存JSON（包括空的text_regions）
-                        if not getattr(ctx, 'skipped', False) and (self.save_text or self.text_output_file) and hasattr(ctx, 'text_regions') and ctx.text_regions is not None and hasattr(ctx, 'image_name') and ctx.image_name:
+                        if self._should_write_text_sidecar(ctx) and (self.save_text or self.text_output_file) and hasattr(ctx, 'text_regions') and ctx.text_regions is not None and hasattr(ctx, 'image_name') and ctx.image_name:
                             # 使用循环变量中的config，而不是从ctx中获取
                             self._save_text_to_file(ctx.image_name, ctx, config)
 
@@ -4909,6 +4947,7 @@ class MangaTranslator:
             await self._report_progress('skip-no-regions', True)
             ctx.result = ctx.upscaled
             ctx.text_regions = []  # 设置为空列表，以便保存空的JSON
+            self._mark_context_skipped_no_text(ctx)
             return await self._revert_upscale(config, ctx)
 
         if self.verbose:
@@ -4943,6 +4982,7 @@ class MangaTranslator:
             await self._report_progress('skip-no-text', True)
             ctx.result = ctx.upscaled
             ctx.text_regions = []  # 设置为空列表，以便保存空的JSON
+            self._mark_context_skipped_no_text(ctx)
             return await self._revert_upscale(config, ctx)
 
         # -- Textline merge
@@ -6238,7 +6278,7 @@ class MangaTranslator:
                         # --- END SAVE LOGIC ---
 
                         # 只在save_text或text_output_file启用时保存JSON（包括空的text_regions）
-                        if not getattr(ctx, 'skipped', False) and (self.save_text or self.text_output_file) and hasattr(ctx, 'text_regions') and ctx.text_regions is not None and hasattr(ctx, 'image_name') and ctx.image_name:
+                        if self._should_write_text_sidecar(ctx) and (self.save_text or self.text_output_file) and hasattr(ctx, 'text_regions') and ctx.text_regions is not None and hasattr(ctx, 'image_name') and ctx.image_name:
                             # 使用循环变量中的config，而不是从ctx中获取
                             self._save_text_to_file(ctx.image_name, ctx, config)
 
