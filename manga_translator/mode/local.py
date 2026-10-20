@@ -202,7 +202,15 @@ async def translate_files(input_paths, output_dir, config_service, verbose=False
     if getattr(args, 'translation_concurrency', None) is not None:
         cli_config['translation_concurrency'] = args.translation_concurrency
     # 如果命令行没有指定，保留配置文件中的 batch_concurrent 值（已在 cli_config 中）
-    
+
+    # 失败跳过策略：命令行显式值优先
+    if getattr(args, 'skip_failed_after_retries', None) is not None:
+        cli_config['skip_failed_after_retries'] = args.skip_failed_after_retries
+    if getattr(args, 'max_failure_skips', None) is not None:
+        cli_config['max_failure_skips'] = args.max_failure_skips
+    if getattr(args, 'force_simple_sort', None) is not None:
+        config_dict['force_simple_sort'] = args.force_simple_sort
+
     config_dict['cli'] = cli_config
     
     
@@ -527,6 +535,12 @@ async def run_local_mode(args):
                 cli_config['translation_concurrency'] = args.translation_concurrency
             if getattr(args, 'batch_size', None) is not None:
                 cli_config['batch_size'] = args.batch_size
+            if getattr(args, 'skip_failed_after_retries', None) is not None:
+                cli_config['skip_failed_after_retries'] = args.skip_failed_after_retries
+            if getattr(args, 'max_failure_skips', None) is not None:
+                cli_config['max_failure_skips'] = args.max_failure_skips
+            if getattr(args, 'force_simple_sort', None) is not None:
+                config_dict['force_simple_sort'] = args.force_simple_sort
             config_dict['cli'] = cli_config
             
             success_count, skipped_count, failed_count = await translate_with_subprocess(
