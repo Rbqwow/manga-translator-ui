@@ -57,6 +57,7 @@ lastUpdated: true
 | `cli.format` | Output Format | 输出格式 | [#cli-format](../desktop/settings/cli-batch-and-output.md#cli-format) |
 | `cli.overwrite` | Overwrite Existing Files | 覆盖已存在文件 | [#cli-overwrite](../desktop/settings/cli-batch-and-output.md#cli-overwrite) |
 | `cli.skip_no_text` | Skip Images Without Text | 跳过无文本图像 | [#cli-skip-no-text](../desktop/settings/cli-batch-and-output.md#cli-skip-no-text) |
+| `force_simple_sort` | Simple Text Order | 简单排序 | [#force-simple-sort](../desktop/settings/cli-batch-and-output.md#force-simple-sort) |
 | `cli.save_text` | Editable Image | 图片可编辑 | [#cli-save-text](../desktop/settings/cli-batch-and-output.md#cli-save-text) |
 | `cli.save_lossless` | Lossless Image Save | 无损图像保存 | [#cli-save-lossless](../desktop/settings/cli-batch-and-output.md#cli-save-lossless) |
 | `cli.save_quality` | Image Save Quality | 图像保存质量 | [#cli-save-quality](../desktop/settings/cli-batch-and-output.md#cli-save-quality) |
@@ -186,6 +187,7 @@ lastUpdated: true
 | `render.font_size` | Font Size | 字体大小 | [页面](../desktop/settings/typesetting-and-rendering.md) |
 | `render.rtl` | Right to Left | 从右到左 | [页面](../desktop/settings/typesetting-and-rendering.md) |
 | `render.layout_mode` | Layout Mode | 排版模式 | [页面](../desktop/settings/typesetting-and-rendering.md) |
+| `render.force_strict_layout` | Force Strict Layout | 强制严格排版 | [页面](../desktop/settings/typesetting-and-rendering.md) |
 | `render.max_font_size` | Maximum Font Size | 最大字体大小 | [页面](../desktop/settings/typesetting-and-rendering.md) |
 | `render.font_scale_ratio` | Font Scale Ratio | 字体缩放比例 | [页面](../desktop/settings/typesetting-and-rendering.md) |
 

@@ -1,20 +1,19 @@
 {
   "schema_version": 1,
   "generated_from": {
-    "phase0_ui_parameter_catalog": "phase0-ui-parameter-fields.json",
+    "phase0_ui_parameter_catalog": "doc/wiki/phase0-ui-parameter-fields.json",
     "ui_label_binding": "desktop_qt_ui/app_logic.py#get_display_mapping",
     "locales": [
       "desktop_qt_ui/locales/en_US.json",
       "desktop_qt_ui/locales/zh_CN.json"
-    ],
-    "release_config": "config/config-example.json"
+    ]
   },
   "baseline_comparison": {
     "requested_baseline": 111,
-    "layout_parameter_entries": 111,
-    "visible_parameter_fields": 110,
+    "layout_parameter_entries": 118,
+    "visible_parameter_fields": 117,
     "difference_from_requested_baseline": -1,
-    "difference_explanation": "The layout has 111 string entries, matching the updated baseline. Its render.font_color entry has a null release default and no None widget branch, leaving 110 visible settings rows (one below 111)."
+    "difference_explanation": "The layout has 118 string entries, matching the updated baseline. Its render.font_color entry has a null release default and no None widget branch, leaving 117 visible settings rows (one below 118)."
   },
   "records": [
     {
@@ -120,7 +119,7 @@
       "wiki_page": "desktop/settings/cli-batch-and-output.md",
       "control": "combo",
       "defaults": {
-        "release_json_value": "不指定",
+        "release_json_value": "webp",
         "source": "config/config-example.json (release) -> desktop_qt_ui/core/config_models.py#CliSettings.format"
       },
       "lifecycle_stages": [
@@ -143,7 +142,7 @@
       "wiki_page": "desktop/settings/cli-batch-and-output.md",
       "control": "toggle",
       "defaults": {
-        "release_json_value": true,
+        "release_json_value": false,
         "source": "config/config-example.json (release) -> desktop_qt_ui/core/config_models.py#CliSettings.overwrite"
       },
       "lifecycle_stages": [
@@ -166,8 +165,31 @@
       "wiki_page": "desktop/settings/cli-batch-and-output.md",
       "control": "toggle",
       "defaults": {
-        "release_json_value": false,
+        "release_json_value": true,
         "source": "config/config-example.json (release) -> desktop_qt_ui/core/config_models.py#CliSettings.skip_no_text"
+      },
+      "lifecycle_stages": [
+        "workflow orchestration",
+        "export"
+      ],
+      "file_action": false,
+      "consumers": [],
+      "consumer_status": "pending Phase 3 source trace",
+      "verification_status": "Phase 0 UI/default evidence catalogued; final consumer trace pending"
+    },
+    {
+      "key": "force_simple_sort",
+      "ui": {
+        "tab": "General",
+        "i18n_key": "label_force_simple_sort",
+        "english": "Simple Text Order",
+        "simplified_chinese": "简单排序"
+      },
+      "wiki_page": "desktop/settings/cli-batch-and-output.md",
+      "control": "toggle",
+      "defaults": {
+        "release_json_value": false,
+        "source": "config/config-example.json (release) -> desktop_qt_ui/core/config_models.py#AppSettings.force_simple_sort"
       },
       "lifecycle_stages": [
         "workflow orchestration",
@@ -202,18 +224,18 @@
       "verification_status": "Phase 0 UI/default evidence catalogued; final consumer trace pending"
     },
     {
-      "key": "cli.export_from_local_json",
+      "key": "cli.save_lossless",
       "ui": {
-        "tab": "Mode Specific",
-        "i18n_key": "label_export_from_local_json",
-        "english": "Export Text from Local JSON Only",
-        "simplified_chinese": "仅从本地 JSON 导出文本"
+        "tab": "General",
+        "i18n_key": "label_save_lossless",
+        "english": "Lossless Image Save",
+        "simplified_chinese": "无损图像保存"
       },
-      "wiki_page": "desktop/settings/mode-specific.md",
+      "wiki_page": "desktop/settings/cli-batch-and-output.md",
       "control": "toggle",
       "defaults": {
         "release_json_value": true,
-        "source": "config/config-example.json (release) -> desktop_qt_ui/core/config_models.py#CliSettings.export_from_local_json"
+        "source": "config/config-example.json (release) -> desktop_qt_ui/core/config_models.py#CliSettings.save_lossless"
       },
       "lifecycle_stages": [
         "workflow orchestration",
@@ -248,6 +270,29 @@
       "verification_status": "Phase 0 UI/default evidence catalogued; final consumer trace pending"
     },
     {
+      "key": "cli.compression_effort",
+      "ui": {
+        "tab": "General",
+        "i18n_key": "label_compression_effort",
+        "english": "Compression Effort",
+        "simplified_chinese": "压缩努力程度"
+      },
+      "wiki_page": "desktop/settings/cli-batch-and-output.md",
+      "control": "int-input",
+      "defaults": {
+        "release_json_value": 100,
+        "source": "config/config-example.json (release) -> desktop_qt_ui/core/config_models.py#CliSettings.compression_effort"
+      },
+      "lifecycle_stages": [
+        "workflow orchestration",
+        "export"
+      ],
+      "file_action": false,
+      "consumers": [],
+      "consumer_status": "pending Phase 3 source trace",
+      "verification_status": "Phase 0 UI/default evidence catalogued; final consumer trace pending"
+    },
+    {
       "key": "cli.attempts",
       "ui": {
         "tab": "General",
@@ -258,8 +303,54 @@
       "wiki_page": "desktop/settings/cli-batch-and-output.md",
       "control": "int-input",
       "defaults": {
-        "release_json_value": 3,
+        "release_json_value": 5,
         "source": "config/config-example.json (release) -> desktop_qt_ui/core/config_models.py#CliSettings.attempts"
+      },
+      "lifecycle_stages": [
+        "workflow orchestration",
+        "export"
+      ],
+      "file_action": false,
+      "consumers": [],
+      "consumer_status": "pending Phase 3 source trace",
+      "verification_status": "Phase 0 UI/default evidence catalogued; final consumer trace pending"
+    },
+    {
+      "key": "cli.skip_failed_after_retries",
+      "ui": {
+        "tab": "General",
+        "i18n_key": "label_skip_failed_after_retries",
+        "english": "Skip after retries are exhausted",
+        "simplified_chinese": "重试耗尽后跳过"
+      },
+      "wiki_page": "desktop/settings/cli-batch-and-output.md",
+      "control": "toggle",
+      "defaults": {
+        "release_json_value": true,
+        "source": "config/config-example.json (release) -> desktop_qt_ui/core/config_models.py#CliSettings.skip_failed_after_retries"
+      },
+      "lifecycle_stages": [
+        "workflow orchestration",
+        "export"
+      ],
+      "file_action": false,
+      "consumers": [],
+      "consumer_status": "pending Phase 3 source trace",
+      "verification_status": "Phase 0 UI/default evidence catalogued; final consumer trace pending"
+    },
+    {
+      "key": "cli.max_failure_skips",
+      "ui": {
+        "tab": "General",
+        "i18n_key": "label_max_failure_skips",
+        "english": "Failure skip limit",
+        "simplified_chinese": "失败跳过上限"
+      },
+      "wiki_page": "desktop/settings/cli-batch-and-output.md",
+      "control": "int-input",
+      "defaults": {
+        "release_json_value": 5,
+        "source": "config/config-example.json (release) -> desktop_qt_ui/core/config_models.py#CliSettings.max_failure_skips"
       },
       "lifecycle_stages": [
         "workflow orchestration",
@@ -304,8 +395,31 @@
       "wiki_page": "desktop/settings/cli-batch-and-output.md",
       "control": "toggle",
       "defaults": {
-        "release_json_value": false,
+        "release_json_value": true,
         "source": "config/config-example.json (release) -> desktop_qt_ui/core/config_models.py#CliSettings.batch_concurrent"
+      },
+      "lifecycle_stages": [
+        "workflow orchestration",
+        "export"
+      ],
+      "file_action": false,
+      "consumers": [],
+      "consumer_status": "pending Phase 3 source trace",
+      "verification_status": "Phase 0 UI/default evidence catalogued; final consumer trace pending"
+    },
+    {
+      "key": "cli.translation_concurrency",
+      "ui": {
+        "tab": "General",
+        "i18n_key": "label_translation_concurrency",
+        "english": "Translation Concurrency",
+        "simplified_chinese": "翻译并发数"
+      },
+      "wiki_page": "desktop/settings/cli-batch-and-output.md",
+      "control": "int-input",
+      "defaults": {
+        "release_json_value": 3,
+        "source": "config/config-example.json (release) -> desktop_qt_ui/core/config_models.py#CliSettings.translation_concurrency"
       },
       "lifecycle_stages": [
         "workflow orchestration",
@@ -327,7 +441,7 @@
       "wiki_page": "desktop/settings/general-and-app.md",
       "control": "toggle + edit-custom-api-params action",
       "defaults": {
-        "release_json_value": true,
+        "release_json_value": false,
         "source": "config/config-example.json (release) -> desktop_qt_ui/core/config_models.py#AppSettings.use_custom_api_params"
       },
       "lifecycle_stages": [
@@ -418,7 +532,7 @@
       "wiki_page": "desktop/settings/general-and-app.md",
       "control": "toggle",
       "defaults": {
-        "release_json_value": false,
+        "release_json_value": true,
         "source": "config/config-example.json (release) -> desktop_qt_ui/core/config_models.py#AppSection.unload_models_after_translation"
       },
       "lifecycle_stages": [
@@ -440,7 +554,7 @@
       "wiki_page": "desktop/settings/ocr-filter-and-merge.md",
       "control": "combo",
       "defaults": {
-        "release_json_value": "hayai_ocr_v2",
+        "release_json_value": "48px",
         "source": "config/config-example.json (release) -> desktop_qt_ui/core/config_models.py#OcrSettings.ocr"
       },
       "lifecycle_stages": [
@@ -463,7 +577,7 @@
       "wiki_page": "desktop/settings/ocr-filter-and-merge.md",
       "control": "toggle",
       "defaults": {
-        "release_json_value": false,
+        "release_json_value": true,
         "source": "config/config-example.json (release) -> desktop_qt_ui/core/config_models.py#OcrSettings.use_hybrid_ocr"
       },
       "lifecycle_stages": [
@@ -555,7 +669,7 @@
       "wiki_page": "desktop/settings/ocr-filter-and-merge.md",
       "control": "combo",
       "defaults": {
-        "release_json_value": "Japanese",
+        "release_json_value": "auto",
         "source": "config/config-example.json (release) -> desktop_qt_ui/core/config_models.py#OcrSettings.ocr_vl_language_hint"
       },
       "lifecycle_stages": [
@@ -1183,7 +1297,7 @@
       "wiki_page": "desktop/settings/translation.md",
       "control": "toggle",
       "defaults": {
-        "release_json_value": false,
+        "release_json_value": true,
         "source": "config/config-example.json (release) -> desktop_qt_ui/core/config_models.py#TranslatorSettings.enable_streaming"
       },
       "lifecycle_stages": [
@@ -1933,7 +2047,7 @@
       "wiki_page": "desktop/settings/typesetting-and-rendering.md",
       "control": "toggle",
       "defaults": {
-        "release_json_value": false,
+        "release_json_value": true,
         "source": "config/config-example.json (release) -> desktop_qt_ui/core/config_models.py#RenderSettings.center_text_in_bubble"
       },
       "lifecycle_stages": [
@@ -2222,6 +2336,29 @@
       "verification_status": "Phase 0 UI/default evidence catalogued; final consumer trace pending"
     },
     {
+      "key": "render.force_strict_layout",
+      "ui": {
+        "tab": "Typesetting",
+        "i18n_key": "label_force_strict_layout",
+        "english": "Force Strict Layout",
+        "simplified_chinese": "强制严格排版"
+      },
+      "wiki_page": "desktop/settings/typesetting-and-rendering.md",
+      "control": "toggle",
+      "defaults": {
+        "release_json_value": false,
+        "source": "config/config-example.json (release) -> desktop_qt_ui/core/config_models.py#RenderSettings.force_strict_layout"
+      },
+      "lifecycle_stages": [
+        "typesetting",
+        "rendering"
+      ],
+      "file_action": false,
+      "consumers": [],
+      "consumer_status": "pending Phase 3 source trace",
+      "verification_status": "Phase 0 UI/default evidence catalogued; final consumer trace pending"
+    },
+    {
       "key": "render.max_font_size",
       "ui": {
         "tab": "Typesetting",
@@ -2261,6 +2398,29 @@
       "lifecycle_stages": [
         "typesetting",
         "rendering"
+      ],
+      "file_action": false,
+      "consumers": [],
+      "consumer_status": "pending Phase 3 source trace",
+      "verification_status": "Phase 0 UI/default evidence catalogued; final consumer trace pending"
+    },
+    {
+      "key": "cli.export_from_local_json",
+      "ui": {
+        "tab": "Mode Specific",
+        "i18n_key": "label_export_from_local_json",
+        "english": "Export Text from Local JSON Only",
+        "simplified_chinese": "仅从本地 JSON 导出文本"
+      },
+      "wiki_page": "desktop/settings/mode-specific.md",
+      "control": "toggle",
+      "defaults": {
+        "release_json_value": true,
+        "source": "config/config-example.json (release) -> desktop_qt_ui/core/config_models.py#CliSettings.export_from_local_json"
+      },
+      "lifecycle_stages": [
+        "workflow orchestration",
+        "export"
       ],
       "file_action": false,
       "consumers": [],
@@ -2516,14 +2676,11 @@
     {
       "key": "render.font_color",
       "page": "Typesetting",
-      "release_default": null,
-      "potential_control_when_non_null": "text-input",
-      "default_source": "config/config-example.json (release) -> desktop_qt_ui/core/config_models.py#RenderSettings.font_color",
-      "reason": "dynamic_settings.py only creates a None-valued input when the short key is in _OPTIONAL_INPUT_KEYS; font_color is not in that set."
+      "reason": "release default is null and dynamic_settings.py has no widget branch for it"
     }
   ],
   "validation": {
-    "record_count": 110,
+    "record_count": 117,
     "ui_labels": "Every record resolves an actual UI label key in both desktop locales.",
     "consumer_trace": "Not generated from Phase 0; intentionally left pending for Phase 3 evidence."
   }
