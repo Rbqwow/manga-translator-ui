@@ -27,6 +27,7 @@
     "saved_rich_text_presets": null
   },
   "filter_text_enabled": false,
+  "force_simple_sort": false,
   "kernel_size": 3,
   "mask_dilation_offset": 50,
   "use_custom_api_params": false,
@@ -36,12 +37,21 @@
     "keep_lang": "none",
     "enable_streaming": false,
     "no_text_lang_skip": false,
+    "skip_lang": null,
+    "translator_chain": null,
+    "selective_translation": null,
+    "user_api_base": null,
+    "user_api_model": null,
     "high_quality_prompt_path": "dict/prompt_example.yaml",
     "extract_glossary": false,
     "max_requests_per_minute": 0,
     "remove_trailing_period": true,
     "convert_to_traditional": false,
-    "convert_to_simplified": false
+    "convert_to_simplified": false,
+    "enable_post_translation_check": false,
+    "post_check_max_retry_attempts": 3,
+    "post_check_repetition_threshold": 20,
+    "post_check_target_lang_threshold": 0.5
   },
   "ocr": {
     "ocr": "48px",
@@ -88,6 +98,7 @@
   },
   "render": {
     "renderer": "default",
+    "force_strict_layout": false,
     "alignment": "auto",
     "disable_font_border": false,
     "disable_auto_wrap": false,
@@ -136,6 +147,8 @@
   "cli": {
     "verbose": false,
     "attempts": 3,
+    "skip_failed_after_retries": false,
+    "max_failure_skips": 3,
     "ignore_errors": false,
     "use_gpu": true,
     "disable_onnx_gpu": false,

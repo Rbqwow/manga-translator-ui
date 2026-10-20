@@ -95,8 +95,23 @@ flowchart LR
 - The desktop app imports `manga_translator` directly (e.g., `app_logic.py`, `mode/local.py`); changing a core public interface requires checking desktop, CLI, and server callers at the same time.
 - `rendering` depends on PyQt6 offscreen rendering, and the server and shared modes use the same rendering implementation; headless environments must provide Qt platform plugins themselves, which is not a module-boundary issue.
 - `.env` is loaded by each entry point at startup and `runtime_api_resolver` only reads environment variables; never write real keys into config files or documentation.
-- `batch_concurrent` only applies to the "Normal Translation" workflow; import/export, colorize-only, upscale-only, inpaint-only, and replace-translation force the sequential pipeline.
+- `batch_concurrent` only applies to the "Normal Translation" workflow; import/export, colorize-only, upscale-only, inpaint-only, and replace-translation force the sequential pipeline. High-quality translators are not excluded: the batch layer builds `high_quality_batch_data` for them, so `openai_hq`/`gemini_hq` run inside the same pipeline.
 - Server concurrency is limited by the `task_manager` semaphore; desktop concurrency is limited by the `TranslationWorker` QRunnable thread pool. The two do not know about each other.
+
+### Progress state grammar {#progress-state-grammar}
+
+`MangaTranslator._report_progress` emits a `batch:` state that both UI surfaces parse positionally, so a new field must be appended, never inserted:
+
+```
+batch:<start>:<end>:<total>:<failed>[:<skipped>]
+```
+
+- `start`/`end` — absolute 1-based image indices in the whole task, including `global_offset`
+- `total` — total images in the task, or the current page count while the UI streams batches
+- `failed` — failures so far, excluding skipped pages
+- `skipped` — optional sixth field added for retry-exhausted and no-text skips; older readers ignore it, and `desktop_qt_ui/app_logic.py` tolerates states with only four or five fields
+
+`replace_translation` emits the same grammar, which is why the skipped field exists on that path too.
 
 ## Developer Guide {#developer-guide}
 

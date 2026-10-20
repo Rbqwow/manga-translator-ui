@@ -39,9 +39,9 @@ SERVER_HIDDEN_CONFIG_KEYS = {
     "render.paste_mask_dilation_pixels",
     # 服务器端控制，用户端不应暴露
     "cli.batch_size",
-    "cli.batch_concurrent",
-    "cli.translation_concurrency",
     "cli.use_gpu",
+    # cli.batch_concurrent / cli.translation_concurrency 已暴露给 Web：
+    # 服务端按请求为每个任务创建独立翻译器，因此可以安全地开启流水线并发。
     # upscale
     "upscale.realcugan_model",
     # CLI 配置隐藏
@@ -262,7 +262,7 @@ async def get_config(
     """
     config_dict = load_default_config_dict()
     config_dict = _filter_server_hidden_config(config_dict)
-    
+
     # 过滤掉Qt UI专属配置（app部分）
     config_dict = {k: v for k, v in config_dict.items() if k not in WEB_EXCLUDED_SECTIONS}
     

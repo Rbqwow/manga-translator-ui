@@ -95,8 +95,23 @@ flowchart LR
 - 桌面端直接 import `manga_translator`（如 `app_logic.py`、`mode/local.py`），因此修改核心公共接口时必须同时核对桌面、CLI 和服务器三类调用方。
 - `rendering` 依赖 PyQt6 离屏渲染，而服务器与共享模式也使用同一渲染实现；无显示环境运行时需自行准备 Qt 平台插件，这不是模块边界问题。
 - `.env` 由各入口在启动时加载，`runtime_api_resolver` 只读取环境变量；不要把真实密钥写进配置文件或文档。
-- `batch_concurrent` 只对“正常翻译”工作流生效，导入/导出、仅上色/超分/修复和替换翻译会强制回退到顺序流水线。
+- `batch_concurrent` 只对“正常翻译”工作流生效，导入/导出、仅上色/超分/修复和替换翻译会强制回退到顺序流水线；高质量翻译器不在排除之列——批处理层会为它组装 `high_quality_batch_data`，因此 `openai_hq`/`gemini_hq` 与并发流水线共存。
 - 服务端并发受 `task_manager` 信号量控制；桌面端并发受 `TranslationWorker` 的 QRunnable 线程池控制，两者互不感知。
+
+### 进度状态语法 {#progress-state-grammar}
+
+`MangaTranslator._report_progress` 发出的 `batch:` 状态由两处按位置解析，因此新增字段只能追加，不能插入：
+
+```
+batch:<start>:<end>:<total>:<failed>[:<skipped>]
+```
+
+- `start`/`end`：整个任务中的绝对 1-based 图片序号，含 `global_offset`
+- `total`：任务总图片数；界面分批投递时可能是当前批次的图片数
+- `failed`：截至当前的失败数，不含被跳过的页面
+- `skipped`：可选的第六个字段，用于“重试耗尽跳过”和“无文本跳过”；旧解析器会忽略它，`desktop_qt_ui/app_logic.py` 也兼容只有四段或五段的状态
+
+替换翻译模式使用同一套语法，这也是该路径上同样存在 skipped 字段的原因。
 
 ## 开发指南 {#developer-guide}
 

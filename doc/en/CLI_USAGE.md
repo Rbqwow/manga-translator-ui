@@ -121,7 +121,10 @@ python -m manga_translator -i <input> [options]
 | `--batch-size` | Batch size | From config |
 | `--concurrent` | Enable the concurrent pipeline and translation threads; omitting it preserves the config value | From config |
 | `--translation-concurrency` | Simultaneous translation batches (1–32); requires the concurrent pipeline | From config, default 3 |
-| `--attempts` | Retry count when translation fails (`-1` = unlimited) | From config |
+| `--attempts` | Retry count when translation fails (`-1` = unlimited) | From config, default 5 |
+| `--skip-failed-after-retries` / `--no-skip-failed-after-retries` | Skip a page once its retries are exhausted and keep going | From config, on by default |
+| `--max-failure-skips` | Task-wide cap on skipped pages; `0` means unlimited | From config, default 5 |
+| `--force-simple-sort` | Ignore panel detection and order text regions in simple reading order | From config, off by default |
 
 Enable the pipeline with `--concurrent` or `cli.batch_concurrent=true` in the config file. Passing `--translation-concurrency` alone does not enable concurrency. `--batch-size` controls the number of images in each translation batch; `--translation-concurrency` controls how many batches can run simultaneously. Special workflows still disable the pipeline; see [Workflow and file modes](../wiki/en/cli/workflow-and-file-modes.md).
 
@@ -155,6 +158,17 @@ pip install psutil
 - With `--subprocess`, `--format`, `--lossless`, `--batch-size`, and the concurrency arguments also override the config. The subprocess branch still does not apply `--attempts`; set `cli.attempts` in the config file instead
 - The documentation in this English version follows the actually available current top-level arguments defined by the current codebase
 
+### Internal startup arguments (not part of the user interface)
+
+The program starts these child processes itself. They are listed only for troubleshooting and for reading the source:
+
+| Argument | Purpose | Spawned from |
+|----------|---------|--------------|
+| `--font-catalog-worker` | Scans the font directory in a separate process so startup does not block the UI; the parent reads candidate fonts over a pipe | `desktop_qt_ui/utils/font_list.py` |
+| `--panel-detection-worker` | Runs the panel-detection model in a separate process so it can be cancelled and exits with the task | `manga_translator/utils/panel/__init__.py` |
+
+Both receive fixed arguments from the parent process, accept no user configuration, and must not be called from launcher scripts.
+
 ---
 
 ## Config Files
@@ -183,7 +197,7 @@ Basic example:
 ```json
 {
   "translator": {
-    "translator": "openai_hq",
+    "translator": "openai",
     "target_lang": "CHS",
     "keep_lang": "none",
     "enable_streaming": true,
@@ -198,14 +212,15 @@ Basic example:
     "box_threshold": 0.5,
     "unclip_ratio": 2.5,
     "use_yolo_obb": true,
-    "min_box_area_ratio": 0.0008
+    "min_box_area_ratio": 0
   },
   "ocr": {
     "ocr": "48px",
-    "use_hybrid_ocr": false,
+    "use_hybrid_ocr": true,
     "secondary_ocr": "mocr",
     "min_text_length": 0,
-    "prob": 0.1
+    "prob": 0.1,
+    "ai_ocr_concurrency": 10
   },
   "inpainter": {
     "inpainter": "lama_large",
@@ -216,18 +231,19 @@ Basic example:
     "renderer": "default",
     "alignment": "auto",
     "direction": "auto",
-    "font_path": "fonts/Arial-Unicode-Regular.ttf",
     "layout_mode": "balloon_fill",
+    "font_family": "Microsoft YaHei UI",
     "disable_font_border": false,
     "font_size_offset": 0,
     "stroke_width": 0.07,
-    "check_br_and_retry": false
+    "check_br_and_retry": false,
+    "center_text_in_bubble": true
   },
   "upscale": {
     "upscaler": "mangajanai",
     "upscale_ratio": null,
-    "realcugan_model": "2x-conservative",
-    "tile_size": 600
+    "realcugan_model": null,
+    "tile_size": 400
   },
   "colorizer": {
     "colorizer": "none",
@@ -236,22 +252,24 @@ Basic example:
   },
   "cli": {
     "verbose": false,
-    "attempts": 3,
+    "attempts": 5,
+    "skip_failed_after_retries": true,
+    "max_failure_skips": 5,
     "ignore_errors": false,
-    "use_gpu": false,
+    "use_gpu": true,
     "disable_onnx_gpu": false,
     "context_size": 3,
-    "format": "不指定",
-    "overwrite": true,
-    "skip_no_text": false,
+    "format": "webp",
+    "overwrite": false,
+    "skip_no_text": true,
     "save_text": true,
     "load_text": false,
     "template": false,
     "save_quality": 100,
-    "save_lossless": false,
-    "compression_effort": 70,
+    "save_lossless": true,
+    "compression_effort": 100,
     "batch_size": 3,
-    "batch_concurrent": false,
+    "batch_concurrent": true,
     "translation_concurrency": 3,
     "generate_and_export": false,
     "colorize_only": false,
@@ -260,7 +278,7 @@ Basic example:
     "replace_translation": false
   },
   "kernel_size": 3,
-  "mask_dilation_offset": 20
+  "mask_dilation_offset": 50
 }
 ```
 
