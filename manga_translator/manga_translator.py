@@ -109,6 +109,78 @@ from .utils.translation_text import remove_trailing_period_if_needed
 # Will be overwritten by __main__.py if module is being run directly (with python -m)
 logger = logging.getLogger('manga_translator')
 
+# Idle-model tracking is shared by every translator instance. The server builds
+# one lightweight instance per task (so per-request context and pipeline state
+# are isolated), while the model caches themselves are module-level; keeping the
+# timestamps here preserves `models_ttl` across requests instead of resetting it
+# whenever an instance is created.
+_MODEL_USAGE_TIMESTAMPS: dict = {}
+
+# The server runs one translator per task, so idle unloading must live outside a
+# single task's event loop. The monitor below is the single owner of that work;
+# a desktop/CLI process keeps using the per-instance cleanup job instead.
+MODEL_CLEANUP_MIN_INTERVAL_S = 5.0
+
+
+async def unload_model_by_tool(tool: str, model: str, **kwargs) -> None:
+    """Release one cached model and its memory, addressed by tool name."""
+    logger.info(f"Unloading {tool} model: {model}")
+    match tool:
+        case 'colorizer':
+            await unload_colorization(model)
+        case 'detection':
+            await unload_detection(model)
+        case 'inpainting':
+            await unload_inpainting(model)
+        case 'ocr':
+            await unload_ocr(model)
+        case 'upscaling':
+            await unload_upscaling(model, **kwargs)
+        case 'translation':
+            await unload_translation(model)
+        case 'textline_merge':
+            # textline_merge 不需要卸载（无模型）
+            logger.debug("textline_merge does not require unloading")
+        case 'rendering':
+            # rendering 不需要卸载（无模型）
+            logger.debug("rendering does not require unloading")
+        case _:
+            logger.warning(f"Unknown tool type for unloading: {tool}")
+
+    # 清理 Python 内存（对 CPU 和 GPU 都有效）
+    import gc
+    gc.collect()
+
+    from .utils.gpu_memory import release_gpu_memory
+    release_gpu_memory()
+
+    logger.info(f"Model {tool}/{model} unloaded; memory released")
+
+
+async def unload_idle_models(ttl: float) -> int:
+    """Unload every model idle for longer than ``ttl`` seconds.
+
+    Uses the process-wide usage timestamps, so it works regardless of how many
+    translator instances produced them. Returns the number of models unloaded.
+    """
+    if ttl <= 0:
+        return 0
+    now = time.time()
+    unloaded = 0
+    for (tool, model), last_used in list(_MODEL_USAGE_TIMESTAMPS.items()):
+        idle_for = now - last_used
+        if idle_for <= ttl:
+            continue
+        logger.info(f"Model {tool}/{model} has been idle for {idle_for:.1f}s (TTL: {ttl}s), unloading...")
+        try:
+            await unload_model_by_tool(tool, model)
+        except Exception as e:
+            logger.debug(f"Idle unload of {tool}/{model} failed: {e}")
+        # Another task/monitor may have removed it concurrently; pop, never del.
+        _MODEL_USAGE_TIMESTAMPS.pop((tool, model), None)
+        unloaded += 1
+    return unloaded
+
 
 def _translation_plain_text(value) -> str:
     # 薄委托：富文本→纯文本的唯一实现在 rendering.rich_text.plain_text_of
@@ -378,8 +450,10 @@ class MangaTranslator:
         self.batch_concurrent = params.get('batch_concurrent', False)
         self.translation_concurrency = int(params.get('translation_concurrency', 3))
         
-        # 添加模型加载状态标志
-        self._models_loaded = False
+        # 添加模型加载状态标志；每个请求新建实例时由调用方置位，避免重复预加载。
+        self._models_loaded = bool(params.get('models_loaded', False))
+        # 服务端由进程级监控负责空闲卸载，逐任务实例不再各起一个清理任务。
+        self.start_model_cleanup_job = bool(params.get('start_model_cleanup_job', True))
         
         self.parse_init_params(params)
         self.result_sub_folder = ''
@@ -391,7 +465,8 @@ class MangaTranslator:
         # The flag below controls whether to allow TF32 on cuDNN. This flag defaults to True.
         torch.backends.cudnn.allow_tf32 = True
 
-        self._model_usage_timestamps = {}
+        # Shared across instances so models_ttl still measures idle time across requests.
+        self._model_usage_timestamps = _MODEL_USAGE_TIMESTAMPS
         self._detector_cleanup_task = None
         self.context_size = params.get('context_size', 0)
         self.all_page_translations = []
@@ -2191,37 +2266,7 @@ class MangaTranslator:
             logger.error(f'Failed to save labeled textline debug image: {e}')
 
     async def _unload_model(self, tool: str, model: str, **kwargs):
-        logger.info(f"Unloading {tool} model: {model}")
-        match tool:
-            case 'colorizer':
-                await unload_colorization(model)
-            case 'detection':
-                await unload_detection(model)
-            case 'inpainting':
-                await unload_inpainting(model)
-            case 'ocr':
-                await unload_ocr(model)
-            case 'upscaling':
-                await unload_upscaling(model, **kwargs)
-            case 'translation':
-                await unload_translation(model)
-            case 'textline_merge':
-                # textline_merge 不需要卸载（无模型）
-                logger.debug("textline_merge does not require unloading")
-            case 'rendering':
-                # rendering 不需要卸载（无模型）
-                logger.debug("rendering does not require unloading")
-            case _:
-                logger.warning(f"Unknown tool type for unloading: {tool}")
-        
-        # 清理 Python 内存（对 CPU 和 GPU 都有效）
-        import gc
-        gc.collect()
-        
-        from .utils.gpu_memory import release_gpu_memory
-        release_gpu_memory()
-        
-        logger.info(f"Model {tool}/{model} unloaded; memory released")
+        await unload_model_by_tool(tool, model, **kwargs)
 
     # gc.collect() 的耗时取决于进程内对象总数（torch 进程约百毫秒级），与待释放内存无关；
     # 大数组由引用计数即时回收，Python 自动分代 GC 兜底循环引用，
@@ -2616,20 +2661,20 @@ class MangaTranslator:
 
         return loaded_items, load_errors
 
-    # Background models cleanup job.
+    def _ensure_cleanup_job(self):
+        """Start the per-instance idle-unload job when this instance owns one."""
+        if not self.start_model_cleanup_job:
+            return
+        if self._detector_cleanup_task is None:
+            self._detector_cleanup_task = asyncio.create_task(self._detector_cleanup_job())
+
+    # Background models cleanup job (desktop/CLI). The server uses one process-wide
+    # monitor instead, because its translator instances are short-lived.
     async def _detector_cleanup_job(self):
         logger.info(f"Model cleanup job started with models_ttl={self.models_ttl} seconds")
         while True:
-            if self.models_ttl == 0:
-                await asyncio.sleep(1)
-                continue
-            now = time.time()
-            for (tool, model), last_used in list(self._model_usage_timestamps.items()):
-                time_since_last_use = now - last_used
-                if time_since_last_use > self.models_ttl:
-                    logger.info(f"Model {tool}/{model} has been idle for {time_since_last_use:.1f}s (TTL: {self.models_ttl}s), unloading...")
-                    await self._unload_model(tool, model)
-                    del self._model_usage_timestamps[(tool, model)]
+            if self.models_ttl > 0:
+                await unload_idle_models(float(self.models_ttl))
             await asyncio.sleep(1)
 
     def _resolve_ocr_prob_threshold(self, config: Config) -> float:
@@ -3875,8 +3920,7 @@ class MangaTranslator:
 
         logger.info(f'Starting batch translation: {len(images_with_configs)} images, batch size: {batch_size}')
         logger.info("[Stage] Batch translation task started")
-        if self._detector_cleanup_task is None:
-            self._detector_cleanup_task = asyncio.create_task(self._detector_cleanup_job())
+        self._ensure_cleanup_job()
 
         results = []
 
@@ -4692,8 +4736,7 @@ class MangaTranslator:
             self._models_loaded = True  # 标记模型已加载
 
         # Start the background cleanup job once if not already started.
-        if self._detector_cleanup_task is None:
-            self._detector_cleanup_task = asyncio.create_task(self._detector_cleanup_job())
+        self._ensure_cleanup_job()
 
         # ✅ 检查停止标志
         await asyncio.sleep(0)
