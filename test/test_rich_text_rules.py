@@ -1,3 +1,5 @@
+import _bootstrap  # noqa: F401
+
 from manga_translator.rendering.rich_text_rules import _parse_rules, apply_rich_text_rules
 
 
