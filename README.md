@@ -1,3 +1,15 @@
+### 主要修改：
+
+- 自用精简启动脚本（4060 / M4）
+- 以牺牲部分上下文为代价的真·多线程并行翻译，3 批量 3 并发 3 上下文实测并不会影响质量同时超级加速
+- 支持无损图片保存而非满质量有损
+- 大幅提升启动加载速度，尤其是存在大量系统字体时
+- 一些 AI 拉的其他东西总之许愿
+
+以上直接 clone 然后“从源码运行”，有更新大概率会 force push 让提交历史舒服些所以 fetch 完直接 hard reset 吧。
+
+---
+
 <div align="center">
 
 <img src="doc/images/主页.png" width="360" style="max-width: 100%; height: auto;" alt="Manga Translator UI 主界面">
