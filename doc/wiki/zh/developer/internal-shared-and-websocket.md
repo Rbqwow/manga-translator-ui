@@ -65,7 +65,7 @@ flowchart LR
 
 ### nonce 与访问控制 {#shared-nonce}
 
-- nonce 来源：`shared --nonce`（`args.py`），或 web 模式的 `MT_WEB_NONCE` 环境变量与启动时 `secrets.token_hex(16)` 生成（`server/main.py`、`server_utils.generate_nonce()`）。
+- nonce 来源：`shared --nonce`（`args.py`），或 web 模式的 `MT_WEB_NONCE` 环境变量与启动时 `secrets.token_hex(16)` 生成（`server/main.py` 的 `generate_nonce()`）。
 - `MangaShare.check_nonce()` 只比较请求头 `X-Nonce` 与自身 `self.nonce`；`--nonce` 未设置时服务完全不校验。
 - nonce 是共享密钥，在启动日志中打印（`Nonce: ...`），并经明文 HTTP 头传输；泄露后等于没有鉴权。不得把日志中的 nonce 复制进公开报告。
 - `/is_locked` 不校验 nonce，其余两个执行端点都校验。
@@ -185,7 +185,7 @@ flowchart LR
 | `manga_translator/mode/ws.py` | ws 执行器：上游连接、`x-secret`、protobuf 消息、下载/上传 | `ws_pb2` 模块缺失 |
 | `manga_translator/server/sent_data_internal.py` | shared 客户端：base64 图片、config JSON、pickle 往返、流帧解析 | `extract_header`/`handle_buffer` |
 | `manga_translator/server/instance.py` | `ExecutorInstance` 的 `sent*` 调用与 `Executors` 注册 | 遗留路径 |
-| `manga_translator/server/server_utils.py` | `generate_nonce()`、图片/JSON/字节转换 | `secrets.token_hex(16)` |
+| `manga_translator/server/main.py` | `generate_nonce()`、nonce 打印 | `secrets.token_hex(16)` |
 | `manga_translator/server/main.py` | web 启动、nonce 生成、`POST /register`、`start_instance` | 强制 `start_instance=False` |
 | `manga_translator/args.py`、`__main__.py` | `ws`/`shared` 子解析器与模式分发 | 帮助文案固定中文，不走 i18n |
 | `manga_translator/utils/threading.py` | `PriorityLock` 与 `Throttler` | ws 任务调度与 0.2 秒节流 |
@@ -201,7 +201,7 @@ flowchart LR
 | shared 服务 | `manga_translator/mode/share.py` | 三个端点、nonce、方法白名单、锁、pickle、帧状态码、`use_placeholder`、`timeout_keep_alive` |
 | shared 客户端 | `manga_translator/server/sent_data_internal.py`、`instance.py` | JSON 编码、pickle 往返、流帧切分、执行器注册 |
 | ws 执行器 | `manga_translator/mode/ws.py` | `ws_url`、`WS_SECRET`/`x-secret`、protobuf 消息、任务状态机、节流与 PriorityLock、Windows 初始化 |
-| web 服务 | `manga_translator/server/main.py`、`server_utils.py` | nonce 生成与打印、`/register`、`start_instance=False`、遗留启动命令 |
+| web 服务 | `manga_translator/server/main.py` | nonce 生成与打印、`/register`、`start_instance=False`、遗留启动命令 |
 | 参数与分发 | `manga_translator/args.py`、`__main__.py` | `ws`/`shared` 选项与默认值、模式分发 |
 | 工具 | `manga_translator/utils/threading.py` | `PriorityLock`、`Throttler` |
 | 调查基线 | `doc/wiki/research/cli-command-inventory.md`、`phase0-web-user-http.md`、`phase0-page-coverage-matrix.md` | `--help` 清单、端口/协议边界、`ws_pb2.py` 缺失记录 |

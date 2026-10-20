@@ -139,3 +139,33 @@ def test_changed_payload_still_reports_write_failures(service, monkeypatch):
     service.current_config.app.theme = "dark"
     assert service.save_config_file()
     assert not service.flush_pending_writes()
+
+
+def test_missing_user_fields_use_template_defaults_on_the_same_load(service):
+    from pathlib import Path
+
+    template = Path(service.default_config_path)
+    user = Path(service.user_config_path)
+    template_data = json.loads(template.read_text(encoding="utf-8"))
+    template_data["cli"]["compression_effort"] = 100
+    template_data["translator"]["post_check_max_retry_attempts"] = 7
+    template.write_text(json.dumps(template_data, indent=2), encoding="utf-8")
+    original_template = template.read_bytes()
+    user_data = json.loads(user.read_text(encoding="utf-8"))
+    del user_data["cli"]["compression_effort"]
+    del user_data["translator"]["post_check_max_retry_attempts"]
+    user_data["cli"]["save_quality"] = 82
+    user_data["app"]["editor_center_scale_enabled"] = True
+    user.write_text(json.dumps(user_data), encoding="utf-8")
+
+    service.reload_config()
+    current = service.get_config()
+    assert current.cli.compression_effort == 100
+    assert current.translator.post_check_max_retry_attempts == 7
+    assert current.cli.save_quality == 82
+    assert current.app.editor_center_scale_enabled is True
+    saved = json.loads(user.read_text(encoding="utf-8"))
+    assert saved["cli"]["compression_effort"] == 100
+    assert saved["translator"]["post_check_max_retry_attempts"] == 7
+    assert saved["cli"]["save_quality"] == 82
+    assert template.read_bytes() == original_template

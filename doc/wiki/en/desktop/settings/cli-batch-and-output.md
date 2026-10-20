@@ -31,15 +31,15 @@ The “Verbose Logging” toggle is on Settings → General. Qt UI always create
 
 #### Retry Attempts {#cli-attempts}
 
-“Retry Attempts” is an integer input. It sets how many times a translation request is retried after failure; `-1` means unlimited. It applies only to the translation/API request layer, not to a general detector/OCR/render retry, and it is not the high-quality retry. Default: `3`.
+“Retry Attempts” is an integer input. It sets how many times a translation request is retried after failure; `-1` means unlimited. It applies only to the translation/API request layer, not to a general detector/OCR/render retry, and it is not the high-quality retry. Default: `5` (five retries after the first request).
 
 #### Skip after retries are exhausted {#cli-skip-failed-after-retries}
 
-This toggle follows Retry Attempts in Settings → General and is off by default. Requests complete their existing retries and API failover before affected images are skipped. It does not retry the whole image pipeline. Standard translation, high-quality translation, concurrent processing, and API-based OCR, colorization and rendering share the policy. A retry count of `-1` still means unlimited retries.
+This toggle follows Retry Attempts in Settings → General and is on by default. Only retryable failures (timeouts, dropped connections, 429/5xx) are skipped; configuration errors such as an invalid API key, an unknown model name, or a deactivated account stay hard errors. Requests complete their existing retries and API failover before affected images are skipped. It does not retry the whole image pipeline. Standard translation, high-quality translation, concurrent processing, and API-based OCR, colorization and rendering share the policy. A retry count of `-1` still means unlimited retries.
 
 #### Failure skip limit {#cli-max-failure-skips}
 
-Applies only when skipping after retries is enabled. The default `3` stops the task as soon as the third image is skipped due to exhausted retries; `0` allows unlimited skips. Counts are cumulative across the task, including all concurrent batches, and successful images do not reset them. Each affected image in a failed batch counts separately. Existing outputs and other normal skips do not count. This limit takes precedence over Ignore Errors; cancellation always stops the task.
+Applies only when skipping after retries is enabled. The default `5` stops the task as soon as the fifth image is skipped due to exhausted retries; `0` allows unlimited skips. Counts are cumulative across the task, including all concurrent batches, and successful images do not reset them. Each affected image in a failed batch counts separately. Existing outputs and other normal skips do not count. This limit takes precedence over Ignore Errors; cancellation always stops the task.
 
 Completion logs and dialogs only summarize counts, paths and reasons for files skipped after exhausted retries; files skipped because their outputs already exist are omitted. Early-stop dialogs also include images previously skipped after exhausted retries. Configuration keys: `cli.skip_failed_after_retries` and `cli.max_failure_skips`.
 
@@ -79,7 +79,7 @@ flowchart LR
     end
 ```
 
-The waiting translation queue holds up to `batch_size × translation_concurrency` images. Detection waits when this queue is full to bound the backlog. Default: `false`.
+The waiting translation queue holds up to `batch_size × translation_concurrency` images. Detection waits when this queue is full to bound the backlog. High-quality translators take part in this pipeline too, so the two modes are not mutually exclusive. Default: `true`.
 
 #### Translation Concurrency {#cli-translation-concurrency}
 
@@ -110,7 +110,7 @@ When the “Overwrite Existing Files” toggle is off, existing image output is 
 
 #### Skip Images Without Text {#cli-skip-no-text}
 
-When the “Skip Images Without Text” toggle is enabled, images with no translatable text after detection/OCR are skipped as a normal branch, not as an “Ignore Errors” exception. Default: `false`.
+When the “Skip Images Without Text” toggle is enabled, images with no translatable text after detection/OCR are marked as skipped (`skip_reason=no_text`). The image and empty JSON/TXT are still written, but the page no longer enters translation or rendering. Detection and OCR still run, because otherwise the page could not be classified. This is a normal branch: it does not count as a failure and does not consume the `max_failure_skips` budget. Default: `true`.
 
 #### Editable Image {#cli-save-text}
 
@@ -119,6 +119,14 @@ When the “Editable Image” toggle is enabled, JSON sidecar data containing re
 #### Image Save Quality {#cli-save-quality}
 
 “Image Save Quality” is an integer input applied to image, inpainting, and editor saves. Higher values usually make files larger; exact semantics depend on the encoder. Default: `100`.
+
+#### Lossless Image Save {#cli-save-lossless}
+
+The “Lossless Image Save” toggle enables lossless encoding for WebP, AVIF, and HEIC/HEIF; “Image Save Quality” is then ignored. AVIF uses the AOM encoder bundled with pylibheif, full-range 4:4:4, and reversible RGB storage, and keeps the source ICC profile. Output is always 8-bit: 16-bit or floating-point input is quantized to 8-bit first, matching how JPEG/BMP/HEIC/WebP already behave, so a batch is never aborted. Default: `true`.
+
+#### Compression Effort {#cli-compression-effort}
+
+“Compression Effort” is an integer input from `0` to `100` for PNG and lossless WebP/AVIF/HEIC/HEIF. AVIF maps the value to AOM encoder speed (9 down to 0) and HEIC/HEIF to x265 presets; `0` is fastest while `100` compresses hardest and is slowest. Clearing the field or entering an invalid value restores `100`. Default: `100`.
 
 #### Save to Source Directory {#cli-save-to-source-dir}
 
@@ -138,7 +146,19 @@ When the “Use Custom API Params” toggle is enabled, `config/custom_api_param
 
 #### Unload Models After Translation {#app-unload-models-after-translation}
 
-When the “Unload Models After Translation” toggle is enabled, the desktop unloads models after a task completes, reducing resident memory at the cost of the next task’s loading time. Default: `false`.
+When the “Unload Models After Translation” toggle is enabled, the desktop unloads models after a task completes, reducing resident memory at the cost of the next task’s loading time. Default: `true`.
+
+This switch is desktop-only: neither the CLI nor the server implements an end-of-task unload. On the server, an administrator triggers model release from the cleanup panel instead.
+
+#### Concurrency on the Web {#web-concurrency}
+
+`cli.batch_size` and `cli.use_gpu` are server-side controls listed in `server/routes/config.py#SERVER_HIDDEN_CONFIG_KEYS`, so they never appear in the Web config form; server-wide parallelism comes from `max_concurrent_tasks`.
+
+`cli.batch_concurrent`, `cli.translation_concurrency`, and `cli.context_size` are visible on the Web and apply per request: the server creates one `MangaTranslator` instance per task (model weights and idle timestamps stay process-wide), so pipeline state, context, and cancellation cannot leak between requests.
+
+The global default comes from the server config file `config/config.json` (`cli` section; the built-in fallback is pipeline on, 3 translation workers, 3 context pages), and the Web form shows those values. A request that carries explicit values overrides them. A task's `translation_concurrency` is capped by `max_concurrent_tasks`; in-flight requests are roughly `max_concurrent_tasks × translation_concurrency`, so lower or disable it when VRAM or API rate is tight.
+
+Upscale-only, colorize-only, inpaint-only, load-text, and both export endpoints now run their actual workflow instead of degrading to a normal translation; those special workflows still force sequential processing.
 
 ## How the settings take effect {#runtime-behavior}
 

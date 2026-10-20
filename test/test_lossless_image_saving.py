@@ -13,6 +13,7 @@ import numpy as np
 import pytest
 from PIL import Image, ImageCms
 from PyQt6.QtCore import QObject
+from PyQt6.QtTest import QTest
 from PyQt6.QtWidgets import QApplication, QVBoxLayout, QWidget
 
 from app_logic import MainAppLogic
@@ -180,6 +181,7 @@ def settings_view(qt_app):
 
     yield make_view
     for view, panel in resources:
+        view._settings_build_seq = getattr(view, "_settings_build_seq", 0) + 1
         panel.deleteLater()
         view.deleteLater()
     qt_app.processEvents()
@@ -256,6 +258,10 @@ def test_settings_initialization_completes_with_bound_visibility_methods(setting
     monkeypatch.setattr(dynamic_settings, "_refresh_env_api_groups", lambda *_args, **_kwargs: None)
 
     view.set_parameters(config)
+    for _ in range(100):
+        if view._settings_ui_ready:
+            break
+        QTest.qWait(10)
     assert view._settings_ui_ready is True
     assert not view._settings_row_widgets["cli.compression_effort"].isHidden()
 

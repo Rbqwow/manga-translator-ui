@@ -65,7 +65,7 @@ When the result object carries `use_placeholder`, the server returns only a mini
 
 ### Nonce and access control {#shared-nonce}
 
-- Nonce sources: `shared --nonce` (`args.py`), or for `web` mode the `MT_WEB_NONCE` environment variable and a startup-time `secrets.token_hex(16)` generation (`server/main.py`, `server_utils.generate_nonce()`).
+- Nonce sources: `shared --nonce` (`args.py`), or for `web` mode the `MT_WEB_NONCE` environment variable and a startup-time `secrets.token_hex(16)` generation (`server/main.py` `generate_nonce()`).
 - `MangaShare.check_nonce()` only compares the `X-Nonce` request header with its own `self.nonce`; when `--nonce` is unset the service performs no validation at all.
 - The nonce is a shared secret: it is printed in the startup log (`Nonce: ...`) and travels as a plaintext HTTP header; leaking it is equivalent to having no authentication. Never copy a nonce from logs into a public report.
 - `/is_locked` skips the nonce check; the two execution endpoints both enforce it.
@@ -185,7 +185,7 @@ Messages are protobuf `WebSocketMessage` (`ws_pb2`), encoded with `SerializeToSt
 | `manga_translator/mode/ws.py` | ws executor: upstream connection, `x-secret`, protobuf messages, download/upload | `ws_pb2` module missing |
 | `manga_translator/server/sent_data_internal.py` | shared client: base64 images, config JSON, pickle round-trip, stream-frame parsing | `extract_header`/`handle_buffer` |
 | `manga_translator/server/instance.py` | `ExecutorInstance` `sent*` calls and `Executors` registration | Legacy path |
-| `manga_translator/server/server_utils.py` | `generate_nonce()`, image/JSON/bytes conversion | `secrets.token_hex(16)` |
+| `manga_translator/server/main.py` | `generate_nonce()`, nonce printing | `secrets.token_hex(16)` |
 | `manga_translator/server/main.py` | web startup, nonce generation, `POST /register`, `start_instance` | Forces `start_instance=False` |
 | `manga_translator/args.py`, `__main__.py` | `ws`/`shared` subparsers and mode dispatch | Help strings are fixed Chinese and do not go through i18n |
 | `manga_translator/utils/threading.py` | `PriorityLock` and `Throttler` | ws task scheduling and the 0.2-second throttle |
@@ -201,7 +201,7 @@ The diagrams describe the real endpoints, frame format, and task state transitio
 | shared service | `manga_translator/mode/share.py` | Three endpoints, nonce, method whitelist, lock, pickle, frame status codes, `use_placeholder`, `timeout_keep_alive` |
 | shared client | `manga_translator/server/sent_data_internal.py`, `instance.py` | JSON encoding, pickle round-trip, stream-frame splitting, executor registration |
 | ws executor | `manga_translator/mode/ws.py` | `ws_url`, `WS_SECRET`/`x-secret`, protobuf messages, task state machine, throttling and PriorityLock, Windows initialization |
-| web service | `manga_translator/server/main.py`, `server_utils.py` | Nonce generation and printing, `/register`, `start_instance=False`, legacy spawn command |
+| web service | `manga_translator/server/main.py` | Nonce generation and printing, `/register`, `start_instance=False`, legacy spawn command |
 | Parameters and dispatch | `manga_translator/args.py`, `__main__.py` | `ws`/`shared` options and defaults, mode dispatch |
 | Utilities | `manga_translator/utils/threading.py` | `PriorityLock`, `Throttler` |
 | Research baseline | `doc/wiki/research/cli-command-inventory.md`, `phase0-web-user-http.md`, `phase0-page-coverage-matrix.md` | `--help` inventory, port/protocol boundaries, missing `ws_pb2.py` record |
