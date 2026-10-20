@@ -12,6 +12,7 @@ import threading
 import traceback
 from collections import deque
 from concurrent.futures import ThreadPoolExecutor, wait
+from contextvars import copy_context
 from datetime import datetime, timezone
 from typing import List
 
@@ -145,6 +146,10 @@ class ConcurrentPipeline:
                 self.critical_error_exception = error
                 self.has_critical_error = True
             self.stop_workers = True
+
+    def _record_failed_context(self, ctx):
+        if not getattr(ctx, "skipped", False):
+            self._record_failed_image(ctx.image_name)
 
     def _get_failed_count(self) -> int:
         with self._lock:
@@ -410,7 +415,7 @@ class ConcurrentPipeline:
                     
                     logger.error(f"[Detection+OCR] Failed: {error_msg}")
                     logger.error(traceback.format_exc())
-                    if not self.translator.ignore_errors:
+                    if not self.translator._can_continue_after_error(e):
                         self._set_critical_error(f'Detection+OCR failed: {error_msg}', e)
                         break
 
@@ -421,7 +426,7 @@ class ConcurrentPipeline:
                     failed_ctx.config = config
                     failed_ctx.text_regions = []
                     failed_ctx = self.translator._mark_context_failure(failed_ctx, e, stage=current_stage)
-                    self._record_failed_image(failed_ctx.image_name)
+                    self._record_failed_context(failed_ctx)
 
                     with self._lock:
                         self.base_contexts[failed_ctx.image_name] = failed_ctx
@@ -667,18 +672,19 @@ class ConcurrentPipeline:
                 self.stats['translation'] += len(batch)
             self._emit_status(f"[Translation] Skipping failed batch ({self.stats['translation']}/{self.total_images})")
 
+            can_continue = self.translator._can_continue_after_error(e)
             for ctx, config in batch:
                 self.translator._mark_context_failure(ctx, e, stage='translation')
-                self._record_failed_image(ctx.image_name)
+                self._record_failed_context(ctx)
                 with self._lock:
                     self.translation_done[ctx.image_name] = []
                     if ctx.image_name in self.base_contexts:
                         self.base_contexts[ctx.image_name].text_regions = []
-                    if self.translator.ignore_errors and ctx.image_name in self.inpaint_done:
+                    if can_continue and ctx.image_name in self.inpaint_done:
                         self.render_queue.put((ctx, config))
                 ctx.text_regions = []
 
-            if not self.translator.ignore_errors:
+            if not can_continue:
                 self._set_critical_error(f'Translation batch failed: {error_msg}', e)
     
     def _inpaint_thread(self):
@@ -748,7 +754,7 @@ class ConcurrentPipeline:
                         logger.info(f"[Inpainting] Processing: {ctx.image_name}")
 
                     if getattr(ctx, 'translation_error', None):
-                        self._record_failed_image(ctx.image_name)
+                        self._record_failed_context(ctx)
                         with self._lock:
                             self.inpaint_done[ctx.image_name] = True
                             self.pending_redo.discard(ctx.image_name)
@@ -823,7 +829,7 @@ class ConcurrentPipeline:
                     
                     logger.error(f"[Inpainting thread] Error: {error_msg}")
                     logger.error(traceback.format_exc())
-                    if not self.translator.ignore_errors:
+                    if not self.translator._can_continue_after_error(e):
                         self._set_critical_error(f'Inpainting thread error: {error_msg}', e)
                         break
 
@@ -832,7 +838,7 @@ class ConcurrentPipeline:
                         ctx.image_name = image_name
                         ctx.config = config
                     ctx = self.translator._mark_context_failure(ctx, e, stage=current_stage)
-                    self._record_failed_image(ctx.image_name)
+                    self._record_failed_context(ctx)
                     ctx.text_regions = []
 
                     with self._lock:
@@ -922,7 +928,7 @@ class ConcurrentPipeline:
                     logger.info(f"[Rendering] Processing: {ctx.image_name}")
 
                     if getattr(ctx, 'translation_error', None):
-                        self._record_failed_image(ctx.image_name)
+                        self._record_failed_context(ctx)
                         self.stats['rendering'] += 1
                         rendered_count += 1
                         self._emit_status(f"[Rendering] Skipping failed file {rendered_count}/{self.total_images}: {os.path.basename(ctx.image_name)}")
@@ -939,7 +945,7 @@ class ConcurrentPipeline:
                     if not hasattr(ctx, 'img_rgb') or ctx.img_rgb is None:
                         logger.error("[Rendering] ctx.img_rgb is None, cannot render! Skipping this image")
                         ctx = self.translator._mark_context_failure(ctx, RuntimeError('Missing original image data'), stage='rendering')
-                        self._record_failed_image(ctx.image_name)
+                        self._record_failed_context(ctx)
                         self.stats['rendering'] += 1
                         rendered_count += 1
                         self._emit_status(f"[Rendering] Skipping failed file {rendered_count}/{self.total_images}: {os.path.basename(ctx.image_name)}")
@@ -1019,7 +1025,7 @@ class ConcurrentPipeline:
                             logger.error(f"[Rendering] Failed to save {os.path.basename(ctx.image_name)}: {save_err}")
                             logger.error(traceback.format_exc())
                             ctx = self.translator._mark_context_failure(ctx, save_err, stage='saving')
-                            self._record_failed_image(ctx.image_name)
+                            self._record_failed_context(ctx)
                     else:
                         logger.error("[Rendering] ctx.result is None!")
                     
@@ -1045,13 +1051,13 @@ class ConcurrentPipeline:
                     
                     logger.error(f"[Rendering thread] Error: {error_msg}")
                     logger.error(traceback.format_exc())
-                    if not self.translator.ignore_errors:
+                    if not self.translator._can_continue_after_error(e):
                         self._set_critical_error(f'Rendering thread error: {error_msg}', e)
                         break
 
                     if ctx is not None:
                         ctx = self.translator._mark_context_failure(ctx, e, stage='rendering')
-                        self._record_failed_image(ctx.image_name)
+                        self._record_failed_context(ctx)
                         self.stats['rendering'] += 1
                         rendered_count += 1
                         self._emit_status(f"[Rendering] Skipping failed file {rendered_count}/{self.total_images}: {os.path.basename(ctx.image_name)}")
@@ -1133,12 +1139,14 @@ class ConcurrentPipeline:
         
         # Each translation worker owns a long-lived event loop and claims batches
         # as soon as it becomes idle; no barrier between groups of requests.
+        # Copy per worker so they inherit this task's failure policy; a Context
+        # itself cannot be entered by multiple threads at the same time.
         named_futures = [
-            ('Detection+OCR', self._detection_executor.submit(self._detection_ocr_thread, file_paths, configs)),
-            *[(f'Translation-{index + 1}', self._translation_executor.submit(self._translation_thread))
+            ('Detection+OCR', self._detection_executor.submit(copy_context().run, self._detection_ocr_thread, file_paths, configs)),
+            *[(f'Translation-{index + 1}', self._translation_executor.submit(copy_context().run, self._translation_thread))
               for index in range(self.translation_concurrency)],
-            ('Inpainting', self._inpaint_executor.submit(self._inpaint_thread)),
-            ('Rendering', self._render_executor.submit(self._render_thread)),
+            ('Inpainting', self._inpaint_executor.submit(copy_context().run, self._inpaint_thread)),
+            ('Rendering', self._render_executor.submit(copy_context().run, self._render_thread)),
         ]
         futures = [future for _name, future in named_futures]
         

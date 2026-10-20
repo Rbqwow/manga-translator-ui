@@ -4,7 +4,14 @@ from typing import Any, Awaitable, Callable, Optional, TypeVar
 
 T = TypeVar("T")
 
+
+class RetryExhaustedError(RuntimeError):
+    """A request failed after its existing retry/failover policy completed."""
+
 _HTTP_STATUS_RE = re.compile(r"(?:status|http)\s*(\d{3})", re.IGNORECASE)
+_STATUS_CODE_RE = re.compile(
+    r"(?:status|http|error\s*code|code)\s*[:=]?\s*(\d{3})", re.IGNORECASE
+)
 _RETRYABLE_STATUS_CODES = {408, 409, 425, 429, 500, 502, 503, 504, 520, 521, 522, 523, 524}
 _NON_RETRYABLE_STATUS_CODES = {400, 401, 403, 404, 405, 422}
 _NON_RETRYABLE_MARKERS = (
@@ -17,6 +24,29 @@ _NON_RETRYABLE_MARKERS = (
     "unauthorized",
     "forbidden",
 )
+
+# A permanent failure does not become retryable by being wrapped in a
+# RetryExhaustedError, so the skip policy classifies the whole cause chain.
+_PERMANENT_ERROR_MARKERS = _NON_RETRYABLE_MARKERS + (
+    "model_not_found",
+    "model not found",
+    "invalid model",
+    "unknown model",
+    "no such model",
+    "unsupported model",
+    "does not exist or you do not have access",
+    "account_deactivated",
+    "account deactivated",
+    "account has been deactivated",
+    "account has been disabled",
+    "organization has been disabled",
+    "invalid_organization",
+    "insufficient_quota",
+    "insufficient quota",
+    "quota exceeded",
+    "payment required",
+)
+_PERMANENT_STATUS_CODES = _NON_RETRYABLE_STATUS_CODES | {402}
 _RETRYABLE_MARKERS = (
     "did not contain an image",
     "did not contain image data",
@@ -25,9 +55,28 @@ _RETRYABLE_MARKERS = (
     "returned invalid json",
     "timed out",
     "timeout",
-    "connection",
-    "connect",
-    "network",
+    # Bare "connect"/"connection" matched messages such as "connection is not
+    # configured" or "unsupported connection mode"; these phrases keep the
+    # intended network failures without swallowing configuration problems.
+    "connection error",
+    "connection aborted",
+    "connection reset",
+    "connection refused",
+    "connection closed",
+    "connection dropped",
+    "connection attempts failed",
+    "failed to connect",
+    "cannot connect",
+    "could not connect",
+    "unable to connect",
+    "connection timed out",
+    "network error",
+    "network is unreachable",
+    # TLS handshakes fail transiently behind proxies and captive portals.
+    "certificate verify failed",
+    "ssl",
+    "tls",
+    "eof occurred in violation of protocol",
     "temporary failure",
     "temporarily unavailable",
     "server disconnected",
@@ -133,6 +182,78 @@ def is_retryable_api_error(error: Exception) -> bool:
     return any(marker in message for marker in _RETRYABLE_MARKERS)
 
 
+def _status_codes_in(error: Exception) -> set:
+    """Collect HTTP-like status codes from the error and its response object."""
+    codes = set()
+
+    for attr in ("status_code", "status", "http_status", "code"):
+        value = getattr(error, attr, None)
+        try:
+            if value is not None:
+                codes.add(int(value))
+        except (TypeError, ValueError):
+            pass
+
+    response = getattr(error, "response", None)
+    for attr in ("status_code", "status"):
+        value = getattr(response, attr, None) if response is not None else None
+        try:
+            if value is not None:
+                codes.add(int(value))
+        except (TypeError, ValueError):
+            pass
+
+    for match in _STATUS_CODE_RE.finditer(str(error or "")):
+        try:
+            codes.add(int(match.group(1)))
+        except ValueError:
+            continue
+    return codes
+
+
+def is_permanent_api_error(error: Exception) -> bool:
+    """True when retrying cannot help: bad credentials, unknown model, no quota.
+
+    Wrapped errors are unwrapped because the OpenAI/Gemini provider loops
+    re-raise every exhausted failure as ``RetryExhaustedError``, which would
+    otherwise make a configuration mistake indistinguishable from a timeout.
+    Each link is classified by explicit markers and status codes; one retryable
+    HTTP status anywhere in the chain wins, so a transient failure that merely
+    mentions a configuration keyword stays retryable.
+    """
+    retryable_seen = False
+    permanent_seen = False
+
+    seen = set()
+    current = error
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        if _is_permanent_single(current):
+            permanent_seen = True
+        elif _has_retryable_status(current):
+            retryable_seen = True
+        current = getattr(current, "original_error", None) or current.__cause__
+
+    return permanent_seen and not retryable_seen
+
+
+def _message_of(error: Exception) -> str:
+    return summarize_exception_message(error).lower()
+
+
+def _has_retryable_status(error: Exception) -> bool:
+    return bool(_status_codes_in(error) & _RETRYABLE_STATUS_CODES)
+
+
+def _is_permanent_single(error: Exception) -> bool:
+    if isinstance(error, (asyncio.TimeoutError, TimeoutError, ConnectionError, OSError)):
+        return False
+    message = _message_of(error)
+    if message and any(marker in message for marker in _PERMANENT_ERROR_MARKERS):
+        return True
+    return bool(_status_codes_in(error) & _PERMANENT_STATUS_CODES)
+
+
 async def run_with_retry(
     *,
     operation: Callable[[], Awaitable[T]],
@@ -161,7 +282,7 @@ async def run_with_retry(
                 raise
 
             if max_total_attempts != -1 and attempt_index >= max_total_attempts:
-                raise RuntimeError(
+                raise RetryExhaustedError(
                     f"{provider_name} {operation_name} failed after {attempt_index} attempts: "
                     f"{summarize_exception_message(exc)}"
                 ) from exc

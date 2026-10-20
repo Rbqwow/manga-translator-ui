@@ -1516,5 +1516,11 @@
   "api_test_error_model_unavailable": "接続には成功しましたが、モデル {model} は利用できません：{error}",
   "api_test_error_remote_image": "生成された画像のダウンロードに失敗しました：HTTP {status}",
   "api_test_error_sakura_base": "先に SAKURA_API_BASE を設定してください。",
-  "api_test_error_unsupported": "この翻訳器は API テストをサポートしていません。"
+  "api_test_error_unsupported": "この翻訳器は API テストをサポートしていません。",
+  "label_skip_failed_after_retries": "再試行終了後にスキップ",
+  "label_max_failure_skips": "失敗によるスキップ上限",
+  "desc_cli_skip_failed_after_retries": "既存の再試行と API 切り替えが失敗した場合、対象画像をスキップして続行します。バッチ内の対象画像ごとに数えます。その他のエラーは「エラーを無視」に従います。再試行回数 -1 は無制限のままです。",
+  "desc_cli_max_failure_skips": "再試行終了後のスキップ数がこの値に達すると停止します（既定 3、0 は無制限）。スキップ機能が有効な場合のみ適用され、「エラーを無視」より優先します。既存の出力や文字なしのスキップは数えません。",
+  "task_skipped_summary": "再試行終了後に {count} 個のファイルをスキップ：",
+  "failure_skip_limit_reached": "タスク停止：再試行終了後のスキップ数が上限 {count} 枚に達しました。上限を調整するか、以下のエラーを解決して再実行してください。"
 }

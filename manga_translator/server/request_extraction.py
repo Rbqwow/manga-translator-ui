@@ -583,6 +583,18 @@ async def while_streaming(req: Request, transform, config: Config, image: bytes 
                     yield pack_message(2, json.dumps({"error": "Translation failed", "stage": "translate"}, ensure_ascii=False).encode('utf-8'))
                     return
             
+            # Every streaming endpoint (json/bytes/image) passes through here,
+            # so this is the one place that can report skipped pages for all of
+            # them. The bytes payload is a fixed wire format with no room for a
+            # skip flag, so logging is what keeps those clients from silently
+            # receiving an empty result with no explanation.
+            if getattr(ctx, 'skipped', False):
+                add_log(
+                    f"Page skipped ({getattr(ctx, 'skip_reason', None) or 'unknown'}): "
+                    f"{getattr(ctx, 'skip_message', None) or 'no detail'}",
+                    "WARNING",
+                )
+
             has_result = ctx.result is not None if hasattr(ctx, 'result') else False
             has_text_regions = hasattr(ctx, 'text_regions') and ctx.text_regions
             text_region_count = len(ctx.text_regions) if has_text_regions else 0

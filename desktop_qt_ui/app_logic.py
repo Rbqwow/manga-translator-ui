@@ -293,6 +293,7 @@ class MainAppLogic(QObject):
 
     def _reset_task_failures(self):
         self._task_failures = []
+        self.task_skip_summary = ""
         self._task_failure_keys = set()
 
     def _normalize_task_error_summary(self, error_message: str, limit: int = 160) -> str:
@@ -1313,6 +1314,8 @@ class MainAppLogic(QObject):
                     "ai_colorizer_history_pages": self._t("label_ai_colorizer_history_pages"),
                     "verbose": self._t("label_verbose"),
                     "attempts": self._t("label_attempts"),
+                    "skip_failed_after_retries": self._t("label_skip_failed_after_retries"),
+                    "max_failure_skips": self._t("label_max_failure_skips"),
                     "max_requests_per_minute": self._t("label_max_requests_per_minute"),
                     "ignore_errors": self._t("label_ignore_errors"),
                     "use_gpu": self._t("label_use_gpu"),
@@ -1968,12 +1971,18 @@ class MainAppLogic(QObject):
         saved_files = []
         skipped_results = [result for result in (results or []) if result.get('skipped')]
         skipped_count = len(skipped_results)
+        from desktop_qt_ui.utils.task_summary import build_skip_summary
+        self.task_skip_summary = build_skip_summary(skipped_results, self._t)
+        retry_skipped_count = sum(
+            result.get('skip_reason') == 'retry_exhausted' for result in skipped_results
+        )
         if results:
             self._ui_log(f"Translation task completed; received {len(results)} results.")
             for result in results:
                 if result.get('skipped'):
-                    reason = result.get('skip_message') or 'The backend skipped this file'
-                    self._ui_log(f"⏭️ {os.path.basename(result.get('original_path') or '')}: {reason}")
+                    if result.get('skip_reason') == 'retry_exhausted':
+                        reason = result.get('skip_message') or 'Retries exhausted'
+                        self._ui_log(f"⏭️ {os.path.basename(result.get('original_path') or '')}: {reason}")
                     continue
                 if not result.get('success'):
                     self._record_task_failure_from_result(result)
@@ -1998,22 +2007,26 @@ class MainAppLogic(QObject):
         self.saved_files_count = len(saved_files)
 
         failed_count = len(self._task_failures)
-        all_skipped = skipped_count > 0 and self.saved_files_count == 0 and failed_count == 0
+        all_skipped = (
+            skipped_count > 0 and self.saved_files_count == 0
+            and failed_count == 0 and retry_skipped_count == 0
+        )
         all_skipped_message = self._t(
             "all_existing_outputs_skipped_dialog",
             count=skipped_count,
         )
         if all_skipped:
             self._ui_log(
-                f"No new files processed: the backend skipped {skipped_count} files.",
+                "No new files processed.",
                 "WARNING",
             )
-        elif failed_count > 0:
-            self._ui_log(f"Translation task completed: {self.saved_files_count} files succeeded, {failed_count} files failed.", "WARNING")
-        elif skipped_count > 0:
-            self._ui_log(f"Translation task completed: {self.saved_files_count} files succeeded, {skipped_count} files skipped.")
         else:
-            self._ui_log(f"Translation task completed: {self.saved_files_count} files succeeded in total.")
+            summary = f"Translation task completed: {self.saved_files_count} files succeeded"
+            if failed_count:
+                summary += f", {failed_count} files failed"
+            if retry_skipped_count:
+                summary += f", {retry_skipped_count} files skipped after retries exhausted"
+            self._ui_log(summary + ".", "WARNING" if failed_count or retry_skipped_count else "INFO")
         
         try:
             self.state_manager.set_translating(False)
@@ -2026,11 +2039,16 @@ class MainAppLogic(QObject):
                 )
                 self.warning_dialog_requested.emit(all_skipped_message)
             elif failed_count > 0:
-                self.state_manager.set_status_message(f"任务完成，成功处理 {self.saved_files_count} 个文件，失败 {failed_count} 个文件。")
-            elif skipped_count > 0:
+                status = f"任务完成，成功处理 {self.saved_files_count} 个文件，失败 {failed_count} 个文件"
+                if retry_skipped_count:
+                    status += f"，失败跳过 {retry_skipped_count} 个文件"
+                self.state_manager.set_status_message(status + "。")
+            elif retry_skipped_count > 0:
                 self.state_manager.set_status_message(
-                    f"任务完成，成功处理 {self.saved_files_count} 个文件，已跳过 {skipped_count} 个文件。"
+                    f"任务完成，成功处理 {self.saved_files_count} 个文件，失败跳过 {retry_skipped_count} 个文件。"
                 )
+                if not saved_files:
+                    self.warning_dialog_requested.emit(self.task_skip_summary)
             else:
                 self.state_manager.set_status_message(f"任务完成，成功处理 {self.saved_files_count} 个文件。")
             
@@ -2048,7 +2066,10 @@ class MainAppLogic(QObject):
             # 使用列表副本发送信号，避免引用问题
             self.task_completed.emit(list(saved_files))
             if failed_count > 0:
-                self.error_dialog_requested.emit(self._build_task_failure_dialog_message())
+                message = self._build_task_failure_dialog_message()
+                if self.task_skip_summary:
+                    message += "\n\n" + self.task_skip_summary
+                self.error_dialog_requested.emit(message)
         except Exception as e:
             self._ui_log(f"Fatal error updating task completion state or emitting signals: {e}", "ERROR")
             import traceback
@@ -2340,6 +2361,18 @@ class TranslationWorker(QObject):
         if isinstance(ctx, dict):
             return ctx.get(key, default)
         return getattr(ctx, key, default)
+
+    @staticmethod
+    def _get_failure_skip_summary(translator) -> str:
+        from desktop_qt_ui.utils.task_summary import build_skip_summary
+
+        from services.i18n_service import get_i18n_manager
+
+        summary = build_skip_summary(
+            translator.failure_skip_policy.skipped_items,
+            get_i18n_manager().translate,
+        )
+        return "\n\n" + summary if summary else ""
 
     def _normalize_error_summary(self, message: str, limit: int = 240) -> str:
         raw = str(message or "").replace("\r\n", "\n").replace("\r", "\n")
@@ -3018,7 +3051,7 @@ class TranslationWorker(QObject):
                 contexts = []
 
             success_count = 0
-            skipped_count = 0
+            retry_skipped_count = 0
             failed_count = 0
             failed_items = []
             for ctx in contexts:
@@ -3036,15 +3069,16 @@ class TranslationWorker(QObject):
                 if self._get_context_value(ctx, 'skipped'):
                     skip_message = self._get_context_value(ctx, 'skip_message', 'The backend skipped this file')
                     results.append({
-                        'success': True,
+                        'success': self._get_context_value(ctx, 'skip_reason') != 'retry_exhausted',
                         'original_path': image_name,
                         'output_path': self._get_context_value(ctx, 'output_path'),
                         'skipped': True,
                         'skip_reason': self._get_context_value(ctx, 'skip_reason'),
                         'skip_message': skip_message,
                     })
-                    skipped_count += 1
-                    self._log_info(f"⏭️ {file_name}: {skip_message}")
+                    if self._get_context_value(ctx, 'skip_reason') == 'retry_exhausted':
+                        retry_skipped_count += 1
+                        self._log_info(f"⏭️ {file_name}: {skip_message}")
                     continue
 
                 error_message = self._extract_context_error_message(ctx)
@@ -3075,9 +3109,10 @@ class TranslationWorker(QObject):
                         total_failed=failed_count,
                     )
                 )
-            self._log_info(
-                f"Batch processing completed: {success_count} succeeded, {skipped_count} skipped, {failed_count} failed."
-            )
+            summary = f"Batch processing completed: {success_count} succeeded, {failed_count} failed"
+            if retry_skipped_count:
+                summary += f", {retry_skipped_count} skipped after retries exhausted"
+            self._log_info(summary + ".")
             self._log_info('💾 Files saved to: {dir}'.format(dir=self.output_folder))
 
             self.finished.emit(results)
@@ -3085,7 +3120,10 @@ class TranslationWorker(QObject):
         except asyncio.CancelledError as e:
             self._log_warning(f"Task cancelled: {e}")
             self.logger.warning(f"Task cancelled: {e}")
-            self.error.emit(str(e))
+            message = str(e)
+            if 'translator' in locals():
+                message += self._get_failure_skip_summary(translator)
+            self.error.emit(message)
         except Exception as e:
             import traceback
             error_message = str(e)
@@ -3097,6 +3135,14 @@ class TranslationWorker(QObject):
             
             # 构建友好的中文错误提示
             friendly_error = self._build_friendly_error_message(error_message, error_traceback)
+            from manga_translator.utils.failure_policy import FailureSkipLimitExceeded
+            if isinstance(e, FailureSkipLimitExceeded):
+                from services.i18n_service import get_i18n_manager
+                friendly_error = get_i18n_manager().translate(
+                    "failure_skip_limit_reached", count=translator.failure_skip_policy.max_skips
+                )
+            if 'translator' in locals():
+                friendly_error += self._get_failure_skip_summary(translator)
             
             self.error.emit(friendly_error)
         finally:

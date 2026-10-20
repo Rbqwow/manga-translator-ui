@@ -20,6 +20,8 @@
         "cli.save_quality",
         "cli.compression_effort",
         "cli.attempts",
+        "cli.skip_failed_after_retries",
+        "cli.max_failure_skips",
         "cli.batch_size",
         "cli.batch_concurrent",
         "cli.translation_concurrency",

@@ -33,6 +33,16 @@ The “Verbose Logging” toggle is on Settings → General. Qt UI always create
 
 “Retry Attempts” is an integer input. It sets how many times a translation request is retried after failure; `-1` means unlimited. It applies only to the translation/API request layer, not to a general detector/OCR/render retry, and it is not the high-quality retry. Default: `3`.
 
+#### Skip after retries are exhausted {#cli-skip-failed-after-retries}
+
+This toggle follows Retry Attempts in Settings → General and is off by default. Requests complete their existing retries and API failover before affected images are skipped. It does not retry the whole image pipeline. Standard translation, high-quality translation, concurrent processing, and API-based OCR, colorization and rendering share the policy. A retry count of `-1` still means unlimited retries.
+
+#### Failure skip limit {#cli-max-failure-skips}
+
+Applies only when skipping after retries is enabled. The default `3` stops the task as soon as the third image is skipped due to exhausted retries; `0` allows unlimited skips. Counts are cumulative across the task, including all concurrent batches, and successful images do not reset them. Each affected image in a failed batch counts separately. Existing outputs and other normal skips do not count. This limit takes precedence over Ignore Errors; cancellation always stops the task.
+
+Completion logs and dialogs only summarize counts, paths and reasons for files skipped after exhausted retries; files skipped because their outputs already exist are omitted. Early-stop dialogs also include images previously skipped after exhausted retries. Configuration keys: `cli.skip_failed_after_retries` and `cli.max_failure_skips`.
+
 #### Ignore Errors {#cli-ignore-errors}
 
 When the “Ignore Errors” toggle is enabled, a failed image is recorded and processing continues with the remaining images; it does not turn failure into success and does not swallow cancellation. Default: `false`.

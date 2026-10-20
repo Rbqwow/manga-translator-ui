@@ -6,6 +6,7 @@ import os
 import time
 import traceback
 import unicodedata
+from contextvars import ContextVar
 from typing import Any, List, Optional
 
 import cv2
@@ -37,7 +38,13 @@ from .utils import (
     sort_regions,
     visualize_textblocks,
 )
-from .utils.batch_skip import BatchInputPlan, input_path, plan_batch_inputs, slice_batch_indices
+from .utils.batch_skip import (
+    BatchInputPlan,
+    input_path,
+    plan_batch_inputs,
+    slice_batch_indices,
+)
+from .utils.failure_policy import FailureSkipLimitExceeded, FailureSkipPolicy
 from .utils.onnx_runtime import set_onnx_gpu_disabled
 from .utils.text_filter import match_filter
 
@@ -427,6 +434,20 @@ class MangaTranslator:
         # 开启后：检测、OCR、修复、翻译四并发，提升处理速度
             
         self.ignore_errors = params.get('ignore_errors', False)
+        self._failure_skip_overrides = {
+            key: params[key]
+            for key in ('skip_failed_after_retries', 'max_failure_skips')
+            if key in params
+        }
+        # The default is built per context. A single shared policy instance
+        # would leak skip counts between the CLI, the server's shared
+        # translator, and any request that never installs its own policy.
+        default_skip_enabled = params.get('skip_failed_after_retries', False)
+        default_skip_limit = params.get('max_failure_skips', 5)
+        self._failure_skip_policy = ContextVar('failure_skip_policy')
+        self._failure_skip_policy_last = None
+        self._failure_skip_policy_last_task = None
+        self._failure_skip_policy_defaults = (default_skip_enabled, default_skip_limit)
         # check mps for apple silicon or cuda for nvidia
         device = 'mps' if torch.backends.mps.is_available() else 'cuda'
         self.device = device if params.get('use_gpu', False) else 'cpu'
@@ -2454,11 +2475,76 @@ class MangaTranslator:
         stage_label = stage_labels.get(stage, stage or "Processing")
         return f"{stage_label} failed: {raw_message}"
 
+    @staticmethod
+    def _running_task():
+        try:
+            return asyncio.current_task()
+        except RuntimeError:
+            # No running loop: the caller is reading a finished task's summary.
+            return None
+
+    @property
+    def failure_skip_policy(self) -> FailureSkipPolicy:
+        policy = self._failure_skip_policy.get(None)
+        if policy is not None:
+            return policy
+
+        task = self._running_task()
+        last_task = getattr(self, '_failure_skip_policy_last_task', None)
+        last = getattr(self, '_failure_skip_policy_last', None)
+        if (
+            task is None
+            and last is not None
+            and last_task is not None
+            and last_task.done()
+        ):
+            # Outside any event-loop task and the owning task has finished: a
+            # summary, the CLI after asyncio.run(), or a test. Report that
+            # task's policy instead of inventing an empty one that hides its
+            # collected skips. Requiring `done()` means a still-running
+            # request cannot be handed another request's tally.
+            return last
+
+        # Inside a task (or plain sync code) with nothing bound yet: start a
+        # fresh policy for it. This is what keeps one request's skips out of
+        # the next request's tally on the server's shared translator.
+        enabled, limit = getattr(self, '_failure_skip_policy_defaults', (False, 5))
+        policy = FailureSkipPolicy(enabled, limit)
+        self._failure_skip_policy.set(policy)
+        if task is not None:
+            self._failure_skip_policy_last = policy
+            self._failure_skip_policy_last_task = task
+        return policy
+
+    @failure_skip_policy.setter
+    def failure_skip_policy(self, policy: FailureSkipPolicy):
+        # A server translator is shared by concurrent requests. Keep the policy
+        # in the calling task, including after completion for its error summary.
+        self._failure_skip_policy.set(policy)
+        task = self._running_task()
+        if task is not None:
+            self._failure_skip_policy_last = policy
+            self._failure_skip_policy_last_task = task
+
     def _resolve_pipeline_error(self, stage: str, error: Exception) -> tuple[str, Exception]:
+        # Check the explicit type first: check_limit() only raises when a limit
+        # is latched on this policy, so an equivalent error raised elsewhere
+        # (another request, or a re-raise after the latch was cleared) must
+        # still abort instead of being formatted as a per-page failure.
+        if isinstance(error, FailureSkipLimitExceeded):
+            raise error
+        self.failure_skip_policy.check_limit()
         if isinstance(error, FileTranslationFailure):
             stage = error.stage or stage
             error = error.original_error
         return stage, error
+
+    def _can_continue_after_error(self, error: Exception) -> bool:
+        # The skip limit takes precedence over the legacy ignore-errors switch.
+        if isinstance(error, FailureSkipLimitExceeded):
+            raise error
+        self.failure_skip_policy.check_limit()
+        return self.ignore_errors or self.failure_skip_policy.can_skip(error)
 
     def _build_stage_error_context(
         self,
@@ -2467,7 +2553,6 @@ class MangaTranslator:
         config: Config = None,
         stage: str = "",
     ) -> Context:
-        stage, error = self._resolve_pipeline_error(stage, error)
         image_name = getattr(image, "name", None) if image is not None else None
         ctx = Context()
         if image is not None:
@@ -2475,12 +2560,9 @@ class MangaTranslator:
         if image_name:
             ctx.image_name = image_name
         ctx.text_regions = []
-        ctx.success = False
-        ctx.translation_error = self._format_pipeline_error_message(stage, error)
-        ctx.error = ctx.translation_error
         if config is not None:
             ctx.config = config
-        return ctx
+        return self._mark_context_failure(ctx, error, stage)
 
     def _mark_context_failure(self, ctx: Context, error: Exception, stage: str = "") -> Context:
         stage, error = self._resolve_pipeline_error(stage, error)
@@ -2496,6 +2578,8 @@ class MangaTranslator:
         ctx.success = False
         ctx.translation_error = self._format_pipeline_error_message(stage, error)
         ctx.error = ctx.translation_error
+        if self.failure_skip_policy.record(ctx, error):
+            logger.warning(f"Skipped after retries: {ctx.skip_display_name}: {ctx.skip_message}")
         return ctx
 
     def _materialize_batch_inputs(self, batch_items: List[tuple]) -> tuple[list[tuple], list[Context]]:
@@ -3581,10 +3665,18 @@ class MangaTranslator:
         self._cancel_check_callback = callback
     
     def _check_cancelled(self):
-        """检查任务是否被取消"""
+        """检查任务是否被取消
+
+        A tripped skip limit is a hard failure, not a cancellation: raising
+        ``CancelledError`` here made callers treat "too many pages skipped" as a
+        user stop, so the limit was reported as a cancellation and the UI never
+        showed the underlying error. ``FailureSkipLimitExceeded`` is a
+        ``RuntimeError`` and propagates on its own instead.
+        """
         if self._cancel_check_callback and self._cancel_check_callback():
             logger.warning("[Stage] Task cancelled")
             raise asyncio.CancelledError("Task cancelled")
+        self.failure_skip_policy.check_limit()
 
     async def _report_progress(self, state: str, finished: bool = False):
         for ph in self._progress_hooks:
@@ -3625,10 +3717,20 @@ class MangaTranslator:
 
     async def translate_batch(self, images_with_configs: List[tuple], batch_size: int = None, image_names: List[str] = None, save_info: dict = None, global_offset: int = 0, global_total: int = None) -> List[Context]:
         """Translate a complete ordered input list and return processed and skipped results."""
+        cli = getattr(images_with_configs[0][1], 'cli', None) if images_with_configs else None
+        self.failure_skip_policy = FailureSkipPolicy(
+            self._failure_skip_overrides.get(
+                'skip_failed_after_retries', getattr(cli, 'skip_failed_after_retries', False)
+            ),
+            self._failure_skip_overrides.get(
+                'max_failure_skips', getattr(cli, 'max_failure_skips', 5)
+            ),
+        )
         if self.filter_text_enabled:
             from .utils.text_filter import load_filter_list
             load_filter_list(force_reload=True)
 
+        self._last_batch_partial_results = []
         source_items = [
             (image, self._apply_runtime_cli_overrides(config))
             for image, config in images_with_configs
@@ -3672,6 +3774,7 @@ class MangaTranslator:
                 save_info,
                 processing_offset,
                 display_total,
+                skipped_count=skipped_count,
             )
             return plan.merge_results(contexts)
 
@@ -3770,7 +3873,7 @@ class MangaTranslator:
             if display_total <= 0:
                 return
             completed = min(processing_offset + len(results), display_total)
-            failed_count = sum(1 for ctx in results if getattr(ctx, 'translation_error', None))
+            failed_count = sum(1 for ctx in results if getattr(ctx, 'translation_error', None) and not getattr(ctx, 'skipped', False))
             current_skipped = skipped_count + sum(1 for ctx in results if getattr(ctx, 'skipped', False))
             await self._report_progress(
                 f"batch:{completed}:{completed}:{display_total}:{failed_count}:{current_skipped}"
@@ -3783,6 +3886,12 @@ class MangaTranslator:
             self._resume_context_order,
         )
         total_batches = len(batch_slices)
+
+        # Pages finished before an abort must stay observable: the skip limit
+        # and cancellation both unwind past this loop, and callers such as the
+        # subprocess mode otherwise report the last written batch as neither
+        # success nor failure.
+        self._last_batch_partial_results = results
 
         # 分批处理所有图片
         for batch_num, (batch_start, batch_end) in enumerate(batch_slices, start=1):
@@ -4191,6 +4300,13 @@ class MangaTranslator:
                             
                         except Exception as e:
                             logger.error(f"Error loading text for image {i+1} in batch: {e}")
+                            # Route through the same predicate as every other
+                            # stage: can_skip() alone turned a failure into a
+                            # silent skip that was never counted as a failure.
+                            if self._can_continue_after_error(e):
+                                ctx = self._build_stage_error_context(image, e, config, stage='rendering')
+                                preprocessed_contexts.append((ctx, config))
+                                continue
                             ctx = Context()
                             ctx.input = image
                             ctx.text_regions = []
@@ -5039,17 +5155,6 @@ class MangaTranslator:
                     if ctx.text_regions:
                         ctx.text_regions = await self._apply_post_translation_processing(ctx, config)
                 
-                # ✅ 立即保存当前批次的翻译结果到all_page_translations，供下一个批次使用上下文
-                # Concurrent workers use an immutable snapshot. The pipeline
-                # records their final translations in page order after retries.
-                if context_history is None:
-                    for ctx, config in batch:
-                        if ctx.text_regions:
-                            page_entries = self._build_page_context_entries(ctx)
-                            self.all_page_translations.append(page_entries)
-                            logger.debug(f"[Batch Context] Saved {len(page_entries)} translations for next batch context")
-                    self._prune_context_history()
-                        
                 # 批次级别的目标语言检查
                 if batch and batch[0][1].translator.enable_post_translation_check:
                     # 收集批次内所有页面的filtered regions
@@ -5128,6 +5233,8 @@ class MangaTranslator:
                                             
                                     except Exception as e:
                                         logger.error(f"Error during batch retry {batch_retry_count}: {e}")
+                                        if self.failure_skip_policy.can_skip(e):
+                                            raise
                                         break
                                 else:
                                     logger.warning("No text found for batch retry")
@@ -5143,6 +5250,17 @@ class MangaTranslator:
                         logger.info("All translation regions passed post-translation check.")
                     else:
                         logger.warning("Some translation regions failed post-translation check.")
+
+                # Record history only after quality-check requests finish, so
+                # pages skipped after exhausted retries cannot enter later context.
+                # Concurrent workers record their own final results in page order.
+                if context_history is None:
+                    for ctx, config in batch:
+                        if ctx.text_regions:
+                            page_entries = self._build_page_context_entries(ctx)
+                            self.all_page_translations.append(page_entries)
+                            logger.debug(f"[Batch Context] Saved {len(page_entries)} translations for next batch context")
+                    self._prune_context_history()
                         
                 # 过滤逻辑（简化版本，保留主要过滤条件）
                 for ctx, config in batch:
@@ -5184,10 +5302,13 @@ class MangaTranslator:
                 
                 logger.error(f"Error in batch translation: {error_msg}")
                 logger.error(traceback.format_exc())
-                if not self.ignore_errors:
+                if not self._can_continue_after_error(e):
                     raise
                 # 错误时标记当前批次文件失败，不再回退原文
-                for ctx, config in batch:
+                affected_indices = {ctx_idx for ctx_idx, _ in batch_text_mapping}
+                for ctx_idx, (ctx, config) in enumerate(batch):
+                    if ctx_idx not in affected_indices or getattr(ctx, 'translation_error', None):
+                        continue
                     self._mark_context_failure(ctx, FileTranslationFailure("translation", e), stage='translation')
                     ctx.text_regions = []
                 results.extend(batch)
@@ -5479,6 +5600,11 @@ class MangaTranslator:
                             break
                     except Exception as e:
                         logger.error(f"Error during region retry: {e}")
+                        if self.failure_skip_policy.can_skip(e):
+                            # This request only retried one page; preserve other
+                            # successful pages in the same translation batch.
+                            self._mark_context_failure(ctx, e, stage='translation')
+                            return []
                         break
 
         for region in ctx.text_regions:
@@ -5804,7 +5930,7 @@ class MangaTranslator:
                         retranslated = await dispatch(
                             config.translator.translator_gen,
                             [region.text],
-                            config.translator,
+                            config,
                             False,  # use_mtpe removed
                             ctx,
                             'cpu' if self._gpu_limited_memory else self.device
@@ -5829,6 +5955,8 @@ class MangaTranslator:
                         
                 except Exception as e:
                     logger.error(f'Error during re-translation: {e}')
+                    if self.failure_skip_policy.can_skip(e):
+                        raise
                     region.translation = original_translation
                     break
             else:
@@ -5864,7 +5992,7 @@ class MangaTranslator:
         except Exception as e:
             logger.error(f"Failed to update translation map: {e}")
 
-    async def _translate_batch_replace_translation(self, images_with_configs: List[tuple], save_info: dict = None, global_offset: int = 0, global_total: int = None) -> List[Context]:
+    async def _translate_batch_replace_translation(self, images_with_configs: List[tuple], save_info: dict = None, global_offset: int = 0, global_total: int = None, skipped_count: int = 0) -> List[Context]:
         """
         替换翻译模式：从翻译图提取OCR结果并应用到生肉图
         
@@ -5881,7 +6009,10 @@ class MangaTranslator:
             global_total: 全局总图片数
         """
         from .utils.replace_translation import translate_batch_replace_translation
-        return await translate_batch_replace_translation(self, images_with_configs, save_info, global_offset, global_total)
+        return await translate_batch_replace_translation(
+            self, images_with_configs, save_info, global_offset, global_total,
+            skipped_count=skipped_count,
+        )
 
     async def _translate_batch_high_quality(
         self,
@@ -5916,7 +6047,7 @@ class MangaTranslator:
             if display_total <= 0:
                 return
             completed = min(global_offset + len(results), display_total)
-            failed_count = sum(1 for ctx in results if getattr(ctx, 'translation_error', None))
+            failed_count = sum(1 for ctx in results if getattr(ctx, 'translation_error', None) and not getattr(ctx, 'skipped', False))
             current_skipped = skipped_count + sum(1 for ctx in results if getattr(ctx, 'skipped', False))
             await self._report_progress(
                 f"batch:{completed}:{completed}:{display_total}:{failed_count}:{current_skipped}"
@@ -6076,9 +6207,11 @@ class MangaTranslator:
                                 
                 except Exception as e:
                     logger.error(f"Error in high quality batch translation: {e}")
-                    if not self.ignore_errors:
+                    if not self._can_continue_after_error(e):
                         raise
-                    for ctx, config in preprocessed_contexts:
+                    for ctx_idx, (ctx, config) in enumerate(preprocessed_contexts):
+                        if not batch_data[ctx_idx]['original_texts'] or getattr(ctx, 'translation_error', None):
+                            continue
                         self._mark_context_failure(ctx, FileTranslationFailure("translation", e), stage='translation')
                         ctx.text_regions = []
             # --- NEW: Handle Generate and Export for High-Quality Mode ---
@@ -6151,7 +6284,7 @@ class MangaTranslator:
                     await report_completed_image_progress()
                 except Exception as e:
                     logger.error(f"Error rendering image: {e}")
-                    if not self.ignore_errors:
+                    if not self._can_continue_after_error(e):
                         raise RuntimeError(f"Rendering failed for {os.path.basename(ctx.image_name) if hasattr(ctx, 'image_name') else 'Unknown'}: {e}") from e
                     ctx = self._mark_context_failure(ctx, e, stage='rendering')
                     results.append(ctx)

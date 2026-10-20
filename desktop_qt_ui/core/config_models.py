@@ -138,6 +138,8 @@ class ColorizerSettings(BaseModel):
 class CliSettings(BaseModel):
     verbose: bool = False  # 默认关闭详细日志
     attempts: int = -1
+    skip_failed_after_retries: bool = False
+    max_failure_skips: int = Field(default=3, ge=0)
     ignore_errors: bool = False
     use_gpu: bool = True
     disable_onnx_gpu: bool = False  # 禁用 ONNX Runtime GPU 加速（强制 ONNX 走 CPU）
