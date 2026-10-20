@@ -102,7 +102,10 @@ python -m manga_translator -i <输入> [选项]
 | `--batch-size` | 批量处理大小 | 配置文件 |
 | `--concurrent` | 开启并发流水线和多线程翻译；不传时保留配置值 | 配置文件 |
 | `--translation-concurrency` | 同时执行的翻译批次数（1–32）；需开启并发流水线 | 配置文件，默认 3 |
-| `--attempts` | 翻译失败重试次数（-1=无限） | 配置文件 |
+| `--attempts` | 翻译失败重试次数（-1=无限） | 配置文件，默认 5 |
+| `--skip-failed-after-retries` / `--no-skip-failed-after-retries` | 重试耗尽后跳过该页并继续 | 配置文件，默认开启 |
+| `--max-failure-skips` | 整个任务允许跳过的页数上限，0 表示不限制 | 配置文件，默认 5 |
+| `--force-simple-sort` | 不使用分格检测，按简单阅读顺序排列文本框 | 配置文件，默认关闭 |
 
 并发流水线可以由 `--concurrent` 或配置中的 `cli.batch_concurrent=true` 开启；`--translation-concurrency` 单独使用不会开启并发。`--batch-size` 控制每个翻译批次的图片数，`--translation-concurrency` 控制同时执行多少个批次。特殊工作流仍会禁用并发流水线，详见[工作流与文件模式](wiki/zh/cli/workflow-and-file-modes.md)。
 
@@ -127,6 +130,17 @@ python -m manga_translator local -i ./manga_folder/ --concurrent --translation-c
 **注意**：命令行参数会覆盖配置文件中的对应设置。
 
 **补充**：当前 `local` 入口支持 `--concurrent` 和 `--translation-concurrency`，仍未直接暴露 `--resume`。`--subprocess` 同样支持 `--format`、`--lossless`、`--batch-size` 和上述并发参数覆盖配置，但当前不会应用 `--attempts` 命令行覆盖；子进程的重试次数应通过配置文件中的 `cli.attempts` 设置。
+
+### 内部启动参数（不属于用户接口）
+
+以下参数由程序自己在需要时拉起子进程使用，列在此处仅为排障与阅读源码时对照：
+
+| 参数 | 用途 | 拉起位置 |
+|------|------|----------|
+| `--font-catalog-worker` | 把字体目录扫描放到独立进程，避免启动时阻塞界面；主进程通过管道读取候选字体 | `desktop_qt_ui/utils/font_list.py` |
+| `--panel-detection-worker` | 把分格检测模型放到独立进程，可被取消并随任务退出 | `manga_translator/utils/panel/__init__.py` |
+
+两者的调用参数都由父进程固定传入，不接受用户配置，请勿在启动脚本中直接调用。
 
 ---
 
@@ -154,7 +168,7 @@ python -m manga_translator -i manga.jpg --config my_config.json
 ```json
 {
   "translator": {
-    "translator": "openai_hq",
+    "translator": "openai",
     "target_lang": "CHS",
     "keep_lang": "none",
     "enable_streaming": true,
@@ -169,14 +183,15 @@ python -m manga_translator -i manga.jpg --config my_config.json
     "box_threshold": 0.5,
     "unclip_ratio": 2.5,
     "use_yolo_obb": true,
-    "min_box_area_ratio": 0.0008
+    "min_box_area_ratio": 0
   },
   "ocr": {
     "ocr": "48px",
-    "use_hybrid_ocr": false,
+    "use_hybrid_ocr": true,
     "secondary_ocr": "mocr",
     "min_text_length": 0,
-    "prob": 0.1
+    "prob": 0.1,
+    "ai_ocr_concurrency": 10
   },
   "inpainter": {
     "inpainter": "lama_large",
@@ -187,18 +202,19 @@ python -m manga_translator -i manga.jpg --config my_config.json
     "renderer": "default",
     "alignment": "auto",
     "direction": "auto",
-    "font_path": "fonts/Arial-Unicode-Regular.ttf",
     "layout_mode": "balloon_fill",
+    "font_family": "Microsoft YaHei UI",
     "disable_font_border": false,
     "font_size_offset": 0,
     "stroke_width": 0.07,
-    "check_br_and_retry": false
+    "check_br_and_retry": false,
+    "center_text_in_bubble": true
   },
   "upscale": {
     "upscaler": "mangajanai",
     "upscale_ratio": null,
-    "realcugan_model": "2x-conservative",
-    "tile_size": 600
+    "realcugan_model": null,
+    "tile_size": 400
   },
   "colorizer": {
     "colorizer": "none",
@@ -207,22 +223,24 @@ python -m manga_translator -i manga.jpg --config my_config.json
   },
   "cli": {
     "verbose": false,
-    "attempts": 3,
+    "attempts": 5,
+    "skip_failed_after_retries": true,
+    "max_failure_skips": 5,
     "ignore_errors": false,
-    "use_gpu": false,
+    "use_gpu": true,
     "disable_onnx_gpu": false,
     "context_size": 3,
-    "format": "不指定",
-    "overwrite": true,
-    "skip_no_text": false,
+    "format": "webp",
+    "overwrite": false,
+    "skip_no_text": true,
     "save_text": true,
     "load_text": false,
     "template": false,
     "save_quality": 100,
-    "save_lossless": false,
-    "compression_effort": 70,
+    "save_lossless": true,
+    "compression_effort": 100,
     "batch_size": 3,
-    "batch_concurrent": false,
+    "batch_concurrent": true,
     "translation_concurrency": 3,
     "generate_and_export": false,
     "colorize_only": false,
@@ -231,7 +249,7 @@ python -m manga_translator -i manga.jpg --config my_config.json
     "replace_translation": false
   },
   "kernel_size": 3,
-  "mask_dilation_offset": 20
+  "mask_dilation_offset": 50
 }
 ```
 

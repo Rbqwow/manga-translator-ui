@@ -58,8 +58,12 @@ The 17 parameters of the General tab span two pages: application-level parameter
 | `cli.overwrite` | Overwrite Existing Files | 覆盖已存在文件 | [#cli-overwrite](../desktop/settings/cli-batch-and-output.md#cli-overwrite) |
 | `cli.skip_no_text` | Skip Images Without Text | 跳过无文本图像 | [#cli-skip-no-text](../desktop/settings/cli-batch-and-output.md#cli-skip-no-text) |
 | `cli.save_text` | Editable Image | 图片可编辑 | [#cli-save-text](../desktop/settings/cli-batch-and-output.md#cli-save-text) |
+| `cli.save_lossless` | Lossless Image Save | 无损图像保存 | [#cli-save-lossless](../desktop/settings/cli-batch-and-output.md#cli-save-lossless) |
 | `cli.save_quality` | Image Save Quality | 图像保存质量 | [#cli-save-quality](../desktop/settings/cli-batch-and-output.md#cli-save-quality) |
+| `cli.compression_effort` | Compression Effort | 压缩努力程度 | [#cli-compression-effort](../desktop/settings/cli-batch-and-output.md#cli-compression-effort) |
 | `cli.attempts` | Retry Attempts | 重试次数 | [#cli-attempts](../desktop/settings/cli-batch-and-output.md#cli-attempts) |
+| `cli.skip_failed_after_retries` | Skip Page After Retries | 重试耗尽后跳过该页 | [#cli-skip-failed-after-retries](../desktop/settings/cli-batch-and-output.md#cli-skip-failed-after-retries) |
+| `cli.max_failure_skips` | Max Failure Skips | 最多跳过页数 | [#cli-max-failure-skips](../desktop/settings/cli-batch-and-output.md#cli-max-failure-skips) |
 | `cli.batch_size` | Batch Size | 批量大小 | [#cli-batch-size](../desktop/settings/cli-batch-and-output.md#cli-batch-size) |
 | `cli.batch_concurrent` | Concurrent Batch Processing | 并发批量处理 | [#cli-batch-concurrent](../desktop/settings/cli-batch-and-output.md#cli-batch-concurrent) |
 | `cli.translation_concurrency` | Translation Concurrency | 翻译并发数 | [#cli-translation-concurrency](../desktop/settings/cli-batch-and-output.md#cli-translation-concurrency) |

@@ -947,6 +947,10 @@ class ConfigService(QObject):
 
         # 2. 再加载用户配置（如果存在），覆盖默认配置
         if os.path.exists(self.user_config_path):
+            # Fill missing fields from the template before loading. Otherwise
+            # load_config_file() uses code defaults for this launch even though
+            # synchronization later writes different template defaults to disk.
+            self._sync_user_config()
             self.logger.info(f"Loading user configuration: {self.user_config_path}")
             self.load_config_file(self.user_config_path)
             self.config_path = self.user_config_path
@@ -969,9 +973,6 @@ class ConfigService(QObject):
                     self.config_path = self.default_config_path
             else:
                 self.config_path = self.user_config_path
-
-        # 3. 同步用户配置（添加新字段、删除旧字段）
-        self._sync_user_config()
 
     def _sync_user_config(self):
         """
