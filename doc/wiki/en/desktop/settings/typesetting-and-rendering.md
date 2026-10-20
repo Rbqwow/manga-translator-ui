@@ -45,6 +45,10 @@ Choose the layout direction in the “Text Direction” combo box: Auto (judged 
 
 Choose the text-box fitting algorithm in the “Layout Mode” combo box: Smart Scaling (balances readability and region fit), Strict Boundary (stays inside the region), or Smart Bubble (fills the bubble shape). Default: `balloon_fill`.
 
+#### Force Strict Layout
+
+With Force Strict Layout on, every text region uses strict line breaking and box fitting. Even when Layout Mode is Balloon Fill and all lines sit inside the bubble, the balloon-fill font search is skipped, matching the layout used by Load Text. Default: `false`.
+
 #### Bubble Mask Layout
 
 This switch applies only when Layout Mode is Smart Bubble (`balloon_fill`). Default: off (`false`).

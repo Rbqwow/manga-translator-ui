@@ -112,6 +112,10 @@ When the “Overwrite Existing Files” toggle is off, existing image output is 
 
 When the “Skip Images Without Text” toggle is enabled, images with no translatable text after detection/OCR are marked as skipped (`skip_reason=no_text`). The image and empty JSON/TXT are still written, but the page no longer enters translation or rendering. Detection and OCR still run, because otherwise the page could not be classified. This is a normal branch: it does not count as a failure and does not consume the `max_failure_skips` budget. Default: `true`.
 
+#### Simple Text Order {#force-simple-sort}
+
+With Simple Text Order on, panel detection is skipped and text boxes are ordered top to bottom, right to left. It removes one panel-detection subprocess per page, but multi-column pages may come out in the wrong order. The command line uses `--force-simple-sort` / `--no-force-simple-sort`. Default: `false`.
+
 #### Editable Image {#cli-save-text}
 
 When the “Editable Image” toggle is enabled, JSON sidecar data containing regions, original/translated text, dimensions, and rendering fields is exported; combined with “Export Original Text” it also exports the original TXT. Default: `true`.

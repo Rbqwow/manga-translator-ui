@@ -6,8 +6,8 @@
     "phase0Evidence": "doc/wiki/research/phase0-options-i18n-matrix.md"
   },
   "summary": {
-    "keys": 1515,
-    "exact": 1515,
+    "keys": 1537,
+    "exact": 1537,
     "missingInEnglish": 0,
     "missingInChinese": 0
   },
@@ -895,6 +895,12 @@
       "status": "exact"
     },
     {
+      "key": "Clear Selected",
+      "en_US": "Clear Selected",
+      "zh_CN": "清除选中",
+      "status": "exact"
+    },
+    {
       "key": "Clear Stamp Layer",
       "en_US": "Clear Stamp Layer",
       "zh_CN": "清除印章层",
@@ -1228,6 +1234,12 @@
       "key": "Description",
       "en_US": "Description",
       "zh_CN": "说明",
+      "status": "exact"
+    },
+    {
+      "key": "Deselect All",
+      "en_US": "Deselect All",
+      "zh_CN": "取消全选",
       "status": "exact"
     },
     {
@@ -5084,14 +5096,20 @@
     },
     {
       "key": "desc_cli_batch_concurrent",
-      "en_US": "Enable batch concurrent processing for faster multi-image translation.",
-      "zh_CN": "启用批量并发处理，多张图片同时翻译以提升效率。",
+      "en_US": "Run detection, translation, inpainting and rendering in parallel, with multiple translation batches in flight according to Translation Concurrency.",
+      "zh_CN": "让检测、翻译、修复和渲染并行处理，翻译阶段按翻译并发数同时请求多个批次。",
       "status": "exact"
     },
     {
       "key": "desc_cli_batch_size",
       "en_US": "Number of images sent to the translator at once (default 3). Larger values are faster but increase difficulty, slower responses, and more errors. Recommended 1-10.",
       "zh_CN": "一次性发送多少张图片的原文给翻译器翻译（默认 3）。值越大速度越快，但翻译难度更高、返回更慢、更容易出错。建议 1-10。",
+      "status": "exact"
+    },
+    {
+      "key": "desc_cli_compression_effort",
+      "en_US": "Compression effort for PNG, lossless WebP, lossless AVIF, and lossless HEIC/HEIF (0-100, default 100). Higher values prioritize compression over encoding speed; lower values encode faster.",
+      "zh_CN": "PNG、无损 WebP、无损 AVIF 和无损 HEIC/HEIF 的压缩努力程度（0-100，默认 100）。数值越大越侧重压缩效率、编码耗时越长；数值越小编码速度越快。",
       "status": "exact"
     },
     {
@@ -5137,6 +5155,12 @@
       "status": "exact"
     },
     {
+      "key": "desc_cli_max_failure_skips",
+      "en_US": "Stop the task when this many images have been skipped after exhausted retries (default 3; 0 means unlimited). Only applies when skipping after retries is enabled, and takes precedence over Ignore Errors. Existing outputs and other normal skips do not count.",
+      "zh_CN": "累计跳过这么多张重试耗尽的图片后停止整个任务（默认 3；0 表示不限）。仅在“重试耗尽后跳过”开启时生效，即使开启“忽略错误”也会停止。已有输出、无文本等正常跳过不计入。",
+      "status": "exact"
+    },
+    {
       "key": "desc_cli_overwrite",
       "en_US": "Overwrite existing translated files. When disabled, already translated images are skipped and context is automatically restored from their history.",
       "zh_CN": "覆盖已存在的翻译文件。关闭时会跳过已翻译的图片，并自动从跳过页的历史记录中恢复上下文。",
@@ -5167,6 +5191,12 @@
       "status": "exact"
     },
     {
+      "key": "desc_cli_save_lossless",
+      "en_US": "Enable lossless compression for WebP, AVIF, and HEIC/HEIF. Compression Effort controls encoding speed and file size in lossless mode; save quality is ignored.",
+      "zh_CN": "对 WebP、AVIF、HEIC/HEIF 启用无损压缩保存。无损模式使用“压缩努力程度”控制编码速度和文件体积，忽略保存质量参数。",
+      "status": "exact"
+    },
+    {
       "key": "desc_cli_save_quality",
       "en_US": "JPEG/WebP/AVIF/HEIC save quality (0-100). Higher values mean better quality but larger files.",
       "zh_CN": "JPEG/WebP/AVIF/HEIC 保存质量 (0-100)。值越高画质越好，文件越大。",
@@ -5185,9 +5215,21 @@
       "status": "exact"
     },
     {
+      "key": "desc_cli_skip_failed_after_retries",
+      "en_US": "Skip affected images after existing request retries and API failover are exhausted. Failed batches count each affected image. Other errors still follow Ignore Errors. Retries set to -1 remain unlimited.",
+      "zh_CN": "请求按现有重试次数及 API 通道轮换仍失败后，跳过对应图片并继续。批量请求失败按受影响图片数累计；其他错误仍由“忽略错误”控制。重试次数为 -1 时仍会无限重试。",
+      "status": "exact"
+    },
+    {
       "key": "desc_cli_skip_no_text",
       "en_US": "Skip images with no detected text to reduce unnecessary processing.",
       "zh_CN": "跳过没有检测到文本的图片，减少不必要的处理。",
+      "status": "exact"
+    },
+    {
+      "key": "desc_cli_translation_concurrency",
+      "en_US": "Simultaneous translation batches when concurrent processing is enabled (1-32, default 3). Batch Size controls images per request. Each batch uses preceding pages completed when it starts; use 1 to retain full sequential context.",
+      "zh_CN": "并发批量处理开启时，同时执行的翻译批次数（1-32，默认 3），每批张数仍由批量大小控制。并发批次只使用发送时已完成的前文；设为 1 可逐批继承完整上下文。",
       "status": "exact"
     },
     {
@@ -5317,6 +5359,12 @@
       "status": "exact"
     },
     {
+      "key": "desc_force_simple_sort",
+      "en_US": "Skip panel detection and order text boxes from top to bottom, right to left. Off by default; it avoids the panel-detection subprocess, but multi-column pages may come out in the wrong order.",
+      "zh_CN": "不使用分格检测，按从上到下、从右到左的顺序排列文本框。默认关闭；可省去分格检测子进程，但多栏页面的顺序可能不准。",
+      "status": "exact"
+    },
+    {
       "key": "desc_inpainter_force_use_torch_inpainting",
       "en_US": "Force PyTorch engine for inpainting (default CPU uses ONNX). Use when ONNX has issues.",
       "zh_CN": "强制使用 PyTorch 引擎修复 (默认 CPU 优先用 ONNX)。适用于 ONNX 出问题时。",
@@ -5348,8 +5396,8 @@
     },
     {
       "key": "desc_inpainter_solid_fill_pure_bubbles",
-      "en_US": "Match each text region to a model-detected bubble, shrink the model mask proportionally, then subtract the dilated raw text mask. If the remaining background is nearly solid, fill it directly and skip inpainting. Model misses are left for the inpainting model.",
-      "zh_CN": "使用气泡模型匹配文本所在气泡，先将模型蒙版按比例内缩，再扣除膨胀后的原始文字蒙版；剩余背景接近纯色时直接填色并跳过修复模型。模型未命中时交给修复模型处理。",
+      "en_US": "Use the bubble model to match text regions and detect near-solid backgrounds; direct filling is limited to the intersection of the refined repair mask and bubble mask, and filled areas skip the inpainting model. Bubble misses or empty intersections remain for the inpainting model.",
+      "zh_CN": "使用气泡模型匹配文本所在气泡并判断背景是否接近纯色；实际填色仅限于优化修复蒙版与气泡蒙版的交集，填色后跳过对应区域的修复模型。模型未命中或交集为空时交给修复模型处理。",
       "status": "exact"
     },
     {
@@ -5360,8 +5408,8 @@
     },
     {
       "key": "desc_mask_dilation_offset",
-      "en_US": "Mask dilation offset (default 70). Controls text erasure area expansion, larger values erase wider areas.",
-      "zh_CN": "蒙版膨胀偏移量 (默认 70)。控制文本擦除区域的扩展程度，值越大擦除范围越广。",
+      "en_US": "Mask dilation offset (default 50). Controls text erasure area expansion, larger values erase wider areas.",
+      "zh_CN": "蒙版膨胀偏移量 (默认 50)。控制文本擦除区域的扩展程度，值越大擦除范围越广。",
       "status": "exact"
     },
     {
@@ -5584,6 +5632,12 @@
       "key": "desc_render_font_size_offset",
       "en_US": "Font size offset. Positive increases font, negative decreases.",
       "zh_CN": "字体大小偏移量。正数增大字体，负数减小字体。",
+      "status": "exact"
+    },
+    {
+      "key": "desc_render_force_strict_layout",
+      "en_US": "Use strict line breaking and box fitting for every region, even when the layout mode is Balloon Fill and all lines sit inside the bubble. Off by default; it matches the layout used by Load Text mode.",
+      "zh_CN": "所有文本区域都按严格换行与框内适配排版，即使排版模式为「气泡填充」且整段文字都在气泡内。默认关闭；效果与「加载文本」所用排版一致。",
       "status": "exact"
     },
     {
@@ -5875,6 +5929,12 @@
       "status": "exact"
     },
     {
+      "key": "failure_skip_limit_reached",
+      "en_US": "Task stopped: the limit of {count} images skipped after exhausted retries was reached. Adjust the failure skip limit or resolve the errors below before retrying.",
+      "zh_CN": "任务已停止：因重试耗尽而跳过的图片已达到上限 {count} 张。可调整“失败跳过上限”，或检查以下失败原因后重试。",
+      "status": "exact"
+    },
+    {
       "key": "folder_scan_result",
       "en_US": "Found in folder",
       "zh_CN": "从文件夹中找到",
@@ -5924,8 +5984,8 @@
     },
     {
       "key": "friendly_error_colorizer_unsupported",
-      "en_US": "Error: The current model does not support colorization\n\nSolutions:\n   1. Switch colorizers: Under Colorization Model, select Manga Colorization v2 or another available colorizer\n      - Location: Settings → Mode-Specific → Colorization → Colorization Model\n   2. Turn off colorization: Under Colorization Model, select None (none, no colorization)\n      - Location: Settings → Mode-Specific → Colorization → Colorization Model\n   3. To continue using OpenAI/Gemini for colorization, select a model that supports image output/image editing under API Management → Colorization\n\n",
-      "zh_CN": "错误原因：当前模型不支持上色\n\n解决方案：\n   1. 切换上色器：在「上色模型」选择 Manga Colorization v2 或其它可用上色器\n      - 位置：设置 → 模式相关 → 上色 → 上色模型\n   2. 关闭上色：在「上色模型」选择「无」（none，不上色）\n      - 位置：设置 → 模式相关 → 上色 → 上色模型\n   3. 继续使用 OpenAI/Gemini 上色时，在 API 管理 → 上色 中换一个支持图片输出/图片编辑的模型\n\n",
+      "en_US": "Error: The current model does not support colorization\n\nSolutions:\n   1. When using local colorization, do not select OpenAI Colorizer or Gemini Colorizer\n      - Location: Settings → Mode-Specific → Colorization Model\n   2. When using online AI colorization, check the corresponding API configuration\n      - Location: API Management → Colorization\n      - Confirm that the API address, API channel, and model support image generation/editing",
+      "zh_CN": "错误原因：当前模型不支持上色\n\n解决方案：\n   1. 使用本地上色时，不要选择「OpenAI Colorizer」或「Gemini Colorizer」\n      - 位置：设置 → 模式相关 → 上色模型\n      - 这两个选项需要在线 API 支持图片输出/图片编辑\n   2. 使用在线 AI 上色时，检查对应的 API 配置\n      - 位置：API 管理 → 上色\n      - 确认 API 地址、API 通道和模型支持图片生成/编辑\n\n",
       "status": "exact"
     },
     {
@@ -5983,6 +6043,12 @@
       "status": "exact"
     },
     {
+      "key": "friendly_error_local_model_missing",
+      "en_US": "Error: Local model file is missing\n\nDetails:\n   The model weights could not be found at the path shown in the raw error details.\n\nSolutions:\n   1. Check that the model file exists at that path and that the directory and filename are correct.\n   2. Download or reinstall the required model file and place it in the specified directory.\n   3. Alternatively, select an installed model in Settings and run the task again.\n\n",
+      "zh_CN": "错误原因：本地模型文件缺失\n\n详细说明：\n   无法在原始错误信息指定的路径找到模型权重文件。\n\n解决方案：\n   1. 检查该路径下的模型文件是否存在，目录和文件名是否正确。\n   2. 下载或重新安装对应的模型文件，并放入指定目录。\n   3. 或者在设置中切换为已安装的模型，再重新运行任务。\n\n",
+      "status": "exact"
+    },
+    {
       "key": "friendly_error_model_unsupported",
       "en_US": "Error: The model does not exist, or the current API site does not support it\n\nDetails:\n   The API connection is working, but the server cannot find the model name you entered.\n   This usually means the model name is misspelled, the capitalization does not match, the model has been discontinued, or the current relay/channel does not provide the model.\n\nSolutions:\n   1. Check that the model name exactly matches the name provided by the service provider (most common)\n      - Location: API Management → Corresponding Feature Page → Model\n      - Note: Model names are usually case-sensitive, and prefixes or version numbers cannot be omitted\n\n   2. Use Test Connection or the model list feature to confirm which models the current site actually supports\n      - Location: API Management → Corresponding Feature Page → Test Current Page / Get Model List\n      - First confirm that the site actually provides the model you want to use\n\n   3. If you are using a third-party OpenAI-compatible site (such as a relay, channel, SiliconFlow, etc.)\n      - Do not assume that it supports every official OpenAI model name\n      - You must use the provider's actual model ID instead\n\n   4. Check whether the API address matches the translator type\n      - OpenAI-compatible APIs should use the OpenAI or OpenAI High Quality translator\n      - If the site and translator types do not match, model detection may also fail\n\n   5. If the model was recently renamed, discontinued, or moved to another channel\n      - Visit the corresponding provider's model marketplace or official documentation\n      - Switch to a model name that is currently available and try again\n\n",
       "zh_CN": "错误原因：模型不存在，或当前 API 站点不支持该模型\n\n详细说明：\n   API 已经连通，但服务端找不到你填写的模型名称。\n   这通常是模型名拼写不对、大小写不一致、模型已下线，或当前中转/渠道并不提供这个模型。\n\n解决方案：\n   1. 检查模型名称是否与服务商提供的名称完全一致（最常见）\n      - 位置：API 管理 → 对应功能页 → 模型\n      - 注意：模型名称通常区分大小写，不能省略前缀或版本号\n\n   2. 使用「测试连接」或模型列表功能确认当前站点实际支持哪些模型\n      - 位置：API 管理 → 对应功能页 → 测试当前页 / 获取模型列表\n      - 先确认该站点真的提供你要用的模型\n\n   3. 如果你用的是第三方 OpenAI 兼容站点（如中转、渠道、硅基流动等）\n      - 不要假设它支持 OpenAI 官方的全部模型名\n      - 需要改成该服务商自己的实际模型 ID\n\n   4. 检查 API 地址和翻译器类型是否匹配\n      - OpenAI 兼容接口应使用「OpenAI」或「OpenAI高质量」翻译器\n      - 若站点和翻译器类型不匹配，也可能导致模型判断异常\n\n   5. 若该模型最近改名、下线或迁移渠道\n      - 访问对应服务商的模型广场或官方文档\n      - 换成当前仍可用的模型名后再试\n\n",
@@ -5990,14 +6056,20 @@
     },
     {
       "key": "friendly_error_multimodal_unsupported",
-      "en_US": "Error: The model does not support multimodal input\n\nDetails:\n   The High Quality Translator (OpenAI High Quality Translation or Gemini High Quality Translation) is currently selected.\n   These translators need to send images to the AI for analysis, but the current model does not support image input.\n\nSolutions (choose one):\n   1. Switch to a standard translator (recommended)\n      - Location: Settings → Translation → Translator\n      - Change OpenAI High Quality Translation to OpenAI\n      - Change Gemini High Quality Translation to Google Gemini\n      - Description: Standard translators do not need to send images; they only translate text\n\n   2. Switch to a model that supports multimodal input\n      - OpenAI: gpt-5.2, gpt-5.2-mini\n      - Gemini: gemini-3-pro, gemini-3-flash\n      - Grok: grok-4.2\n      - Note: DeepSeek models do not support multimodal input\n\n",
-      "zh_CN": "错误原因：模型不支持多模态输入\n\n详细说明：\n   当前使用的是「高质量翻译器」（OpenAI高质量翻译 或 Gemini高质量翻译），\n   这些翻译器需要发送图片给AI进行分析，但当前模型不支持图片输入。\n\n解决方案（选择其一）：\n   1. 切换到普通翻译器（推荐）\n      - 位置：设置 → 翻译 → 翻译器\n      - 将「OpenAI高质量翻译」改为「OpenAI」\n      - 将「Gemini高质量翻译」改为「Google Gemini」\n      - 说明：普通翻译器不需要发送图片，只翻译文本\n\n   2. 更换为支持多模态的模型\n      - OpenAI: gpt-5.2、gpt-5.2-mini\n      - Gemini: gemini-3-pro、gemini-3-flash\n      - Grok: grok-4.2\n      - 注意：DeepSeek模型不支持多模态\n\n",
+      "en_US": "Error: The model does not support multimodal input\n\nDetails:\n   The High Quality Translator needs to send images to an online API for analysis, but the selected model does not support image input.\n\nSolutions (choose one):\n   1. Do not select OpenAI High Quality Translation or Gemini High Quality Translation when the model does not support image input\n      - Location: Settings → Translation → Translator\n   2. When using High Quality Translation, check whether the online API supports image input\n      - Location: API Management → Translation",
+      "zh_CN": "错误原因：模型不支持多模态输入\n\n详细说明：\n   当前「高质量翻译器」需要发送图片给在线 API 分析，但所用模型不支持图片输入。\n\n解决方案（选择其一）：\n   1. 不要选择需要图片输入的「OpenAI高质量翻译」或「Gemini高质量翻译」\n      - 位置：设置 → 翻译 → 翻译器\n   2. 使用高质量翻译时，检查在线 API 是否支持图片输入\n      - 位置：API 管理 → 翻译\n\n",
       "status": "exact"
     },
     {
       "key": "friendly_error_network",
       "en_US": "Error: Network connection or Host resolution failed\n\nDetails:\n   Could not connect to the API server, possibly because of a network error, timeout, or Host / DNS resolution failure.\n\nSolutions:\n   1. Check the network connection\n      - Make sure the computer can access the internet\n\n   2. Try enabling the system proxy\n      - Location: About App → App Preferences → Use System Proxy\n\n   3. Check that the API address is correct\n      - Location: API Management → Corresponding Feature Page → API Address\n      - Default: https://api.openai.com/v1\n\n",
       "zh_CN": "错误原因：网络连接或 Host 解析失败\n\n详细说明：\n   无法连接到API服务器，可能是网络异常、超时，或 Host / DNS 解析失败。\n\n解决方案：\n   1. 检查网络连接\n      - 确认电脑可以正常访问互联网\n\n   2. 尝试开启系统代理\n      - 位置：关于应用 → 应用偏好 → 使用系统代理\n\n   3. 检查API地址是否正确\n      - 位置：API 管理 → 对应功能页 → API 地址\n      - 默认值：https://api.openai.com/v1\n\n",
+      "status": "exact"
+    },
+    {
+      "key": "friendly_error_ocr_unavailable",
+      "en_US": "Error: The current OCR model or API candidates are unavailable\n\nDetails:\n   The current OCR model may not exist, may not support image recognition, or no OCR API candidate is available.\n\nSolutions (choose one):\n   1. When using local OCR, do not select OpenAI OCR or Gemini OCR\n      - Location: Settings → OCR → OCR Model\n   2. When using online OCR, check the corresponding API configuration\n      - Location: API Management → OCR\n      - Check the API key, API address, model, and API channel, then use Test Current Page",
+      "zh_CN": "错误原因：当前 OCR 模型或 API 候选不可用\n\n详细说明：\n   当前 OCR 模型不存在、不支持图片识别，或 OCR API 候选不可用。\n\n解决方案（选择其一）：\n   1. 使用本地 OCR 时，不要选择「OpenAI OCR」或「Gemini OCR」\n      - 位置：设置 → OCR → OCR模型\n   2. 使用在线 OCR 时，检查对应的 API 配置\n      - 位置：API 管理 → 文字识别\n      - 检查 API 密钥、API 地址、模型和 API 通道，并使用「测试当前页」\n\n",
       "status": "exact"
     },
     {
@@ -6008,8 +6080,8 @@
     },
     {
       "key": "friendly_error_renderer_unsupported",
-      "en_US": "Error: The current model does not support rendering\n\nSolutions:\n   1. Switch Renderer to Default (default, the local default renderer)\n      - Location: Settings → Typesetting → Renderer\n   2. To continue using AI rendering, select a model that supports image output/image editing under API Management → Rendering\n\n",
-      "zh_CN": "错误原因：当前模型不支持渲染\n\n解决方案：\n   1. 将「渲染器」切换为「Default」（default，本地默认渲染器）\n      - 位置：设置 → 排版 → 渲染器\n   2. 继续使用 AI 渲染时，在 API 管理 → 渲染 中换一个支持图片输出/图片编辑的模型\n\n",
+      "en_US": "Error: The current model does not support rendering\n\nSolutions:\n   1. When using local rendering, do not select OpenAI Renderer or Gemini Renderer\n      - Location: Settings → Typesetting → Renderer\n      - These two options require an online API that supports image output/editing\n   2. When using online AI rendering, check the corresponding API configuration\n      - Location: API Management → Rendering\n      - Confirm that the API address, API channel, and model support image generation/editing",
+      "zh_CN": "错误原因：当前模型不支持渲染\n\n解决方案：\n   1. 使用本地渲染时，不要选择「OpenAI Renderer」或「Gemini Renderer」\n      - 位置：设置 → 排版 → 渲染器\n      - 这两个选项需要在线 API 支持图片输出/图片编辑\n   2. 使用在线 AI 渲染时，检查对应的 API 配置\n      - 位置：API 管理 → 渲染\n      - 确认 API 地址、API 通道和模型支持图片生成/编辑\n\n",
       "status": "exact"
     },
     {
@@ -6463,6 +6535,12 @@
       "status": "exact"
     },
     {
+      "key": "label_compression_effort",
+      "en_US": "Compression Effort",
+      "zh_CN": "压缩努力程度",
+      "status": "exact"
+    },
+    {
       "key": "label_context_size",
       "en_US": "Context Pages",
       "zh_CN": "上下文页数",
@@ -6619,6 +6697,18 @@
       "status": "exact"
     },
     {
+      "key": "label_force_simple_sort",
+      "en_US": "Simple Text Order",
+      "zh_CN": "简单排序",
+      "status": "exact"
+    },
+    {
+      "key": "label_force_strict_layout",
+      "en_US": "Force Strict Layout",
+      "zh_CN": "强制严格排版",
+      "status": "exact"
+    },
+    {
       "key": "label_force_use_torch_inpainting",
       "en_US": "Force Use PyTorch Inpainting",
       "zh_CN": "强制使用PyTorch修复",
@@ -6736,6 +6826,12 @@
       "key": "label_mask_dilation_offset",
       "en_US": "Mask Dilation Offset",
       "zh_CN": "遮罩扩张偏移",
+      "status": "exact"
+    },
+    {
+      "key": "label_max_failure_skips",
+      "en_US": "Failure skip limit",
+      "zh_CN": "失败跳过上限",
       "status": "exact"
     },
     {
@@ -6931,6 +7027,12 @@
       "status": "exact"
     },
     {
+      "key": "label_save_lossless",
+      "en_US": "Lossless Image Save",
+      "zh_CN": "无损图像保存",
+      "status": "exact"
+    },
+    {
       "key": "label_save_quality",
       "en_US": "Image Save Quality",
       "zh_CN": "图像保存质量",
@@ -6964,6 +7066,12 @@
       "key": "label_sfx_filter_include_bubble_text",
       "en_US": "Include Bubble Text in SFX Filter",
       "zh_CN": "气泡文本参与拟声词过滤",
+      "status": "exact"
+    },
+    {
+      "key": "label_skip_failed_after_retries",
+      "en_US": "Skip after retries are exhausted",
+      "zh_CN": "重试耗尽后跳过",
       "status": "exact"
     },
     {
@@ -7024,6 +7132,12 @@
       "key": "label_translate_json_only",
       "en_US": "Translate JSON Only",
       "zh_CN": "仅翻译（JSON）",
+      "status": "exact"
+    },
+    {
+      "key": "label_translation_concurrency",
+      "en_US": "Translation Concurrency",
+      "zh_CN": "翻译并发数",
       "status": "exact"
     },
     {
@@ -7252,6 +7366,12 @@
       "key": "lang_NOR",
       "en_US": "Norwegian",
       "zh_CN": "挪威语",
+      "status": "exact"
+    },
+    {
+      "key": "lang_PER",
+      "en_US": "Persian",
+      "zh_CN": "波斯语",
       "status": "exact"
     },
     {
@@ -7738,6 +7858,12 @@
       "key": "results_cleared",
       "en_US": "Translation results cleared",
       "zh_CN": "翻译结果已清空",
+      "status": "exact"
+    },
+    {
+      "key": "task_skipped_summary",
+      "en_US": "Skipped {count} files after exhausted retries:",
+      "zh_CN": "重试耗尽，已跳过 {count} 个文件：",
       "status": "exact"
     },
     {
@@ -9040,6 +9166,12 @@
       "key": "{count} malformed regions skipped",
       "en_US": "{count} malformed regions skipped",
       "zh_CN": "跳过 {count} 个结构异常的区域",
+      "status": "exact"
+    },
+    {
+      "key": "{count} selected",
+      "en_US": "{count} selected",
+      "zh_CN": "已选中 {count} 项",
       "status": "exact"
     },
     {

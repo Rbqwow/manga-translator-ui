@@ -112,6 +112,10 @@ CLI 示例：`python -m manga_translator local -i ./manga_folder --concurrent --
 
 “跳过无文本图像”开关开启后，检测/OCR 判定没有可翻译文本的图片会被标记为跳过（`skip_reason=no_text`），仍然写出图片与空的 JSON/TXT，但不再进入翻译和渲染。它只改变统计口径与摘要，不会省掉检测与 OCR（否则无从判断是否无文本）；这是正常分支，不计入失败，也不占用 `max_failure_skips` 额度。默认值：`true`。
 
+#### 简单排序 {#force-simple-sort}
+
+“简单排序”开启后不做分格检测，按从上到下、从右到左的顺序直接排列文本框；它省掉每页一次的分格检测子进程，但多栏页面的阅读顺序可能不准。命令行对应 `--force-simple-sort` / `--no-force-simple-sort`。默认值：`false`。
+
 #### 图片可编辑 {#cli-save-text}
 
 “图片可编辑”开关开启后，会导出包含区域、原文/译文、尺寸和渲染字段的 JSON 伴随数据；与“导出原文”组合时还会导出原文 TXT。默认值：`true`。
