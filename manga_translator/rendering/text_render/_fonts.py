@@ -45,6 +45,8 @@ _font_registry_revision = 0
 _project_font_paths = set()
 _system_font_paths = set()
 _hyphenator_cache = {}
+# set_font() runs for every text region, so a missing family must warn only once.
+_missing_family_warned = set()
 
 
 @dataclass(frozen=True)
@@ -502,7 +504,10 @@ def set_font(font: str):
         # 无头下 QGuiApplication.font() 是逻辑字体 "Sans Serif"，匹配结果随机，
         # 直接回退到自带字体目录里保证存在的默认家族。
         family = DEFAULT_FONT_FAMILY
-        if requested:
+        # Rendering calls set_font() per region; warn once per requested family.
+        warn_key = requested.casefold() if requested else ''
+        if warn_key and warn_key not in _missing_family_warned:
+            _missing_family_warned.add(warn_key)
             logger.warning('Qt font family not found: %s; using %s', requested, family)
     _set_family(state, family, requested_style)
 
@@ -560,10 +565,20 @@ def _layout_font(font_size: int, letter_spacing: float) -> QFont:
     key = (family, style, bool(state.bold), int(max(font_size, 1)), round(float(letter_spacing), 4))
     qfont = _cache_get(state.qfonts, key)
     if qfont is None:
-        qfont = QFontDatabase.font(family, style, 12) if style else QFont()
-        if not style:
+        qfont = None
+        if style:
+            resolved = QFontDatabase.font(family, style, 12)
+            # QFontDatabase.font() silently returns the logical "Sans Serif" when the
+            # style is unknown; keep it only if it really resolved to the family.
+            if resolved.family().casefold() == family.casefold():
+                qfont = resolved
+                # Keep the weight implied by the style name (e.g. "::Medium");
+                # setBold(False) would reset it to Normal.
+                if state.bold:
+                    qfont.setBold(True)
+        if qfont is None:
+            qfont = QFont()
             qfont.setFamilies([family])
-        if state.bold or not style:
             qfont.setBold(state.bold)
         qfont.setPixelSize(key[3])
         qfont.setHintingPreference(QFont.HintingPreference.PreferNoHinting)
