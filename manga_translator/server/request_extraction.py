@@ -7,6 +7,8 @@ import json
 import logging
 import os
 import re
+import shutil
+import tempfile
 from base64 import b64decode
 from contextlib import asynccontextmanager
 from typing import Union
@@ -20,6 +22,7 @@ from manga_translator import Config
 from manga_translator.image_formats import (
     resolve_output_image_format,
 )
+from manga_translator.manga_translator import MangaTranslator
 from manga_translator.server.core.image_encoding import run_image_encoding
 from manga_translator.utils import normalize_pil_image, open_pil_image, save_pil_image
 
@@ -136,33 +139,31 @@ async def to_pil_image(image: Union[str, bytes, Image.Image]) -> Image.Image:
         raise HTTPException(status_code=422, detail="Invalid image data")
 
 
-def _run_translate_sync(pil_image, config: Config, task_id: str = None, cancel_check_callback=None):
+def _run_translate_sync(pil_image, config: Config, task_id: str = None, cancel_check_callback=None, translator_params: dict = None):
     """
     同步执行翻译操作的辅助函数。
     用于在线程池中运行，避免阻塞 FastAPI 事件循环。
-    使用全局翻译器实例，复用已加载的模型。
-    
+    每次请求创建独立的翻译器实例（模型缓存与空闲计时仍是进程级共享），
+    因此并发请求之间不会串上下文或流水线状态。
+
     Args:
         pil_image: PIL 图片
         config: 翻译配置
         task_id: 任务ID（用于更新线程信息）
         cancel_check_callback: 取消检查回调函数
+        translator_params: 本任务的翻译器参数（并发、上下文、服务端配置）
     """
     import threading
 
-    #     import gc
-    from manga_translator.server.core.task_manager import (
-        get_global_translator,
-        update_task_thread_id,
-    )
-    
+    from manga_translator.server.core.task_manager import update_task_thread_id
+
     # 更新任务的线程ID
     if task_id:
         update_task_thread_id(task_id, threading.current_thread().ident)
-    
-    # 获取全局翻译器实例（复用模型）
-    translator = get_global_translator()
-    
+
+    # 每个任务独立实例：模型位于模块级缓存中，不会重复加载。
+    translator = MangaTranslator(params=translator_params or {})
+
     # 设置取消检查回调
     if cancel_check_callback:
         translator.set_cancel_check_callback(cancel_check_callback)
@@ -202,33 +203,32 @@ def _run_translate_sync(pil_image, config: Config, task_id: str = None, cancel_c
             logger.warning(f"Error during thread cleanup: {e}")
 
 
-def _run_translate_batch_sync(images_with_configs: list, batch_size: int, task_id: str = None, cancel_check_callback=None):
+def _run_translate_batch_sync(images_with_configs: list, batch_size: int, task_id: str = None, cancel_check_callback=None, translator_params: dict = None):
     """
     同步执行批量翻译操作的辅助函数。
     用于在线程池中运行，避免阻塞 FastAPI 事件循环。
-    使用全局翻译器实例，复用已加载的模型。
-    
+
+    每次请求创建独立的翻译器实例：并发流水线、上下文与保存信息互不干扰；
+    模型权重仍由模块级缓存共享，不会重复加载。
+
     Args:
         images_with_configs: 图片和配置列表
         batch_size: 批量大小
         task_id: 任务ID（用于更新线程信息）
         cancel_check_callback: 取消检查回调函数
+        translator_params: 本任务的翻译器参数（并发、上下文、服务端配置）
     """
     import threading
 
-    #     import gc
-    from manga_translator.server.core.task_manager import (
-        get_global_translator,
-        update_task_thread_id,
-    )
-    
+    from manga_translator.server.core.task_manager import update_task_thread_id
+
     # 更新任务的线程ID
     if task_id:
         update_task_thread_id(task_id, threading.current_thread().ident)
-    
-    # 获取全局翻译器实例（复用模型）
-    translator = get_global_translator()
-    
+
+    # 每个任务独立实例；模型位于模块级缓存中。
+    translator = MangaTranslator(params=translator_params or {})
+
     # 设置取消检查回调
     if cancel_check_callback:
         translator.set_cancel_check_callback(cancel_check_callback)
@@ -292,11 +292,12 @@ def prepare_translator_params(config: Config, workflow: str = "normal") -> dict:
             config.cli.replace_translation = False
         if hasattr(config.cli, 'use_gpu'):
             config.cli.use_gpu = False
-        if hasattr(config.cli, 'attempts'):
-            attempts = config.cli.attempts
-            # -1 表示无限重试；0 表示不重试（仅首次请求）
-            if attempts is not None and (attempts >= 0 or attempts == -1):
-                translator_params['attempts'] = attempts
+
+        # `cli.attempts` (-1 = unlimited, 0 = no retry) is NOT returned here on
+        # purpose: every translator reads it from the same Config through
+        # parse_args() -> get_retry_attempts_from_config(). Injecting it into
+        # params as well would shadow the server-level `retry_attempts` override,
+        # which is applied by MangaTranslator._apply_runtime_cli_overrides().
     
     if hasattr(config, 'render') and getattr(config.render, 'font_family', None):
         translator_params['font_family'] = config.render.font_family
@@ -321,12 +322,151 @@ def prepare_translator_params(config: Config, workflow: str = "normal") -> dict:
         translator_params['upscale_only'] = True
     elif workflow == "colorize_only":
         translator_params['colorize_only'] = True
-    
+    elif workflow == "inpaint_only":
+        translator_params['inpaint_only'] = True
+
     return translator_params
 
 
+def _server_max_concurrent_tasks() -> int:
+    """Server-wide task slots; also the per-task worker cap."""
+    from manga_translator.server.core.task_manager import server_config
+
+    try:
+        return max(1, int(server_config.get('max_concurrent_tasks', 3) or 3))
+    except (TypeError, ValueError):
+        return 1
+
+
+def request_concurrency_settings(config: Config, workflow: str = 'normal') -> tuple[bool, int]:
+    """Resolve the per-request pipeline concurrency.
+
+    The global default lives in the server config (``config/config.json`` ``cli``
+    section, falling back to ``CliConfig``: pipeline on, 3 translation workers,
+    3 context pages). A request may override it; the Web form exposes both keys.
+    Special workflows stay sequential (same rule as the desktop controller).
+
+    Returns ``(enabled, translation_workers)``.
+    """
+    cli = getattr(config, 'cli', None)
+    enabled = bool(getattr(cli, 'batch_concurrent', True)) if cli is not None else True
+    try:
+        workers = int(getattr(cli, 'translation_concurrency', 3)) if cli is not None else 3
+    except (TypeError, ValueError):
+        # A malformed client value must not take the request down; use the global default.
+        workers = 3
+
+    if workflow != 'normal':
+        # Import/export/JSON-only/upscale-only/colorize-only workflows require
+        # ordered per-image processing, exactly like the desktop controller.
+        enabled = False
+
+    # One task may not spawn more translation workers than the server allows
+    # tasks in total; admins raise max_concurrent_tasks to permit more.
+    max_tasks = _server_max_concurrent_tasks()
+    if workers > max_tasks:
+        logger.debug(
+            "Clamping translation_concurrency from %s to max_concurrent_tasks=%s",
+            workers, max_tasks,
+        )
+        workers = max_tasks
+    workers = max(1, workers)
+    return enabled, workers
+
+
+# Workflow switches that only change pipeline behaviour; the export endpoints
+# used to drop them, so `/upscale`, `/colorize`, `/inpaint`, both export modes and
+# load-text ran as a normal translation.
+WORKFLOW_TRANSLATOR_PARAMS = (
+    'template',
+    'save_text',
+    'generate_and_export',
+    'load_text',
+    'upscale_only',
+    'colorize_only',
+    'inpaint_only',
+)
+
+# Export workflows persist a project JSON/TXT next to the image; on the server
+# that image is an upload without a path, so it gets a scratch directory.
+EXPORT_WORKFLOWS = frozenset({'export_original', 'save_json'})
+
+
+def build_task_translator_params(config: Config, workflow: str = 'normal', workflow_params: dict = None) -> dict:
+    """Build the params for the per-task MangaTranslator instance.
+
+    Each server task gets its own instance so per-run state (page history,
+    resume context, save info, cancel callback, pipeline) cannot leak between
+    concurrent requests. Models and their idle timestamps stay process-wide.
+    """
+    from manga_translator.server.core.task_manager import server_config
+
+    params = {
+        'use_gpu': server_config.get('use_gpu', False),
+        'verbose': server_config.get('verbose', False),
+        'models_ttl': server_config.get('models_ttl', 0),
+        # Model caches are process-wide; skip the per-instance eager preload.
+        # This keeps the first request fast instead of blocking on a warm-up.
+        'models_loaded': True,
+        # Idle unloading is owned by task_manager.start_model_monitor(); a job per
+        # short-lived task would race with it and reset nothing useful.
+        'start_model_cleanup_job': False,
+    }
+    retry_attempts = server_config.get('retry_attempts')
+    if retry_attempts is not None:
+        params['attempts'] = retry_attempts
+    for key in ('skip_failed_after_retries', 'max_failure_skips'):
+        if key in server_config:
+            params[key] = server_config[key]
+
+    # Workflow flags come from prepare_translator_params(); without them the
+    # dedicated endpoints silently degraded into a normal translation.
+    if workflow_params:
+        for key in WORKFLOW_TRANSLATOR_PARAMS:
+            if key in workflow_params:
+                params[key] = workflow_params[key]
+    if workflow in EXPORT_WORKFLOWS:
+        # The response is built from ctx; persisting a refined mask only costs time.
+        params['no_save_mask'] = True
+
+    enabled, workers = request_concurrency_settings(config, workflow)
+    params['batch_concurrent'] = enabled
+    params['translation_concurrency'] = workers
+
+    # Context pages follow the same global default as the desktop (3), and the
+    # request may override it; it applies between images of one batch request.
+    cli = getattr(config, 'cli', None)
+    params['context_size'] = max(0, int(getattr(cli, 'context_size', 3) or 0))
+
+    font_family = getattr(getattr(config, 'render', None), 'font_family', None)
+    if font_family:
+        params['font_family'] = font_family
+    return params
+
+
+def prepare_export_workspace(image, workflow: str) -> str | None:
+    """Give disk-writing export workflows an isolated scratch directory.
+
+    Export modes save a project JSON/TXT via ``get_json_path(image_name)``. Server
+    uploads have no path, so without this the write would either fail or land in
+    the process working directory. The caller removes the directory afterwards.
+    """
+    if workflow not in EXPORT_WORKFLOWS:
+        return None
+    if getattr(image, 'name', None):
+        return None
+    workspace = tempfile.mkdtemp(prefix=f'mtr_{workflow}_')
+    image.name = os.path.join(workspace, 'image.png')
+    return workspace
+
+
+def discard_export_workspace(workspace: str | None) -> None:
+    if workspace:
+        shutil.rmtree(workspace, ignore_errors=True)
+
+
 async def get_ctx(req: Request, config: Config, image: str|bytes, workflow: str = "normal"):
-    """Translate single image. 使用全局翻译器实例，复用已加载的模型。"""
+    """Translate single image with a per-task translator (models are shared)."""
     from manga_translator.server.core.logging_manager import add_log
     from manga_translator.server.core.task_manager import get_semaphore
     
@@ -334,11 +474,13 @@ async def get_ctx(req: Request, config: Config, image: str|bytes, workflow: str 
     translation_semaphore = get_semaphore()
     
     pil_image = await to_pil_image(image)
-    
+    workspace = prepare_export_workspace(pil_image, workflow)
+
     try:
-        # 准备工作流参数（这些会影响翻译行为，但不需要重建翻译器）
-        prepare_translator_params(config, workflow)
-        
+        # 服务端限制（禁用 Qt 专属工作流）与本次任务的翻译器参数
+        workflow_params = prepare_translator_params(config, workflow)
+        translator_params = build_task_translator_params(config, workflow, workflow_params)
+
         async with with_user_env_vars(config):
             # 等待获取翻译槽位
             if translation_semaphore:
@@ -352,17 +494,21 @@ async def get_ctx(req: Request, config: Config, image: str|bytes, workflow: str 
                 
                 async with translation_semaphore:
                     add_log("Translation slot acquired; starting translation", "INFO")
-                    # 使用翻译线程池执行，复用全局翻译器
+                    # 使用翻译线程池执行；模型缓存共享，状态按任务隔离
                     from manga_translator.server.core.task_manager import (
                         run_in_translator_thread,
                     )
-                    ctx = await run_in_translator_thread(_run_translate_sync, pil_image, config)
+                    ctx = await run_in_translator_thread(
+                        _run_translate_sync, pil_image, config, None, None, translator_params
+                    )
             else:
                 # 没有 semaphore 时直接执行
                 from manga_translator.server.core.task_manager import (
                     run_in_translator_thread,
                 )
-                ctx = await run_in_translator_thread(_run_translate_sync, pil_image, config)
+                ctx = await run_in_translator_thread(
+                    _run_translate_sync, pil_image, config, None, None, translator_params
+                )
         
         result = {
             'success': ctx.success if hasattr(ctx, 'success') else (ctx.result is not None),
@@ -385,6 +531,7 @@ async def get_ctx(req: Request, config: Config, image: str|bytes, workflow: str 
         return ctx
     
     finally:
+        discard_export_workspace(workspace)
         # 关闭输入图片
         try:
             pil_image.close()
@@ -516,6 +663,7 @@ async def while_streaming(req: Request, transform, config: Config, image: bytes 
             decrement_task_count(username)
     
     async def _do_translation():
+        workspace = None
         try:
             yield pack_message(1, json.dumps({"stage": "task_id", "task_id": task_id}, ensure_ascii=False).encode('utf-8'))
             
@@ -525,16 +673,18 @@ async def while_streaming(req: Request, transform, config: Config, image: bytes 
             add_log("Loading image", "INFO")
             yield pack_message(1, json.dumps({"stage": "image_loading", "message": "加载图片中..."}, ensure_ascii=False).encode('utf-8'))
             pil_image = await to_pil_image(image)
-            
+            workspace = prepare_export_workspace(pil_image, workflow)
+
             add_log("Preparing translation parameters", "INFO")
-            prepare_translator_params(config, workflow)
-            
+            workflow_params = prepare_translator_params(config, workflow)
+            translator_params = build_task_translator_params(config, workflow, workflow_params)
+
             if is_task_cancelled(task_id):
                 add_log("Task cancelled", "WARNING")
                 raise asyncio.CancelledError("任务已被管理员取消")
             
             async with with_user_env_vars(config):
-                add_log("Using the global translator (reusing models)", "INFO")
+                add_log("Using a per-task translator (models are shared)", "INFO")
                 yield pack_message(1, json.dumps({"stage": "translator_init", "message": "初始化翻译器..."}, ensure_ascii=False).encode('utf-8'))
                 
                 if is_task_cancelled(task_id):
@@ -548,14 +698,16 @@ async def while_streaming(req: Request, transform, config: Config, image: bytes 
                 
                 try:
                     add_log("Calling translator", "INFO")
-                    # 使用翻译线程池执行，复用全局翻译器
+                    # 使用翻译线程池执行；模型缓存共享，状态按任务隔离
                     from manga_translator.server.core.task_manager import (
                         run_in_translator_thread,
                     )
                     def cancel_callback():
                         return is_task_cancelled(task_id)
 
-                    ctx = await run_in_translator_thread(_run_translate_sync, pil_image, config, task_id, cancel_callback)
+                    ctx = await run_in_translator_thread(
+                        _run_translate_sync, pil_image, config, task_id, cancel_callback, translator_params
+                    )
                     add_log(f"Translation complete; result available: {ctx.result is not None if hasattr(ctx, 'result') else False}", "INFO")
                     
                     result = {
@@ -652,6 +804,7 @@ async def while_streaming(req: Request, transform, config: Config, image: bytes 
             except Exception:
                 pass
         finally:
+            discard_export_workspace(workspace)
             add_log("Cleaning up", "DEBUG")
             try:
                 # 使用统一的Context清理函数
@@ -668,8 +821,8 @@ async def while_streaming(req: Request, transform, config: Config, image: bytes 
                     except Exception:
                         pass
                 
-                # 注意：不要调用translator.unload_models()
-                # 因为我们使用全局翻译器，模型应该被保留复用
+                # 注意：不要调用 translator.unload_models()
+                # 模型位于进程级缓存中，应保留复用；任务实例本身随请求释放。
                 # 内存清理由cleanup_after_request在_run_translate_sync中处理
                 
                 add_log("Cleanup done", "DEBUG")
@@ -722,9 +875,10 @@ async def get_batch_ctx(req: Request, config: Config, images: list[str|bytes], b
             pil_img = await to_pil_image(img)
             pil_images.append(pil_img)
         
-        # 准备翻译器参数（影响工作流行为）
-        prepare_translator_params(config, workflow)
-        
+        # 服务端限制（禁用 Qt 专属工作流）与本次任务的翻译器参数
+        workflow_params = prepare_translator_params(config, workflow)
+        translator_params = build_task_translator_params(config, workflow, workflow_params)
+
         # 准备批量数据
         images_with_configs = [(img, config) for img in pil_images]
         
@@ -752,13 +906,14 @@ async def get_batch_ctx(req: Request, config: Config, images: list[str|bytes], b
                         update_task_status(task_id, "running")
                     add_log("Batch translation slot acquired; starting execution", "INFO")
                     
-                    # 使用翻译线程池执行，复用全局翻译器
+                    # 使用翻译线程池执行；模型缓存共享，状态按任务隔离
                     from manga_translator.server.core.task_manager import (
                         run_in_translator_thread,
                     )
                     cancel_callback = (lambda: is_task_cancelled(task_id)) if task_id else None
                     contexts = await run_in_translator_thread(
-                        _run_translate_batch_sync, images_with_configs, batch_size, task_id, cancel_callback
+                        _run_translate_batch_sync, images_with_configs, batch_size, task_id,
+                        cancel_callback, translator_params,
                     )
             else:
                 # 没有 semaphore 时直接执行
@@ -767,7 +922,8 @@ async def get_batch_ctx(req: Request, config: Config, images: list[str|bytes], b
                 )
                 cancel_callback = (lambda: is_task_cancelled(task_id)) if task_id else None
                 contexts = await run_in_translator_thread(
-                    _run_translate_batch_sync, images_with_configs, batch_size, task_id, cancel_callback
+                    _run_translate_batch_sync, images_with_configs, batch_size, task_id,
+                    cancel_callback, translator_params,
                 )
             
             # 翻译后检查取消状态
@@ -814,7 +970,7 @@ async def get_batch_ctx(req: Request, config: Config, images: list[str|bytes], b
                     pass
             
             # 注意：contexts的清理和内存回收已在_run_translate_batch_sync的cleanup_after_request中处理
-            # 不要调用translator.unload_models()，因为我们使用全局翻译器，模型应该被保留复用
+            # 不要调用 translator.unload_models()：模型位于进程级缓存中，应保留复用。
             
         except Exception as cleanup_error:
             logger.warning(f"Failed to clean up batch translation resources: {cleanup_error}")
