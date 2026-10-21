@@ -16,7 +16,10 @@ lastUpdated: true
 - 内容包括 Web 用户界面中的上传、配置与发起翻译。登录与会话见[登录、语言与会话](./login-language-and-session.md)，进度、结果与历史见[进度、结果与历史](./progress-results-and-history.md)，账号、权限与 API 密钥见[账号、权限与 API 密钥](./accounts-permissions-and-api-keys.md)，字体与提示词上传见[资源、字体与提示词](./resources-fonts-and-prompts.md)，访问地址见[启动与访问](./launch-and-access.md)。
 - Web 前端不是桌面 Qt 界面的直接复用：`index.html` 自带初始中文，`script.js` 通过 i18n key 覆盖一部分静态文字；"添加文件夹"、"文件列表"、"翻译结果"、"翻译历史"、"N 个文件"等仍是 HTML/脚本硬编码，没有对应 i18n key。
 - 上传、PDF 提取、配置导入导出和结果列表都在浏览器本地完成；浏览器 `localStorage` 中的结果列表与服务器翻译历史是两套独立存储。
-- 工作流模式下拉框控制的 `cli.load_text`、`cli.translate_json_only`、`cli.template`、`cli.generate_and_export`、`cli.colorize_only`、`cli.upscale_only`、`cli.inpaint_only`，以及 `cli.batch_size`、`cli.batch_concurrent`、`cli.use_gpu` 等键被服务器端 `SERVER_HIDDEN_CONFIG_KEYS` 隐藏，不显示在 Web 配置表单中；不要手工编辑这些键。
+- 工作流模式下拉框控制的 `cli.load_text`、`cli.translate_json_only`、`cli.template`、`cli.generate_and_export`、`cli.colorize_only`、`cli.upscale_only`、`cli.inpaint_only`，以及 `cli.batch_size`、`cli.use_gpu` 等键被服务器端 `SERVER_HIDDEN_CONFIG_KEYS` 隐藏，不显示在 Web 配置表单中；不要手工编辑这些键。
+- `cli.batch_concurrent` 与 `cli.translation_concurrency` 对 Web 可见：每个服务端任务都有独立的翻译器实例，所以按请求开启并发流水线是安全的。全局默认来自 `config/config.json` 的 `cli` 段（内置默认：开启、并发 `3`），Web 表单显示这组值；服务器整体并发仍由 `max_concurrent_tasks` 限制，单任务的并发流水线会与它相乘，显存/API 速率受限时可在表单里关闭或调小。
+- `cli.context_size` 同样按请求生效，默认 `3`，但上下文只在同一次批量请求的图片之间累积；不同请求之间不共享历史，因此单张图片请求不会产生上下文。
+- 仅超分、仅上色、仅修复、导入翻译渲染与两种导出端点现在按各自工作流执行；它们仍强制串行，文件写入落在该请求的临时工作目录中。
 - 上传数量/大小限制、API 密钥编辑开关、字体与提示词上传权限来自 `/user/settings`；`0` 表示不限制。
 
 ## 在 Web 界面中操作
