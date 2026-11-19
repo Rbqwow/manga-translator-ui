@@ -1,4 +1,4 @@
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Dict, List, Literal, Optional, Union
 
 from manga_translator.custom_api_params import migrate_legacy_custom_api_params_config
 from pydantic import BaseModel, Field, model_validator
@@ -281,6 +281,36 @@ class AppSection(BaseModel):
         return normalized
 
 
+class McpSettings(BaseModel):
+    auto_start: bool = False
+    host: str = "127.0.0.1"
+    port: int = Field(default=8765, ge=1024, le=65535)
+    translation_mode: Literal["hq", "text"] = "hq"
+    allow_on_demand_image: bool = True
+    image_delivery: Literal["auto", "mcp_image", "file_path"] = "auto"
+    inline_image_budget_mb: float = Field(default=2.0, gt=0.0, le=50.0)
+    preview_max_size: int = Field(default=1024, ge=256, le=4096)
+    preview_format: Literal["jpeg", "webp", "png"] = "jpeg"
+    preview_quality: int = Field(default=82, ge=1, le=100)
+    max_parallel_batches: int = Field(default=1, ge=1, le=4)
+    lease_timeout_seconds: int = Field(default=180, ge=30, le=3600)
+    models_idle_ttl: int = Field(default=300, ge=0, le=86400)
+    use_gui_files_by_default: bool = True
+
+    @model_validator(mode="before")
+    @classmethod
+    def _enforce_loopback_host(cls, data: Any):
+        if not isinstance(data, dict):
+            return data
+        normalized = dict(data)
+        raw_host = str(normalized.get("host") or "127.0.0.1").strip()
+        if raw_host.lower() in {"127.0.0.1", "localhost", "::1"}:
+            normalized["host"] = raw_host
+        else:
+            normalized["host"] = "127.0.0.1"
+        return normalized
+
+
 class AppSettings(BaseModel):
     app: AppSection = Field(default_factory=AppSection)
     filter_text_enabled: bool = False  # 是否启用过滤列表
@@ -296,6 +326,7 @@ class AppSettings(BaseModel):
     upscale: UpscaleSettings = Field(default_factory=UpscaleSettings)
     colorizer: ColorizerSettings = Field(default_factory=ColorizerSettings)
     cli: CliSettings = Field(default_factory=CliSettings)
+    mcp: McpSettings = Field(default_factory=McpSettings)
 
     @model_validator(mode="before")
     @classmethod

@@ -12,34 +12,129 @@ import sys
 import threading
 from collections import deque
 from datetime import datetime
-from typing import Any, Dict, Iterable, List, Optional
+from typing import Any, Callable, Dict, Iterable, List, Optional
 
 
-_RECENT_LOGS = deque(maxlen=200)
+_RECENT_LOGS_MAXLEN = 300
+_MAX_RECENT_LOG_MESSAGE_CHARS = 1000
+_MAX_RECENT_LOG_EXCEPTION_CHARS = 4000
+_RECENT_LOGS = deque(maxlen=_RECENT_LOGS_MAXLEN)
 _RECENT_LOGS_LOCK = threading.Lock()
+_RECENT_LOG_SEQ = 0
+_LOG_SUBSCRIBERS_LOCK = threading.Lock()
+_LOG_SUBSCRIBERS: List[Callable[[Dict[str, Any]], None]] = []
 _QUEUE_LOGGING_LOCK = threading.Lock()
 _QUEUE_HANDLER: Optional["BoundedQueueHandler"] = None
 _QUEUE_LISTENER: Optional[logging.handlers.QueueListener] = None
 _QUEUE_DOWNSTREAM_HANDLERS: tuple[logging.Handler, ...] = ()
 
 
+def _truncate_log_text(text: str, max_chars: int) -> str:
+    """Truncate oversized log payloads before storing them in the GUI ring buffer."""
+    if len(text) <= max_chars:
+        return text
+    omitted = len(text) - max_chars
+    return f"{text[:max_chars]} ... [truncated {omitted} chars]"
+
+
+def get_recent_log_sequence() -> int:
+    """Return the latest monotonic sequence number stored by RecentLogHandler."""
+    with _RECENT_LOGS_LOCK:
+        return _RECENT_LOG_SEQ
+
+
+def get_recent_logs_since(
+    last_seq: int = 0,
+    limit: int = _RECENT_LOGS_MAXLEN,
+) -> tuple[List[Dict[str, Any]], int, bool]:
+    """Return buffered log entries newer than ``last_seq``, latest seq, and truncation flag."""
+    with _RECENT_LOGS_LOCK:
+        latest_seq = _RECENT_LOG_SEQ
+        if latest_seq <= last_seq or not _RECENT_LOGS:
+            return [], latest_seq, False
+        oldest_seq = int(_RECENT_LOGS[0].get("seq", 0))
+        truncated = last_seq > 0 and oldest_seq > last_seq + 1
+        entries = [
+            dict(entry)
+            for entry in _RECENT_LOGS
+            if int(entry.get("seq", 0)) > last_seq
+        ]
+        if limit > 0 and len(entries) > limit:
+            entries = entries[-limit:]
+            truncated = True
+        return entries, latest_seq, truncated
+
+
+def get_active_log_file_path() -> Optional[str]:
+    """Return the active FileHandler path from the queue listener or root logger."""
+    with _QUEUE_LOGGING_LOCK:
+        queued_handlers = list(_QUEUE_DOWNSTREAM_HANDLERS)
+    for handler in reversed(queued_handlers):
+        if isinstance(handler, logging.FileHandler):
+            path = str(getattr(handler, "baseFilename", "") or "").strip()
+            if path:
+                return os.path.normpath(os.path.abspath(path))
+    for handler in reversed(logging.getLogger().handlers):
+        if isinstance(handler, logging.FileHandler):
+            path = str(getattr(handler, "baseFilename", "") or "").strip()
+            if path:
+                return os.path.normpath(os.path.abspath(path))
+    return None
+
+
+def subscribe_log_records(callback: Callable[[Dict[str, Any]], None]) -> None:
+    """Register a thread-safe callback invoked with each formatted log entry dict."""
+    if not callable(callback):
+        return
+    with _LOG_SUBSCRIBERS_LOCK:
+        if callback not in _LOG_SUBSCRIBERS:
+            _LOG_SUBSCRIBERS.append(callback)
+
+
+def unsubscribe_log_records(callback: Callable[[Dict[str, Any]], None]) -> None:
+    """Unregister a previously registered log record subscriber."""
+    with _LOG_SUBSCRIBERS_LOCK:
+        if callback in _LOG_SUBSCRIBERS:
+            _LOG_SUBSCRIBERS.remove(callback)
+
+
 class RecentLogHandler(logging.Handler):
-    """Collect recent records; runs on the logging listener thread."""
+    """Collect recent INFO+ records; runs on the logging listener thread."""
+
+    def __init__(self, level: int = logging.INFO) -> None:
+        super().__init__(level)
 
     def emit(self, record: logging.LogRecord) -> None:
+        global _RECENT_LOG_SEQ
         try:
-            entry = {
+            message = _truncate_log_text(
+                record.getMessage(),
+                _MAX_RECENT_LOG_MESSAGE_CHARS,
+            )
+            entry: Dict[str, Any] = {
                 'timestamp': datetime.fromtimestamp(record.created).isoformat(),
                 'level': record.levelname,
                 'module': record.name,
-                'message': record.getMessage(),
+                'message': message,
                 'function': record.funcName,
                 'line': record.lineno,
             }
             if record.exc_info or record.exc_text:
-                entry['exception'] = self.format(record)
+                entry['exception'] = _truncate_log_text(
+                    self.format(record),
+                    _MAX_RECENT_LOG_EXCEPTION_CHARS,
+                )
             with _RECENT_LOGS_LOCK:
+                _RECENT_LOG_SEQ += 1
+                entry['seq'] = _RECENT_LOG_SEQ
                 _RECENT_LOGS.append(entry)
+            with _LOG_SUBSCRIBERS_LOCK:
+                subscribers = list(_LOG_SUBSCRIBERS) if _LOG_SUBSCRIBERS else []
+            for callback in subscribers:
+                try:
+                    callback(dict(entry))
+                except Exception:
+                    pass
         except Exception:
             self.handleError(record)
 
@@ -430,7 +525,7 @@ class LogService:
         self.log_operation(f"performance_{operation}", perf_details)
     
     def get_recent_logs(self, level: str = None, limit: int = 100) -> List[Dict[str, Any]]:
-        """获取最近的日志"""
+        """获取最近的日志（内存环形缓冲区仅收录 INFO 及以上级别，完整 DEBUG 日志请查看日志文件）"""
         with _RECENT_LOGS_LOCK:
             logs = list(_RECENT_LOGS)
         
@@ -470,6 +565,26 @@ class LogService:
         """清除最近的日志"""
         with _RECENT_LOGS_LOCK:
             _RECENT_LOGS.clear()
+
+    def get_recent_log_sequence(self) -> int:
+        """获取最近日志缓冲区的最新单调序号。"""
+        return get_recent_log_sequence()
+
+    def get_recent_logs_since(
+        self,
+        last_seq: int = 0,
+        limit: int = _RECENT_LOGS_MAXLEN,
+    ) -> tuple[List[Dict[str, Any]], int, bool]:
+        """增量获取序号大于 last_seq 的最近日志条目。"""
+        return get_recent_logs_since(last_seq=last_seq, limit=limit)
+
+    def subscribe(self, callback: Callable[[Dict[str, Any]], None]) -> None:
+        """订阅实时日志条目（线程安全）。"""
+        subscribe_log_records(callback)
+
+    def unsubscribe(self, callback: Callable[[Dict[str, Any]], None]) -> None:
+        """取消订阅实时日志条目。"""
+        unsubscribe_log_records(callback)
     
     def set_log_level(self, level: int):
         """设置日志级别"""

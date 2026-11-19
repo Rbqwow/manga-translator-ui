@@ -3,6 +3,7 @@ import asyncio
 import json
 import logging
 import os
+import threading
 import time
 import traceback
 import unicodedata
@@ -476,7 +477,9 @@ class MangaTranslator:
         self._resume_context_order = {}
         self._colorizer_history_images = []  # 存储最近已上色页面，用于 AI 上色历史参考
 
-        # 调试图片管理相关属性
+        # 调试图片管理相关属性（线程隔离 + 跨线程上下文缓存加锁）
+        self._image_context_local = threading.local()
+        self._saved_image_contexts_lock = threading.Lock()
         self._current_image_context = None  # 存储当前处理图片的上下文信息
         self._saved_image_contexts = {}     # 存储批量处理中每个图片的上下文信息
         
@@ -567,6 +570,29 @@ class MangaTranslator:
         
 
         
+    @property
+    def _current_image_context(self):
+        local = self.__dict__.get('_image_context_local')
+        if local is None:
+            local = threading.local()
+            self.__dict__['_image_context_local'] = local
+        return getattr(local, 'context', None)
+
+    @_current_image_context.setter
+    def _current_image_context(self, value):
+        local = self.__dict__.get('_image_context_local')
+        if local is None:
+            local = threading.local()
+            self.__dict__['_image_context_local'] = local
+        local.context = value
+
+    def _get_saved_image_contexts_lock(self):
+        lock = self.__dict__.get('_saved_image_contexts_lock')
+        if lock is None:
+            lock = threading.Lock()
+            self.__dict__['_saved_image_contexts_lock'] = lock
+        return lock
+
     def _set_image_context(self, config: Config, image=None):
         """设置当前处理图片的上下文信息，用于生成调试图片子文件夹"""
         from .utils.generic import get_image_md5
@@ -594,19 +620,25 @@ class MangaTranslator:
         
     def _get_image_subfolder(self) -> str:
         """获取当前图片的调试子文件夹名"""
-        if self._current_image_context:
-            return self._current_image_context['subfolder']
+        ctx = self._current_image_context
+        if ctx:
+            return ctx['subfolder']
         return ''
     
     def _save_current_image_context(self, image_md5: str):
         """保存当前图片上下文，用于批量处理中保持一致性"""
-        if self._current_image_context:
-            self._saved_image_contexts[image_md5] = self._current_image_context.copy()
+        ctx = self._current_image_context
+        if ctx:
+            with self._get_saved_image_contexts_lock():
+                self._saved_image_contexts[image_md5] = ctx.copy()
 
     def _restore_image_context(self, image_md5: str):
         """恢复保存的图片上下文"""
-        if image_md5 in self._saved_image_contexts:
-            self._current_image_context = self._saved_image_contexts[image_md5].copy()
+        with self._get_saved_image_contexts_lock():
+            saved = self._saved_image_contexts.get(image_md5)
+            ctx_copy = saved.copy() if saved is not None else None
+        if ctx_copy is not None:
+            self._current_image_context = ctx_copy
             return True
         return False
 
@@ -3127,12 +3159,13 @@ class MangaTranslator:
             if len(self._original_page_texts) >= trim_count:
                 self._original_page_texts = self._original_page_texts[trim_count:]
             # Also clean up saved image contexts if they are too old (simple heuristic)
-            if len(self._saved_image_contexts) > keep_size * 2:
-                # Keep only the last N keys
-                keys = list(self._saved_image_contexts.keys())
-                keys_to_remove = keys[:-keep_size*2]
-                for k in keys_to_remove:
-                    del self._saved_image_contexts[k]
+            with self._get_saved_image_contexts_lock():
+                if len(self._saved_image_contexts) > keep_size * 2:
+                    # Keep only the last N keys
+                    keys = list(self._saved_image_contexts.keys())
+                    keys_to_remove = keys[:-keep_size*2]
+                    for k in keys_to_remove:
+                        del self._saved_image_contexts[k]
 
     @staticmethod
     def _get_context_region_count(region: Any) -> int:
@@ -5320,32 +5353,7 @@ class MangaTranslator:
                         
                 # 过滤逻辑（简化版本，保留主要过滤条件）
                 for ctx, config in batch:
-                    if ctx.text_regions:
-                        new_text_regions = []
-                        for region in ctx.text_regions:
-                            should_filter = False
-                            filter_reason = ""
-                            translation_text = _translation_plain_text(region.translation)
-
-                            if not translation_text.strip():
-                                should_filter = True
-                                filter_reason = "Translation contain blank areas"
-                            elif config.translator.translator != Translator.none:
-                                if translation_text.isnumeric():
-                                    should_filter = True
-                                    filter_reason = "Numeric translation"
-                                elif not config.translator.translator == Translator.original:
-                                    if self._should_filter_identical_translation(config, region):
-                                        should_filter = True
-                                        filter_reason = "Translation identical to original"
-
-                            if should_filter:
-                                if translation_text.strip():
-                                    logger.info(f'Filtered out: {translation_text}')
-                                    logger.info(f'Reason: {filter_reason}')
-                            else:
-                                new_text_regions.append(region)
-                        ctx.text_regions = new_text_regions
+                    self._filter_translated_regions(ctx, config)
                         
                 results.extend(batch)
                 
@@ -5506,6 +5514,49 @@ class MangaTranslator:
         if getattr(config.translator, 'no_text_lang_skip', False):
             return False
         return str(region.text or '').lower().strip() == _translation_plain_text(region.translation).lower().strip()
+
+    def _filter_translated_regions(
+        self,
+        ctx: Context,
+        config: Config,
+        *,
+        force_filter: bool = False,
+    ) -> List:
+        """Filter blank, numeric, or untranslated regions after post-processing."""
+        if not ctx.text_regions:
+            return []
+
+        translator_type = getattr(getattr(config, 'translator', None), 'translator', None)
+        apply_content_filters = force_filter or translator_type != Translator.none
+        skip_identical_check = (not force_filter) and (translator_type == Translator.original)
+
+        new_text_regions = []
+        for region in ctx.text_regions:
+            should_filter = False
+            filter_reason = ""
+            translation_text = _translation_plain_text(region.translation)
+
+            if not translation_text.strip():
+                should_filter = True
+                filter_reason = "Translation contain blank areas"
+            elif apply_content_filters:
+                if translation_text.isnumeric():
+                    should_filter = True
+                    filter_reason = "Numeric translation"
+                elif not skip_identical_check:
+                    if self._should_filter_identical_translation(config, region):
+                        should_filter = True
+                        filter_reason = "Translation identical to original"
+
+            if should_filter:
+                if translation_text.strip():
+                    logger.info(f'Filtered out: {translation_text}')
+                    logger.info(f'Reason: {filter_reason}')
+            else:
+                new_text_regions.append(region)
+
+        ctx.text_regions = new_text_regions
+        return ctx.text_regions
             
     async def _apply_post_translation_processing(self, ctx: Context, config: Config) -> List:
         """
