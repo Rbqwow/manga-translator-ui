@@ -131,14 +131,14 @@ class BatchPayload(BaseModel):
 
 
 class TranslationSubmissionItem(BaseModel):
-    """Single translated text block submitted by Antigravity."""
+    """Single translated text block submitted by the MCP client."""
 
     id: int
     translation: str
 
 
 class ValidationErrorItem(BaseModel):
-    """Validation failure item instructing Antigravity which bubble IDs need fixing."""
+    """Validation failure item instructing the MCP client which bubble IDs need fixing."""
 
     id: Optional[int] = None
     reason: str

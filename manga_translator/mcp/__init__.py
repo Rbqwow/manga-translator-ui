@@ -1,4 +1,4 @@
-"""Antigravity MCP integration package (lazy-imports heavy CV/torch modules)."""
+"""Universal Streamable HTTP MCP integration package (lazy-imports heavy CV/torch modules)."""
 
 from __future__ import annotations
 

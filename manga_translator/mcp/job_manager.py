@@ -1234,7 +1234,7 @@ class McpTranslationJob:
                     width=pw,
                     height=ph,
                     lease_renewed=lease_renewed,
-                    note="Preview written to file_path; call read_file to inspect.",
+                    note="Preview written to file_path; inspect file_path using your local file/image viewing tool.",
                 ),
                 None,
             )

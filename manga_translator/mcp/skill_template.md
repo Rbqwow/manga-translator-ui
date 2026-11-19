@@ -51,8 +51,8 @@ through the local MCP tools with zero external API keys.
    - **`text_only`**: Translate strictly from text and `prev_context`; do not call
      `get_page_preview`.
 4. **Disk fallback images**: Whenever a page reports `image_delivery_mode == "file_path"`
-   or `get_page_preview` returns `delivery_mode == "file_path"`, call `read_file`
-   on `preview_path` / `file_path` to inspect the image.
+   or `get_page_preview` returns `delivery_mode == "file_path"`, open or inspect
+   `preview_path` / `file_path` using your host's local file/image viewing tool.
 5. **Line breaks (`[BR]`) & Glossary**:
    - When `ai_line_break_enabled == true`: add explicit `[BR]` markers between
      lines for multi-line bubbles (`original_region_count >= 2`), and keep
@@ -79,17 +79,23 @@ If `submit_translation_batch` returns `status == "retry_needed"`:
 - **`pending_pages <= 12`**: Complete the entire loop directly in the main session.
 - **`pending_pages > 12` and `max_parallel_batches == 1`** (Sequential Relay):
   - Create the job in the main session and keep `job_id` + `guidelines`.
-  - Dispatch clean sequential subagents (`invoke_subagent`), passing `job_id`,
-    `guidelines`, and current `glossary`, instructing each subagent to translate
-    **3–4 batches** using `next_translation_batch` + `submit_translation_batch(..., return_next=True)`
-    and stop (returning progress or `done=true`).
-  - Continue launching the next relay subagent until `done == true`. This discards
-    accumulated image tokens between chunks while the MCP server keeps
-    `prev_context` and `glossary` intact.
+  - If your host supports spawning subagents, dispatch clean sequential subagents
+    passing `job_id`, `guidelines`, and current `glossary`, instructing each
+    subagent to translate **3–4 batches** using `next_translation_batch` +
+    `submit_translation_batch(..., return_next=True)` and stop (returning progress
+    or `done=true`). Continue launching the next relay subagent until
+    `done == true` so accumulated image tokens are discarded between chunks while
+    the MCP server keeps `prev_context` and `glossary` intact.
+  - If your host only supports a single session, continue processing batches
+    sequentially in the main session, or start a fresh session and resume by
+    passing the existing `job_id` to `next_translation_batch`.
 - **`max_parallel_batches >= 2`** (Parallel Workers):
-  - Launch up to `max_parallel_batches` worker subagents concurrently, each with a
-    distinct `worker_id` (e.g., `"worker-1"`, `"worker-2"`), consuming the same `job_id`.
-  - Any subagent that must exit early while holding a lease **must** call
+  - If your host supports spawning subagents, launch up to `max_parallel_batches`
+    worker subagents concurrently, each with a distinct `worker_id` (e.g.,
+    `"worker-1"`, `"worker-2"`), consuming the same `job_id`.
+  - If your host only supports a single session, process batches sequentially in
+    the main session or resume with the same `job_id` in a new session.
+  - Any worker that must exit early while holding a lease **must** call
     `release_batch(job_id, batch_id)` so another worker can resume immediately.
 
 ## 5. Completion & Cleanup

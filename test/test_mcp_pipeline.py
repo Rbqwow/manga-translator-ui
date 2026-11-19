@@ -849,17 +849,21 @@ def test_mcp_service_config_skill_install_and_log_subscriber(tmp_path):
             encoding="utf-8",
         )
 
-        written_cfg = Path(svc.install_antigravity_mcp_config(cfg_file, port=9123))
+        written_cfg = Path(svc.install_mcp_config("antigravity", cfg_file, port=9123))
         assert written_cfg == cfg_file
         parsed = json.loads(cfg_file.read_text(encoding="utf-8"))
         assert parsed["mcpServers"]["other-server"] == {"command": "echo", "args": ["ok"]}
         assert parsed["mcpServers"]["manga-translator"] == {"url": "http://127.0.0.1:9123/mcp"}
 
-        skill_target = tmp_path / ".gemini" / "config" / "skills" / "manga-translate" / "SKILL.md"
-        written_skill = Path(svc.install_antigravity_skill(skill_target))
+        skill_target = tmp_path / ".agents" / "skills" / "manga-translate" / "SKILL.md"
+        written_skill = Path(svc.install_skill(skill_path=skill_target))
         assert written_skill == skill_target
-        template_path = Path(_bootstrap.ROOT) / "manga_translator" / "mcp" / "antigravity_skill_template.md"
-        assert skill_target.read_text(encoding="utf-8") == template_path.read_text(encoding="utf-8")
+        template_path = Path(_bootstrap.ROOT) / "manga_translator" / "mcp" / "skill_template.md"
+        skill_content = skill_target.read_text(encoding="utf-8")
+        assert skill_content == template_path.read_text(encoding="utf-8")
+        assert "read_file" not in skill_content
+        assert "invoke_subagent" not in skill_content
+        assert "antigravity" not in skill_content.lower()
 
         # Verify log subscription & unsubscription
         received = []
@@ -887,3 +891,166 @@ def test_mcp_service_config_skill_install_and_log_subscriber(tmp_path):
             shutdown_queue_logging()
     finally:
         svc.shutdown()
+
+
+def test_mcp_service_multi_client_snippets_merges_and_skill_targets(tmp_path, monkeypatch):
+    import tomllib
+
+    svc = McpService(root_dir=str(_bootstrap.ROOT))
+    try:
+        profiles = svc.list_mcp_client_profiles()
+        keys = [p.key for p in profiles]
+        assert keys == [
+            "generic",
+            "claude_code",
+            "codex",
+            "cursor",
+            "opencode",
+            "antigravity",
+            "windsurf",
+            "vscode",
+            "stdio_bridge",
+        ]
+
+        url = "http://127.0.0.1:9456/mcp"
+        assert json.loads(svc.get_mcp_client_config_snippet("generic", port=9456)) == {
+            "mcpServers": {"manga-translator": {"url": url}}
+        }
+        assert json.loads(svc.get_mcp_client_config_snippet("claude_code", port=9456)) == {
+            "mcpServers": {"manga-translator": {"type": "http", "url": url}}
+        }
+        assert json.loads(svc.get_mcp_client_config_snippet("cursor", port=9456)) == {
+            "mcpServers": {"manga-translator": {"url": url}}
+        }
+        assert json.loads(svc.get_mcp_client_config_snippet("opencode", port=9456)) == {
+            "mcp": {"manga-translator": {"type": "remote", "url": url}}
+        }
+        assert json.loads(svc.get_mcp_client_config_snippet("antigravity", port=9456)) == {
+            "mcpServers": {"manga-translator": {"url": url}}
+        }
+        assert json.loads(svc.get_mcp_client_config_snippet("windsurf", port=9456)) == {
+            "mcpServers": {"manga-translator": {"serverUrl": url}}
+        }
+        assert json.loads(svc.get_mcp_client_config_snippet("vscode", port=9456)) == {
+            "servers": {"manga-translator": {"type": "http", "url": url}}
+        }
+        assert json.loads(svc.get_mcp_client_config_snippet("stdio_bridge", port=9456)) == {
+            "mcpServers": {
+                "manga-translator": {"command": "npx", "args": ["-y", "mcp-remote", url]}
+            }
+        }
+        codex_snippet = svc.get_mcp_client_config_snippet("codex", port=9456)
+        assert tomllib.loads(codex_snippet) == {
+            "mcp_servers": {"manga-translator": {"url": url}}
+        }
+
+        # Copy-only clients and vscode without path must raise ValueError
+        with pytest.raises(ValueError):
+            svc.install_mcp_config("generic")
+        with pytest.raises(ValueError):
+            svc.install_mcp_config("stdio_bridge")
+        with pytest.raises(ValueError):
+            svc.install_mcp_config("vscode")
+
+        # JSONC (with comments & trailing comma) merge for OpenCode
+        opencode_cfg = tmp_path / "opencode.json"
+        opencode_cfg.write_text(
+            '{\n  // user theme\n  "theme": "dark",\n  "mcp": {\n    "existing": {"type": "local", "command": ["echo"]},\n  },\n}\n',
+            encoding="utf-8",
+        )
+        svc.install_mcp_config("opencode", opencode_cfg, port=9456)
+        oc_parsed = json.loads(opencode_cfg.read_text(encoding="utf-8"))
+        assert oc_parsed["theme"] == "dark"
+        assert oc_parsed["mcp"]["existing"] == {"type": "local", "command": ["echo"]}
+        assert oc_parsed["mcp"]["manga-translator"] == {"type": "remote", "url": url}
+
+        # VS Code & Windsurf & Claude Code writes
+        vscode_cfg = tmp_path / ".vscode" / "mcp.json"
+        svc.install_mcp_config("vscode", vscode_cfg, port=9456)
+        assert json.loads(vscode_cfg.read_text(encoding="utf-8")) == {
+            "servers": {"manga-translator": {"type": "http", "url": url}}
+        }
+        windsurf_cfg = tmp_path / "windsurf_mcp.json"
+        svc.install_mcp_config("windsurf", windsurf_cfg, port=9456)
+        assert json.loads(windsurf_cfg.read_text(encoding="utf-8")) == {
+            "mcpServers": {"manga-translator": {"serverUrl": url}}
+        }
+
+        # Codex TOML merge: append preserving comments and existing servers
+        codex_cfg = tmp_path / ".codex" / "config.toml"
+        codex_cfg.parent.mkdir(parents=True, exist_ok=True)
+        codex_cfg.write_text(
+            '# Top comment\nmodel = "o3"\n\n# Existing server\n[mcp_servers.other]\ncommand = "npx"\n',
+            encoding="utf-8",
+        )
+        svc.install_mcp_config("codex", codex_cfg, port=9456)
+        merged_1 = codex_cfg.read_text(encoding="utf-8")
+        assert "# Top comment" in merged_1
+        assert "# Existing server" in merged_1
+        parsed_1 = tomllib.loads(merged_1)
+        assert parsed_1["model"] == "o3"
+        assert parsed_1["mcp_servers"]["other"] == {"command": "npx"}
+        assert parsed_1["mcp_servers"]["manga-translator"] == {"url": url}
+
+        # Codex TOML merge: update existing quoted table preserving extra keys & comments
+        codex_cfg.write_text(
+            '# Header\n[mcp_servers."manga-translator"]\n# keep this note\nurl = "http://127.0.0.1:8000/mcp"\nstartup_timeout_sec = 30\n\n[mcp_servers.other]\nurl = "http://127.0.0.1:9999/mcp"\n',
+            encoding="utf-8",
+        )
+        svc.install_mcp_config("codex", codex_cfg, port=9777)
+        merged_2 = codex_cfg.read_text(encoding="utf-8")
+        assert "# Header" in merged_2
+        assert "# keep this note" in merged_2
+        parsed_2 = tomllib.loads(merged_2)
+        assert parsed_2["mcp_servers"]["manga-translator"]["url"] == "http://127.0.0.1:9777/mcp"
+        assert parsed_2["mcp_servers"]["manga-translator"]["startup_timeout_sec"] == 30
+        assert parsed_2["mcp_servers"]["other"]["url"] == "http://127.0.0.1:9999/mcp"
+
+        # Skill installation default target routing with monkeypatched home
+        fake_home = tmp_path / "fake_home"
+        monkeypatch.setattr(Path, "home", classmethod(lambda cls: fake_home))
+        std_path = Path(svc.install_skill("agents_standard"))
+        assert std_path == fake_home / ".agents" / "skills" / "manga-translate" / "SKILL.md"
+        assert std_path.exists()
+
+        codex_skill = Path(svc.install_skill("codex"))
+        assert codex_skill == fake_home / ".agents" / "skills" / "manga-translate" / "SKILL.md"
+
+        claude_skill = Path(svc.install_skill("claude_code"))
+        assert claude_skill == fake_home / ".claude" / "skills" / "manga-translate" / "SKILL.md"
+        assert claude_skill.exists()
+    finally:
+        svc.shutdown()
+
+
+def test_decoupled_file_path_hints_and_preview_note(tmp_path):
+    from manga_translator.mcp.batch_adapter import resolve_batch_image_delivery
+
+    dummy_bytes = b"\xff\xd8\xff\xe0" + b"0" * 2048
+    encoded = {0: (dummy_bytes, "image/jpeg", 100, 100, "p1.png")}
+
+    resolved_fp, hints_fp = resolve_batch_image_delivery(
+        encoded,
+        delivery="file_path",
+        budget_mb=2.0,
+        preview_dir=str(tmp_path / "p1"),
+        batch_id="b1",
+        fmt="jpeg",
+    )
+    assert resolved_fp[0]["mode"] == "file_path"
+    assert hints_fp
+    assert all("read_file" not in h for h in hints_fp)
+    assert any("local file/image viewing tool" in h for h in hints_fp)
+
+    resolved_budget, hints_budget = resolve_batch_image_delivery(
+        encoded,
+        delivery="auto",
+        budget_mb=0.0001,
+        preview_dir=str(tmp_path / "p2"),
+        batch_id="b2",
+        fmt="jpeg",
+    )
+    assert resolved_budget[0]["mode"] == "file_path"
+    assert hints_budget
+    assert all("read_file" not in h for h in hints_budget)
+    assert any("local file/image viewing tool" in h for h in hints_budget)

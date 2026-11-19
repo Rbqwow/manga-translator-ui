@@ -584,7 +584,7 @@ def resolve_batch_image_delivery(
         fallback_reason = (
             f"Batch preview size ({total_bytes / (1024 * 1024):.2f} MB) exceeded "
             f"inline_image_budget_mb ({budget_mb:.2f} MB); wrote preview files to disk. "
-            "Use read_file on preview_path to inspect each page."
+            "Inspect preview_path using your local file/image viewing tool."
         )
 
     resolved: Dict[int, Dict[str, Any]] = {}
@@ -592,7 +592,9 @@ def resolve_batch_image_delivery(
     if fallback_reason:
         hints.append(fallback_reason)
     elif use_file_path and encoded_pages:
-        hints.append("Preview delivery is set to file_path; use read_file on preview_path to inspect images.")
+        hints.append(
+            "Preview delivery is set to file_path; inspect preview_path using your local file/image viewing tool."
+        )
 
     for page_index, (raw_bytes, mime_type, width, height, filename) in encoded_pages.items():
         if use_file_path:

@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import os
+from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
 from PyQt6.QtCore import Qt, QUrl, pyqtSlot
 from PyQt6.QtGui import QDesktopServices, QDoubleValidator, QIntValidator, QTextCursor
 from PyQt6.QtWidgets import (
     QApplication,
+    QFileDialog,
     QFrame,
     QGridLayout,
     QHBoxLayout,
@@ -109,7 +111,7 @@ class McpPagePanel(QWidget):
         scroll.setWidget(container)
         outer.addWidget(scroll, 1)
 
-        # 1. Service control & Antigravity integration card
+        # 1. Service control & client integration card
         self._build_control_card(container_layout)
         # 2. MCP translation mode & strategy card
         self._build_strategy_card(container_layout)
@@ -147,9 +149,12 @@ class McpPagePanel(QWidget):
         self.status_label = BodyLabel(self._t("MCP Status Stopped"), card)
         self.endpoint_label = CaptionLabel("http://127.0.0.1:8765/mcp", card)
         self.endpoint_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        self.copy_url_button = PushButton(self._t("MCP Copy URL"), card)
+        self.copy_url_button.setIcon(FIF.COPY)
         status_row.addWidget(self.status_dot)
         status_row.addWidget(self.status_label)
         status_row.addWidget(self.endpoint_label, 1)
+        status_row.addWidget(self.copy_url_button)
         layout.addLayout(status_row)
 
         # Port + Start/Stop + Auto-start
@@ -182,12 +187,23 @@ class McpPagePanel(QWidget):
         ctrl_grid.addWidget(self.auto_start_switch, 1, 4, Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
         layout.addLayout(ctrl_grid)
 
-        # Quick Antigravity setup buttons
+        # Target client selector
+        client_row = QHBoxLayout()
+        client_row.setSpacing(10)
+        self.client_label = BodyLabel(self._t("MCP Target Client Label"), card)
+        self.client_combo = NoWheelComboBox(card)
+        self.client_combo.setMinimumWidth(260)
+        client_row.addWidget(self.client_label)
+        client_row.addWidget(self.client_combo)
+        client_row.addStretch(1)
+        layout.addLayout(client_row)
+
+        # Quick client setup buttons
         actions_row = QHBoxLayout()
         actions_row.setSpacing(8)
         self.copy_config_button = PushButton(self._t("MCP Copy Config"), card)
         self.copy_config_button.setIcon(FIF.COPY)
-        self.write_config_button = PushButton(self._t("MCP Write Antigravity Config"), card)
+        self.write_config_button = PushButton(self._t("MCP Write Client Config"), card)
         self.write_config_button.setIcon(FIF.SAVE)
         self.install_skill_button = PushButton(self._t("MCP Install Skill"), card)
         self.install_skill_button.setIcon(FIF.ROBOT)
@@ -196,6 +212,9 @@ class McpPagePanel(QWidget):
         actions_row.addWidget(self.install_skill_button)
         actions_row.addStretch(1)
         layout.addLayout(actions_row)
+
+        self._populate_client_combo()
+        self._update_client_action_controls()
 
         self.integration_feedback_label = CaptionLabel("", card)
         self.integration_feedback_label.setWordWrap(True)
@@ -453,6 +472,54 @@ class McpPagePanel(QWidget):
         finally:
             self.delivery_combo.blockSignals(False)
 
+    def _client_profiles(self) -> List[Any]:
+        if self.mcp_service is not None and hasattr(self.mcp_service, "list_mcp_client_profiles"):
+            return list(self.mcp_service.list_mcp_client_profiles())
+        from services.mcp_service import MCP_CLIENT_PROFILES
+
+        return list(MCP_CLIENT_PROFILES.values())
+
+    def _client_display_label(self, profile: Any) -> str:
+        key = getattr(profile, "key", "")
+        if key == "generic":
+            return self._t("MCP Client Generic")
+        if key == "stdio_bridge":
+            return self._t("MCP Client Stdio Bridge")
+        return str(getattr(profile, "display_name", key))
+
+    def _populate_client_combo(self) -> None:
+        prev_client = self.client_combo.currentData() or "claude_code"
+        self.client_combo.blockSignals(True)
+        try:
+            self.client_combo.clear()
+            for profile in self._client_profiles():
+                self.client_combo.addItem(self._client_display_label(profile), userData=profile.key)
+            idx = self.client_combo.findData(prev_client)
+            if idx < 0 and self.client_combo.count() > 0:
+                idx = 0
+            if idx >= 0:
+                self.client_combo.setCurrentIndex(idx)
+        finally:
+            self.client_combo.blockSignals(False)
+
+    def _selected_client_profile(self) -> Optional[Any]:
+        client_key = self.client_combo.currentData()
+        if not client_key:
+            return None
+        for profile in self._client_profiles():
+            if profile.key == client_key:
+                return profile
+        return None
+
+    def _update_client_action_controls(self) -> None:
+        profile = self._selected_client_profile()
+        can_write = bool(profile and getattr(profile, "supports_write", False))
+        self.write_config_button.setEnabled(can_write)
+        if can_write:
+            self.write_config_button.setToolTip("")
+        else:
+            self.write_config_button.setToolTip(self._t("MCP Write Config Copy Only Hint"))
+
     def _populate_log_filter_combo(self) -> None:
         prev_filter = self.log_filter_combo.currentData() or "all"
         self.log_filter_combo.blockSignals(True)
@@ -472,10 +539,12 @@ class McpPagePanel(QWidget):
     # ------------------------------------------------------------------
     def _connect_signals(self) -> None:
         self.toggle_server_button.clicked.connect(self._on_toggle_server_clicked)
+        self.copy_url_button.clicked.connect(self._on_copy_url_clicked)
         self.port_edit.editingFinished.connect(self._on_port_edited)
         self.auto_start_switch.checkedChanged.connect(
             lambda checked: self._save_mcp_setting("auto_start", bool(checked))
         )
+        self.client_combo.currentIndexChanged.connect(self._on_client_changed)
         self.copy_config_button.clicked.connect(self._on_copy_config_clicked)
         self.write_config_button.clicked.connect(self._on_write_config_clicked)
         self.install_skill_button.clicked.connect(self._on_install_skill_clicked)
@@ -697,29 +766,75 @@ class McpPagePanel(QWidget):
             else:
                 self._update_server_status_widgets(running=True, url=url)
 
+    def _on_copy_url_clicked(self) -> None:
+        url = self.endpoint_label.text().strip()
+        clipboard = QApplication.clipboard()
+        if clipboard is not None:
+            clipboard.setText(url)
+        self._show_toast(self._t("MCP Service"), self._t("MCP URL Copied", url=url))
+
+    def _on_client_changed(self, _index: int) -> None:
+        self._update_client_action_controls()
+
     def _on_copy_config_clicked(self) -> None:
         if self.mcp_service is None:
             return
-        snippet = self.mcp_service.get_mcp_client_config_json(port=self._current_port())
+        profile = self._selected_client_profile()
+        client_key = profile.key if profile is not None else "generic"
+        client_label = self._client_display_label(profile) if profile is not None else client_key
+        snippet = self.mcp_service.get_mcp_client_config_snippet(
+            client=client_key,
+            port=self._current_port(),
+        )
         clipboard = QApplication.clipboard()
         if clipboard is not None:
             clipboard.setText(snippet)
-        self._show_toast(self._t("MCP Service"), self._t("MCP Config Copied"))
+        self._show_toast(self._t("MCP Service"), self._t("MCP Config Copied", client=client_label))
 
     def _on_write_config_clicked(self) -> None:
         if self.mcp_service is None:
             return
+        profile = self._selected_client_profile()
+        if profile is None:
+            return
+        if not getattr(profile, "supports_write", False):
+            self._show_toast(self._t("MCP Service"), self._t("MCP Write Config Copy Only Hint"))
+            return
+
+        custom_path: Optional[str] = None
+        if getattr(profile, "requires_custom_config_path", False):
+            default_dir = Path(getattr(self.mcp_service, "root_dir", os.getcwd())) / ".vscode" / "mcp.json"
+            selected, _ = QFileDialog.getSaveFileName(
+                self,
+                self._t("MCP Select Config File Title"),
+                str(default_dir),
+                "JSON (*.json);;All Files (*)",
+                options=QFileDialog.Option.DontConfirmOverwrite,
+            )
+            if not selected:
+                return
+            custom_path = selected
+
         try:
-            path = self.mcp_service.install_antigravity_mcp_config(port=self._current_port())
-            self._show_toast(self._t("MCP Service"), self._t("MCP Config Written", path=path))
+            path = self.mcp_service.install_mcp_config(
+                profile.key,
+                config_path=custom_path,
+                port=self._current_port(),
+            )
+            self._show_toast(
+                self._t("MCP Service"),
+                self._t("MCP Config Written", client=self._client_display_label(profile), path=path),
+            )
         except Exception as exc:
             self._show_toast(self._t("Error"), str(exc), error=True)
 
     def _on_install_skill_clicked(self) -> None:
         if self.mcp_service is None:
             return
+        profile = self._selected_client_profile()
+        target = profile.key if profile is not None else "agents_standard"
         try:
-            path = self.mcp_service.install_antigravity_skill()
+            path = self.mcp_service.install_skill(target=target)
             self._show_toast(self._t("MCP Service"), self._t("MCP Skill Installed", path=path))
         except Exception as exc:
             self._show_toast(self._t("Error"), str(exc), error=True)
@@ -954,12 +1069,16 @@ class McpPagePanel(QWidget):
         self.title_label.setText(self._t("MCP Service"))
         self.subtitle_label.setText(self._t("MCP Page Subtitle"))
         self.control_card_title.setText(self._t("MCP Control Card Title"))
+        self.copy_url_button.setText(self._t("MCP Copy URL"))
         self.port_label.setText(self._t("MCP Port Label"))
         self.auto_start_label.setText(self._t("MCP Auto Start Label"))
         self.auto_start_hint.setText(self._t("MCP Auto Start Hint"))
+        self.client_label.setText(self._t("MCP Target Client Label"))
+        self._populate_client_combo()
         self.copy_config_button.setText(self._t("MCP Copy Config"))
-        self.write_config_button.setText(self._t("MCP Write Antigravity Config"))
+        self.write_config_button.setText(self._t("MCP Write Client Config"))
         self.install_skill_button.setText(self._t("MCP Install Skill"))
+        self._update_client_action_controls()
         self.go_settings_button.setText(self._t("MCP Go To Settings"))
 
         self.strategy_card_title.setText(self._t("MCP Strategy Card Title"))

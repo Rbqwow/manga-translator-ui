@@ -2,13 +2,16 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 import json
 import logging
 import os
 from pathlib import Path
+import re
 import tempfile
 import threading
-from typing import Any, Callable, Dict, List, Optional
+import tomllib
+from typing import Any, Callable, Dict, List, Literal, Optional
 
 from PyQt6.QtCore import QObject, pyqtSignal
 
@@ -16,6 +19,202 @@ from manga_translator.mcp import McpHttpServer, McpJobManager, find_api_backend_
 from services.log_service import subscribe_log_records, unsubscribe_log_records
 
 logger = logging.getLogger("manga_translator.mcp.service")
+
+MCP_SERVER_NAME = "manga-translator"
+AGENTS_STANDARD_SKILL_RELPATH = ".agents/skills/manga-translate/SKILL.md"
+
+
+@dataclass(frozen=True)
+class McpClientProfile:
+    """Declarative integration profile for a supported MCP coding harness."""
+
+    key: str
+    display_name: str
+    config_format: Literal["json", "toml"]
+    root_key: str
+    default_config_relpath: Optional[str]
+    default_skill_relpath: str
+    supports_write: bool = True
+    requires_custom_config_path: bool = False
+
+    def default_config_path(self) -> Optional[Path]:
+        if not self.default_config_relpath:
+            return None
+        return Path.home() / Path(self.default_config_relpath)
+
+    def default_skill_path(self) -> Path:
+        return Path.home() / Path(self.default_skill_relpath)
+
+
+MCP_CLIENT_PROFILES: Dict[str, McpClientProfile] = {
+    "generic": McpClientProfile(
+        key="generic",
+        display_name="Generic Streamable HTTP (Copy Only)",
+        config_format="json",
+        root_key="mcpServers",
+        default_config_relpath=None,
+        default_skill_relpath=AGENTS_STANDARD_SKILL_RELPATH,
+        supports_write=False,
+    ),
+    "claude_code": McpClientProfile(
+        key="claude_code",
+        display_name="Claude Code",
+        config_format="json",
+        root_key="mcpServers",
+        default_config_relpath=".claude.json",
+        default_skill_relpath=".claude/skills/manga-translate/SKILL.md",
+    ),
+    "codex": McpClientProfile(
+        key="codex",
+        display_name="Codex CLI",
+        config_format="toml",
+        root_key="mcp_servers",
+        default_config_relpath=".codex/config.toml",
+        default_skill_relpath=AGENTS_STANDARD_SKILL_RELPATH,
+    ),
+    "cursor": McpClientProfile(
+        key="cursor",
+        display_name="Cursor",
+        config_format="json",
+        root_key="mcpServers",
+        default_config_relpath=".cursor/mcp.json",
+        default_skill_relpath=".cursor/skills/manga-translate/SKILL.md",
+    ),
+    "opencode": McpClientProfile(
+        key="opencode",
+        display_name="OpenCode",
+        config_format="json",
+        root_key="mcp",
+        default_config_relpath=".config/opencode/opencode.json",
+        default_skill_relpath=".config/opencode/skills/manga-translate/SKILL.md",
+    ),
+    "antigravity": McpClientProfile(
+        key="antigravity",
+        display_name="Google Antigravity",
+        config_format="json",
+        root_key="mcpServers",
+        default_config_relpath=".gemini/config/mcp_config.json",
+        default_skill_relpath=".gemini/config/skills/manga-translate/SKILL.md",
+    ),
+    "windsurf": McpClientProfile(
+        key="windsurf",
+        display_name="Windsurf",
+        config_format="json",
+        root_key="mcpServers",
+        default_config_relpath=".codeium/windsurf/mcp_config.json",
+        default_skill_relpath=".codeium/windsurf/skills/manga-translate/SKILL.md",
+    ),
+    "vscode": McpClientProfile(
+        key="vscode",
+        display_name="VS Code / Copilot",
+        config_format="json",
+        root_key="servers",
+        default_config_relpath=None,
+        default_skill_relpath=AGENTS_STANDARD_SKILL_RELPATH,
+        supports_write=True,
+        requires_custom_config_path=True,
+    ),
+    "stdio_bridge": McpClientProfile(
+        key="stdio_bridge",
+        display_name="Stdio Bridge (mcp-remote)",
+        config_format="json",
+        root_key="mcpServers",
+        default_config_relpath=None,
+        default_skill_relpath=AGENTS_STANDARD_SKILL_RELPATH,
+        supports_write=False,
+    ),
+}
+
+_CODEX_SECTION_RE = re.compile(
+    r"""^\s*\[\s*mcp_servers\s*\.\s*(?:manga-translator|"manga-translator"|'manga-translator')\s*\]\s*(?:#.*)?$"""
+)
+_TOML_TABLE_HEADER_RE = re.compile(r"^\s*\[")
+_TOML_URL_LINE_RE = re.compile(r"^(\s*)url\s*=")
+
+
+def _build_client_server_entry(client: str, url: str) -> Dict[str, Any]:
+    if client in {"claude_code", "vscode"}:
+        return {"type": "http", "url": url}
+    if client == "opencode":
+        return {"type": "remote", "url": url}
+    if client == "windsurf":
+        return {"serverUrl": url}
+    if client == "stdio_bridge":
+        return {"command": "npx", "args": ["-y", "mcp-remote", url]}
+    return {"url": url}
+
+
+def _parse_json_or_jsonc(raw_text: str, target: Path) -> Dict[str, Any]:
+    try:
+        parsed = json.loads(raw_text)
+    except json.JSONDecodeError:
+        try:
+            import json5
+
+            parsed = json5.loads(raw_text)
+        except Exception as exc:
+            raise ValueError(f"Failed to parse JSON config {target}: {exc}") from exc
+    if not isinstance(parsed, dict):
+        raise ValueError(f"Expected JSON object in {target}")
+    return parsed
+
+
+def _merge_codex_toml_config(existing_text: str, url: str) -> str:
+    if existing_text.strip():
+        try:
+            tomllib.loads(existing_text)
+        except tomllib.TOMLDecodeError as exc:
+            raise ValueError(f"Invalid TOML syntax: {exc}") from exc
+
+    url_literal = json.dumps(url)
+    lines = existing_text.splitlines()
+    section_start: Optional[int] = None
+    for idx, line in enumerate(lines):
+        if _CODEX_SECTION_RE.match(line):
+            section_start = idx
+            break
+
+    if section_start is not None:
+        section_end = len(lines)
+        for idx in range(section_start + 1, len(lines)):
+            if _TOML_TABLE_HEADER_RE.match(lines[idx]):
+                section_end = idx
+                break
+
+        url_idx: Optional[int] = None
+        for idx in range(section_start + 1, section_end):
+            if _TOML_URL_LINE_RE.match(lines[idx]):
+                url_idx = idx
+                break
+
+        if url_idx is not None:
+            indent = _TOML_URL_LINE_RE.match(lines[url_idx]).group(1)  # type: ignore[union-attr]
+            lines[url_idx] = f"{indent}url = {url_literal}"
+        else:
+            insert_at = section_end
+            while insert_at > section_start + 1 and not lines[insert_at - 1].strip():
+                insert_at -= 1
+            lines.insert(insert_at, f"url = {url_literal}")
+
+        merged = "\n".join(lines).rstrip("\n") + "\n"
+    else:
+        block = f"[mcp_servers.{MCP_SERVER_NAME}]\nurl = {url_literal}\n"
+        if existing_text.strip():
+            merged = existing_text.rstrip() + "\n\n" + block
+        else:
+            merged = block
+
+    try:
+        validated = tomllib.loads(merged)
+    except tomllib.TOMLDecodeError as exc:
+        raise ValueError(f"Merged Codex TOML is invalid: {exc}") from exc
+
+    servers = validated.get("mcp_servers")
+    if not isinstance(servers, dict) or not isinstance(servers.get(MCP_SERVER_NAME), dict):
+        raise ValueError("Merged Codex TOML is missing [mcp_servers.manga-translator]")
+    if servers[MCP_SERVER_NAME].get("url") != url:
+        raise ValueError("Merged Codex TOML url verification failed")
+    return merged
 
 
 def _atomic_write_text(path: Path, content: str) -> None:
@@ -254,72 +453,115 @@ class McpService(QObject):
         return [c.model_dump() for c in find_api_backend_conflicts(cfg)]
 
     # ------------------------------------------------------------------
-    # Antigravity integration helpers
+    # Multi-harness MCP client integration helpers
     # ------------------------------------------------------------------
-    def get_mcp_client_config_json(self, port: Optional[int] = None) -> str:
+    @staticmethod
+    def list_mcp_client_profiles() -> List[McpClientProfile]:
+        return list(MCP_CLIENT_PROFILES.values())
+
+    @staticmethod
+    def get_mcp_client_profile(client: str) -> McpClientProfile:
+        key = str(client or "").strip()
+        profile = MCP_CLIENT_PROFILES.get(key)
+        if profile is None:
+            supported = ", ".join(MCP_CLIENT_PROFILES.keys())
+            raise ValueError(f"Unsupported MCP client '{client}'. Supported: {supported}")
+        return profile
+
+    def _resolved_endpoint_url(self, port: Optional[int] = None) -> str:
         host, cfg_port = self._configured_host_port()
         resolved_port = int(port) if port is not None else cfg_port
+        return f"http://{host}:{resolved_port}/mcp"
+
+    def get_mcp_client_config_snippet(
+        self,
+        client: str = "generic",
+        port: Optional[int] = None,
+    ) -> str:
+        profile = self.get_mcp_client_profile(client)
+        url = self._resolved_endpoint_url(port=port)
+        if profile.config_format == "toml":
+            return f"[mcp_servers.{MCP_SERVER_NAME}]\nurl = {json.dumps(url)}\n"
         payload = {
-            "mcpServers": {
-                "manga-translator": {
-                    "url": f"http://{host}:{resolved_port}/mcp",
-                }
+            profile.root_key: {
+                MCP_SERVER_NAME: _build_client_server_entry(profile.key, url),
             }
         }
         return json.dumps(payload, indent=2, ensure_ascii=False)
 
-    def install_antigravity_mcp_config(
+    def install_mcp_config(
         self,
+        client: str,
         config_path: Optional[str | Path] = None,
         *,
         port: Optional[int] = None,
     ) -> str:
-        target = (
-            Path(config_path)
-            if config_path is not None
-            else Path.home() / ".gemini" / "config" / "mcp_config.json"
-        )
-        host, cfg_port = self._configured_host_port()
-        resolved_port = int(port) if port is not None else cfg_port
+        profile = self.get_mcp_client_profile(client)
+        if not profile.supports_write:
+            raise ValueError(
+                f"Client '{profile.display_name}' is copy-only and does not support automatic config writing."
+            )
 
-        existing_data: Dict[str, Any] = {}
-        if target.exists():
-            raw_text = target.read_text(encoding="utf-8").strip()
-            if raw_text:
-                parsed = json.loads(raw_text)
-                if not isinstance(parsed, dict):
-                    raise ValueError(f"Expected JSON object in {target}")
-                existing_data = parsed
+        if config_path is not None:
+            target = Path(config_path)
+        else:
+            default_path = profile.default_config_path()
+            if default_path is None:
+                raise ValueError(
+                    f"A target config file path must be specified for '{profile.display_name}'."
+                )
+            target = default_path
 
-        servers = existing_data.get("mcpServers")
-        if servers is None:
-            servers = {}
-        elif not isinstance(servers, dict):
-            raise ValueError(f"'mcpServers' in {target} must be a JSON object")
+        url = self._resolved_endpoint_url(port=port)
 
-        servers = dict(servers)
-        servers["manga-translator"] = {"url": f"http://{host}:{resolved_port}/mcp"}
-        existing_data["mcpServers"] = servers
+        if profile.config_format == "toml":
+            existing_text = target.read_text(encoding="utf-8") if target.exists() else ""
+            merged_toml = _merge_codex_toml_config(existing_text, url)
+            _atomic_write_text(target, merged_toml)
+        else:
+            existing_data: Dict[str, Any] = {}
+            if target.exists():
+                raw_text = target.read_text(encoding="utf-8").strip()
+                if raw_text:
+                    existing_data = _parse_json_or_jsonc(raw_text, target)
 
-        _atomic_write_text(target, json.dumps(existing_data, indent=2, ensure_ascii=False) + "\n")
-        logger.info(f"[MCP] Updated Antigravity MCP config at {target}")
+            servers = existing_data.get(profile.root_key)
+            if servers is None:
+                servers = {}
+            elif not isinstance(servers, dict):
+                raise ValueError(f"'{profile.root_key}' in {target} must be a JSON object")
+
+            servers = dict(servers)
+            servers[MCP_SERVER_NAME] = _build_client_server_entry(profile.key, url)
+            existing_data[profile.root_key] = servers
+
+            _atomic_write_text(target, json.dumps(existing_data, indent=2, ensure_ascii=False) + "\n")
+
+        logger.info(f"[MCP] Updated {profile.display_name} MCP config at {target}")
         return str(target)
 
-    def install_antigravity_skill(self, skill_path: Optional[str | Path] = None) -> str:
-        target = (
-            Path(skill_path)
-            if skill_path is not None
-            else Path.home() / ".gemini" / "config" / "skills" / "manga-translate" / "SKILL.md"
-        )
-        template_path = Path(self.root_dir) / "manga_translator" / "mcp" / "antigravity_skill_template.md"
+    def install_skill(
+        self,
+        target: str = "agents_standard",
+        skill_path: Optional[str | Path] = None,
+    ) -> str:
+        if skill_path is not None:
+            dest = Path(skill_path)
+        elif str(target or "").strip() == "agents_standard":
+            dest = Path.home() / Path(AGENTS_STANDARD_SKILL_RELPATH)
+        else:
+            profile = self.get_mcp_client_profile(target)
+            dest = profile.default_skill_path()
+
+        template_path = Path(self.root_dir) / "manga_translator" / "mcp" / "skill_template.md"
         if not template_path.exists():
             import manga_translator.mcp as mcp_pkg
 
-            template_path = Path(mcp_pkg.__file__).resolve().parent / "antigravity_skill_template.md"
+            template_path = Path(mcp_pkg.__file__).resolve().parent / "skill_template.md"
         content = template_path.read_text(encoding="utf-8")
-        _atomic_write_text(target, content)
-        logger.info(f"[MCP] Installed Antigravity skill at {target}")
-        return str(target)
+        _atomic_write_text(dest, content)
+        logger.info(f"[MCP] Installed manga-translate skill at {dest}")
+        return str(dest)
 
     def get_log_directory(self) -> str:
         for handler in reversed(logging.getLogger().handlers):
