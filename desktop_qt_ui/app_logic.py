@@ -162,7 +162,7 @@ class MainAppLogic(QObject):
         self._task_failure_keys: set[str] = set()
 
         self._source_snapshot_lock = threading.RLock()
-        self._marshaled_gui_snapshot: Optional[Dict[str, Any]] = None
+        self._cached_gui_snapshot: Optional[Dict[str, Any]] = None
         self.source_files: List[str] = [] # Holds both files and folders
         self._source_folders: Dict[str, str] = {}
         self.file_to_folder_map: Dict[str, Optional[str]] = {} # 记录文件来自哪个文件夹
@@ -171,6 +171,7 @@ class MainAppLogic(QObject):
         self.excluded_files: set = set() # 记录从已添加文件夹中排除的单文件/压缩包
 
         self.app_config = AppConfig()
+        self._refresh_gui_state_snapshot()
 
     @staticmethod
     def _path_key(path: str) -> str:
@@ -1065,6 +1066,7 @@ class MainAppLogic(QObject):
                 self.state_manager.set_current_config(config)
                 self.state_manager.set_state(AppStateKey.CONFIG_PATH, config_path)
                 self.logger.info('Config file loaded successfully: {path}'.format(path=config_path))
+                self._refresh_gui_state_snapshot()
                 self.config_loaded.emit(config.model_dump())
                 if config.app.last_output_path:
                     self.output_path_updated.emit(config.app.last_output_path)
@@ -1092,6 +1094,7 @@ class MainAppLogic(QObject):
             self.config_service.update_config(config_updates)
             updated_config = self.config_service.get_config()
             self.state_manager.set_current_config(updated_config)
+            self._refresh_gui_state_snapshot()
             self.logger.info('Config updated successfully')
             return True
         except Exception as e:
@@ -1112,6 +1115,8 @@ class MainAppLogic(QObject):
             
             self.config_service.set_config(config_obj)
             self.config_service.save_config_file()
+            if full_key == 'app.last_output_path':
+                self._refresh_gui_state_snapshot()
             self.logger.debug("Config saved: '{config_key}' = '{value}'".format(config_key=full_key, value=value))
 
             # 当翻译器设置被更改时，直接更新翻译服务的内部状态
@@ -1639,6 +1644,8 @@ class MainAppLogic(QObject):
                     self.file_to_folder_map.pop(removed_path, None)
             self.source_files = sources
             self._source_folders = folder_by_key
+            if hasattr(self, "_refresh_gui_state_snapshot"):
+                self._refresh_gui_state_snapshot()
             new_paths = [path for path in sources if self._path_key(path) not in original_keys]
             if new_paths:
                 self.logger.info(f"Added {len(new_paths)} files/folders to the list.")
@@ -1707,6 +1714,8 @@ class MainAppLogic(QObject):
                         exclusions.difference_update({
                             item for item in exclusions if self._path_is_within(item, matched_path)
                         })
+                if hasattr(self, "_refresh_gui_state_snapshot"):
+                    self._refresh_gui_state_snapshot()
                 self.file_removed.emit(file_path)
                 self.file_sources_changed.emit()
                 return
@@ -1727,6 +1736,8 @@ class MainAppLogic(QObject):
                 else:
                     self.excluded_files.add(norm_file_path)
                     self.file_to_folder_map.pop(norm_file_path, None)
+                if hasattr(self, "_refresh_gui_state_snapshot"):
+                    self._refresh_gui_state_snapshot()
                 self.file_removed.emit(file_path)
                 self.file_sources_changed.emit()
                 return
@@ -1744,6 +1755,8 @@ class MainAppLogic(QObject):
                 ]
                 for path in grouped_files:
                     self.file_to_folder_map.pop(path, None)
+                if hasattr(self, "_refresh_gui_state_snapshot"):
+                    self._refresh_gui_state_snapshot()
                 self.file_removed.emit(file_path)
                 self.file_sources_changed.emit()
                 return
@@ -1765,6 +1778,8 @@ class MainAppLogic(QObject):
         self.file_to_folder_map.clear()  # 清空文件夹映射
         self.excluded_subfolders.clear()  # 清空排除列表
         self.excluded_files.clear()
+        if hasattr(self, "_refresh_gui_state_snapshot"):
+            self._refresh_gui_state_snapshot()
         self.files_cleared.emit()
         self.file_sources_changed.emit()
         self.logger.info("File list cleared by user.")
@@ -1833,6 +1848,7 @@ class MainAppLogic(QObject):
         self.archive_to_temp_map = archive_map
         self.excluded_subfolders = excluded_subfolders
         self.excluded_files = excluded_files
+        self._refresh_gui_state_snapshot()
         
         # 检查文件列表是否为空
         if not resolved_files:
@@ -2120,7 +2136,7 @@ class MainAppLogic(QObject):
                 return True
         return False
 
-    def _build_gui_state_snapshot(self) -> Dict[str, Any]:
+    def _refresh_gui_state_snapshot(self) -> Dict[str, Any]:
         with self._source_snapshot_lock:
             config = self.config_service.get_config()
             snapshot = {
@@ -2129,25 +2145,18 @@ class MainAppLogic(QObject):
                 "excluded_files": frozenset(self.excluded_files),
                 "output_dir": str(getattr(config.app, "last_output_path", "") or ""),
             }
-            self._marshaled_gui_snapshot = snapshot
+            self._cached_gui_snapshot = snapshot
             return snapshot
-
-    @pyqtSlot()
-    def _capture_gui_state_snapshot_slot(self) -> None:
-        self._build_gui_state_snapshot()
 
     def get_gui_state_snapshot(self) -> Dict[str, Any]:
         """Thread-safe immutable snapshot of GUI file list and output directory."""
         app = QCoreApplication.instance()
-        if app is not None and QThread.currentThread() != self.thread() and self.thread().loopLevel() > 0:
-            QMetaObject.invokeMethod(
-                self,
-                "_capture_gui_state_snapshot_slot",
-                Qt.ConnectionType.BlockingQueuedConnection,
-            )
-            with self._source_snapshot_lock:
-                return dict(self._marshaled_gui_snapshot or {})
-        return self._build_gui_state_snapshot()
+        if app is None or QThread.currentThread() == self.thread():
+            return dict(self._refresh_gui_state_snapshot())
+        with self._source_snapshot_lock:
+            if self._cached_gui_snapshot is None:
+                return dict(self._refresh_gui_state_snapshot())
+            return dict(self._cached_gui_snapshot)
 
     def expand_inputs_for_mcp(
         self,
@@ -2307,6 +2316,7 @@ class MainAppLogic(QObject):
             
             # Get the already loaded config
             config = self.config_service.get_config()
+            self._refresh_gui_state_snapshot()
 
             # Manually emit the signal to populate UI options
             self.config_loaded.emit(config.model_dump())

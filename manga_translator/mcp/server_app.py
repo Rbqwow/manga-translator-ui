@@ -21,6 +21,14 @@ from .protocol_models import TranslationSubmissionItem
 logger = logging.getLogger("manga_translator.mcp")
 
 
+def format_mcp_endpoint_url(host: str, port: int) -> str:
+    """Format the MCP Streamable HTTP endpoint URL, bracketing bare IPv6 hosts."""
+    clean_host = str(host or "127.0.0.1").strip()
+    if ":" in clean_host and not (clean_host.startswith("[") and clean_host.endswith("]")):
+        return f"http://[{clean_host}]:{int(port)}/mcp"
+    return f"http://{clean_host}:{int(port)}/mcp"
+
+
 def _encode_inline_images(inline_images: List[tuple[bytes, str]]) -> List[types.ImageContent]:
     return [
         types.ImageContent(
@@ -297,7 +305,7 @@ class McpHttpServer:
     @property
     def endpoint_url(self) -> str:
         with self._lock:
-            return f"http://{self._host}:{self._port}/mcp"
+            return format_mcp_endpoint_url(self._host, self._port)
 
     @property
     def last_error(self) -> Optional[str]:
@@ -345,6 +353,14 @@ class McpHttpServer:
                 finally:
                     ready_event.set()
                     try:
+                        pending = [task for task in asyncio.all_tasks(loop) if not task.done()]
+                        for task in pending:
+                            task.cancel()
+                        if pending:
+                            loop.run_until_complete(asyncio.wait(pending, timeout=2.0))
+                    except Exception:
+                        pass
+                    try:
                         loop.run_until_complete(loop.shutdown_asyncgens())
                     except Exception:
                         pass
@@ -370,7 +386,7 @@ class McpHttpServer:
                 self._cleanup_stopped_refs_locked()
                 raise RuntimeError(self._last_error)
             self._port = server.bound_port
-            url = f"http://{self._host}:{self._port}/mcp"
+            url = format_mcp_endpoint_url(self._host, self._port)
 
         logger.info(f"[MCP] Streamable HTTP server listening on {url}")
         return url

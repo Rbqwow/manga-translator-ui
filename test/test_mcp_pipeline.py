@@ -1054,3 +1054,297 @@ def test_decoupled_file_path_hints_and_preview_note(tmp_path):
     assert hints_budget
     assert all("read_file" not in h for h in hints_budget)
     assert any("local file/image viewing tool" in h for h in hints_budget)
+
+
+def test_completed_job_closes_preview_pool_and_prunes_jobs(tmp_path):
+    import threading
+
+    out_dir = tmp_path / "out"
+    img_path = _make_png(tmp_path / "p1.png")
+    factory, _calls = _make_stub_factory({"p1.png": [_make_block("テスト")]})
+    cfg = _base_config(str(out_dir))
+
+    mgr = McpJobManager(root_dir=str(_bootstrap.ROOT), get_config=lambda: cfg, translator_factory=factory)
+    try:
+        job_resp = mgr.create_translation_job(inputs=[img_path], output_dir=str(out_dir))
+        internal_job = mgr._jobs[job_resp.job_id]
+        batch, _ = mgr.next_translation_batch(job_resp.job_id)
+        sub, _ = mgr.submit_translation_batch(
+            job_resp.job_id,
+            batch.batch_id,
+            [{"id": 1, "translation": "测试"}],
+            return_next=True,
+        )
+        assert sub.done is True
+
+        # Wait briefly for async finish hook to prune _jobs and reap preview worker threads.
+        deadline = time.monotonic() + 3.0
+        while time.monotonic() < deadline:
+            preview_threads = [
+                t for t in threading.enumerate()
+                if t.is_alive() and t.name.startswith(f"mcp-preview-{job_resp.job_id[:6]}")
+            ]
+            if not preview_threads and job_resp.job_id not in mgr._jobs:
+                break
+            time.sleep(0.02)
+
+        assert internal_job._preview_pool is None
+        assert all(p.ctx is None and p.preview_cache is None for p in internal_job.pages)
+        assert job_resp.job_id not in mgr._jobs
+        lingering = [
+            t for t in threading.enumerate()
+            if t.is_alive() and t.name.startswith(f"mcp-preview-{job_resp.job_id[:6]}")
+        ]
+        assert lingering == []
+
+        # Completed job summary remains queryable via get_job_status.
+        status = mgr.get_job_status(job_resp.job_id)
+        assert status["status"] == "completed"
+        assert status["rendered_pages"] == 1
+    finally:
+        mgr.shutdown()
+
+
+def test_concurrent_create_translation_job_enforces_gpu_mutex(tmp_path):
+    import threading
+
+    out_dir = tmp_path / "out"
+    img_path = _make_png(tmp_path / "p1.png")
+    factory, _calls = _make_stub_factory({"p1.png": [_make_block("并发")]})
+    cfg = _base_config(str(out_dir))
+
+    entered_expand = threading.Event()
+    release_expand = threading.Event()
+
+    def slow_expander(sources, ex_folders, ex_files, output_base, overwrite_extract):
+        entered_expand.set()
+        release_expand.wait(timeout=3.0)
+        return list(sources), {s: None for s in sources}, {}
+
+    mgr = McpJobManager(
+        root_dir=str(_bootstrap.ROOT),
+        get_config=lambda: cfg,
+        file_expander=slow_expander,
+        translator_factory=factory,
+    )
+    try:
+        results = []
+        errors = []
+
+        def _create():
+            try:
+                results.append(mgr.create_translation_job(inputs=[img_path], output_dir=str(out_dir)))
+            except Exception as exc:
+                errors.append(exc)
+
+        t1 = threading.Thread(target=_create)
+        t1.start()
+        assert entered_expand.wait(timeout=2.0)
+        assert mgr.has_active_job() is True
+
+        t2 = threading.Thread(target=_create)
+        t2.start()
+        t2.join(timeout=2.0)
+
+        release_expand.set()
+        t1.join(timeout=5.0)
+
+        assert len(results) == 1
+        assert len(errors) == 1
+        assert isinstance(errors[0], RuntimeError)
+    finally:
+        mgr.shutdown()
+
+
+def test_retranslate_json_defaults_to_overwrite_when_not_explicitly_set(tmp_path):
+    img_path = _make_png(tmp_path / "p2.png")
+    out_dir = tmp_path / "out"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    _make_png(out_dir / "p2.png")
+
+    p2_json = Path(get_json_path(img_path, create_dir=True))
+    p2_json.write_text(
+        json.dumps(
+            {
+                os.path.abspath(img_path): {
+                    "regions": [
+                        {
+                            "lines": [[[10, 10], [80, 10], [80, 30], [10, 30]]],
+                            "texts": ["原文"],
+                            "text": "原文",
+                            "translation": "旧译文",
+                            "prob": 0.9,
+                        }
+                    ],
+                    "original_width": 240,
+                    "original_height": 320,
+                }
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    factory, calls = _make_stub_factory({"p2.png": [_make_block("原文")]})
+    cfg = _base_config(str(out_dir))
+    cfg["cli"]["overwrite"] = False
+
+    mgr = McpJobManager(root_dir=str(_bootstrap.ROOT), get_config=lambda: cfg, translator_factory=factory)
+    try:
+        # Default overwrite=None with retranslate_json=True must NOT skip existing output image.
+        job = mgr.create_translation_job(
+            inputs=[img_path],
+            output_dir=str(out_dir),
+            retranslate_json=True,
+        )
+        assert job.pending_pages == 1
+        assert job.skipped_pages == 0
+        batch, _ = mgr.next_translation_batch(job.job_id)
+        sub, _ = mgr.submit_translation_batch(
+            job.job_id,
+            batch.batch_id,
+            [{"id": 1, "translation": "新译文"}],
+            return_next=True,
+        )
+        assert sub.done is True
+        assert calls["detect"] == []
+
+        # Explicit overwrite=False is still respected.
+        job_skip = mgr.create_translation_job(
+            inputs=[img_path],
+            output_dir=str(out_dir),
+            retranslate_json=True,
+            overwrite=False,
+        )
+        assert job_skip.pending_pages == 0
+        assert job_skip.skipped_pages == 1
+    finally:
+        mgr.shutdown()
+
+
+def test_finalizing_render_timeout_returns_waiting_not_done(tmp_path):
+    import threading
+
+    out_dir = tmp_path / "out"
+    img_path = _make_png(tmp_path / "p1.png")
+    render_entered = threading.Event()
+    allow_render_finish = threading.Event()
+
+    base_factory, _calls = _make_stub_factory({"p1.png": [_make_block("慢渲染")]})
+
+    def slow_render_factory(params):
+        translator = base_factory(params)
+        orig_render = translator._run_text_rendering
+
+        async def _slow_render(config, ctx):
+            render_entered.set()
+            allow_render_finish.wait(timeout=5.0)
+            return await orig_render(config, ctx)
+
+        translator._run_text_rendering = _slow_render
+        return translator
+
+    cfg = _base_config(str(out_dir))
+    mgr = McpJobManager(root_dir=str(_bootstrap.ROOT), get_config=lambda: cfg, translator_factory=slow_render_factory)
+    try:
+        job = mgr.create_translation_job(inputs=[img_path], output_dir=str(out_dir))
+        internal_job = mgr._jobs[job.job_id]
+        internal_job._finalize_wait_timeout = 0.08
+
+        batch, _ = mgr.next_translation_batch(job.job_id)
+        sub, _ = mgr.submit_translation_batch(
+            job.job_id,
+            batch.batch_id,
+            [{"id": 1, "translation": "慢渲染译文"}],
+            return_next=True,
+        )
+        assert sub.status == "accepted"
+        assert sub.done is False
+        assert sub.next_batch is not None
+        assert sub.next_batch.done is False
+        assert sub.next_batch.waiting is True
+        assert sub.next_batch.waiting_reason == "finalizing_render"
+
+        allow_render_finish.set()
+        internal_job._finalize_wait_timeout = 5.0
+        final_payload, _ = mgr.next_translation_batch(job.job_id)
+        assert final_payload.done is True
+        assert final_payload.summary["rendered_pages"] == 1
+    finally:
+        allow_render_finish.set()
+        mgr.shutdown()
+
+
+def test_p2_inpaint_failure_during_lease_releases_ctx_and_converges_batch(tmp_path):
+    out_dir = tmp_path / "out"
+    img_path = _make_png(tmp_path / "p1.png")
+    base_factory, _calls = _make_stub_factory({"p1.png": [_make_block("预修失败")]})
+
+    def failing_inpaint_factory(params):
+        translator = base_factory(params)
+
+        async def _boom_inpaint(config, ctx):
+            raise RuntimeError("simulated P2 inpaint OOM")
+
+        translator._run_inpainting = _boom_inpaint
+        return translator
+
+    cfg = _base_config(str(out_dir))
+    cfg["cli"]["batch_concurrent"] = True
+    mgr = McpJobManager(
+        root_dir=str(_bootstrap.ROOT),
+        get_config=lambda: cfg,
+        translator_factory=failing_inpaint_factory,
+    )
+    try:
+        job = mgr.create_translation_job(inputs=[img_path], output_dir=str(out_dir))
+        internal_job = mgr._jobs[job.job_id]
+        batch, _ = mgr.next_translation_batch(job.job_id)
+
+        # Wait for speculative P2 inpaint to fail while batch is still LEASED.
+        deadline = time.monotonic() + 3.0
+        while time.monotonic() < deadline and not internal_job.pages[0].failed:
+            time.sleep(0.02)
+        assert internal_job.pages[0].failed is True
+
+        sub, _ = mgr.submit_translation_batch(
+            job.job_id,
+            batch.batch_id,
+            [{"id": 1, "translation": "译文"}],
+            return_next=True,
+        )
+        assert sub.done is True
+        assert internal_job.pages[0].ctx is None
+        assert internal_job._batches[batch.batch_id].status == "FAILED"
+        assert internal_job.status == "completed_with_errors"
+    finally:
+        mgr.shutdown()
+
+
+def test_ipv6_endpoint_formatting_and_codex_inline_table_error(tmp_path):
+    from manga_translator.mcp.server_app import format_mcp_endpoint_url
+    from services.mcp_service import _merge_codex_toml_config
+
+    assert format_mcp_endpoint_url("::1", 8765) == "http://[::1]:8765/mcp"
+    assert format_mcp_endpoint_url("[::1]", 8765) == "http://[::1]:8765/mcp"
+    assert format_mcp_endpoint_url("127.0.0.1", 8765) == "http://127.0.0.1:8765/mcp"
+
+    class _FakeConfigService:
+        def get_config(self):
+            return SimpleNamespace(
+                mcp=SimpleNamespace(host="::1", port=8765, auto_start=False),
+                app=SimpleNamespace(last_output_path=str(tmp_path)),
+            )
+
+    svc = McpService(root_dir=str(_bootstrap.ROOT), config_service=_FakeConfigService())
+    try:
+        assert svc.endpoint_url() == "http://[::1]:8765/mcp"
+        snippet = json.loads(svc.get_mcp_client_config_snippet("generic", port=9001))
+        assert snippet["mcpServers"]["manga-translator"]["url"] == "http://[::1]:9001/mcp"
+    finally:
+        svc.shutdown()
+
+    inline_toml = 'mcp_servers = { other = { command = "npx" } }\n'
+    with pytest.raises(ValueError, match="inline table"):
+        _merge_codex_toml_config(inline_toml, "http://127.0.0.1:8765/mcp")
+

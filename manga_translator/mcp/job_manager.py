@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from collections import OrderedDict
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass, field
 import logging
@@ -401,10 +402,12 @@ class McpTranslationJob:
         self._preview_pool: Optional[ThreadPoolExecutor] = None
         self._gpu_thread: Optional[threading.Thread] = None
         self._render_thread: Optional[threading.Thread] = None
+        self._finalize_wait_timeout: float = 120.0
         self._finalized = False
 
         if not self.pages:
-            self._finalize_job_locked()
+            with self._cond:
+                self._finalize_job_locked()
 
     def start(self) -> None:
         if not self.pages:
@@ -529,14 +532,36 @@ class McpTranslationJob:
             self.status = "failed" if self.error and not self.output_paths else "completed_with_errors"
         else:
             self.status = "completed"
+
+        pool = self._preview_pool
+        self._preview_pool = None
+        for p in self.pages:
+            if p.ctx is not None:
+                try:
+                    self.translator._cleanup_context_memory(p.ctx, keep_result=False)
+                except Exception:
+                    pass
+                p.ctx = None
+            p.preview_cache = None
+            p.preview_ready.set()
+
         self._cleanup_temp_artifacts()
         self._finished_event.set()
         self._cond.notify_all()
-        if self._on_finished is not None:
-            callback = self._on_finished
+
+        callback = self._on_finished
+        if pool is not None or callback is not None:
+            def _finish_cleanup() -> None:
+                if pool is not None:
+                    try:
+                        pool.shutdown(wait=False, cancel_futures=True)
+                    except Exception:
+                        logger.debug("Error shutting down MCP preview pool", exc_info=True)
+                if callback is not None:
+                    callback(self)
+
             threading.Thread(
-                target=callback,
-                args=(self,),
+                target=_finish_cleanup,
                 name=f"mcp-finish-{self.job_id[:6]}",
                 daemon=True,
             ).start()
@@ -840,6 +865,18 @@ class McpTranslationJob:
                                     self.translator._cleanup_context_memory(page.ctx, keep_result=False)
                                 except Exception:
                                     pass
+                                page.ctx = None
+                            if page.committed and page.batch_id and page.batch_id in self._batches:
+                                batch = self._batches[page.batch_id]
+                                if all(self.pages[i].rendered or self.pages[i].failed for i in batch.page_indices):
+                                    batch.status = (
+                                        "FAILED"
+                                        if all(self.pages[i].failed for i in batch.page_indices)
+                                        else "DONE"
+                                    )
+                                    self._delete_batch_preview_files(batch)
+                                if self._check_all_done_locked():
+                                    self._finalize_job_locked()
                             self._cond.notify_all()
                         self._emit_progress()
         finally:
@@ -1041,10 +1078,21 @@ class McpTranslationJob:
 
         if selected_batch is None:
             # Wait for GpuPriorityWorker & RenderWorker to finish saving final outputs.
-            self._finished_event.wait(timeout=120.0)
+            finished = self._finished_event.wait(timeout=self._finalize_wait_timeout)
             with self._cond:
-                summary = self._build_completion_summary_locked()
                 progress = self._progress_summary_locked()
+                if not finished:
+                    return (
+                        BatchPayload(
+                            done=False,
+                            waiting=True,
+                            waiting_reason="finalizing_render",
+                            job_id=self.job_id,
+                            progress=progress,
+                        ),
+                        [],
+                    )
+                summary = self._build_completion_summary_locked()
             return (
                 BatchPayload(
                     done=True,
@@ -1366,6 +1414,15 @@ class McpTranslationJob:
                 for page in pages_in_batch:
                     page.committed = True
                     page.preview_cache = None  # Free preview bytes immediately after commit.
+                    if page.failed:
+                        if page.ctx is not None:
+                            try:
+                                self.translator._cleanup_context_memory(page.ctx, keep_result=False)
+                            except Exception:
+                                pass
+                            page.ctx = None
+                        continue
+
                     if getattr(page.ctx, "text_regions", None):
                         entries = self.translator._build_page_context_entries(page.ctx)
                         if entries:
@@ -1389,6 +1446,15 @@ class McpTranslationJob:
 
                 batch.status = "COMMITTED"
                 batch.leased_at = None
+                if all(self.pages[i].rendered or self.pages[i].failed for i in batch.page_indices):
+                    batch.status = (
+                        "FAILED"
+                        if all(self.pages[i].failed for i in batch.page_indices)
+                        else "DONE"
+                    )
+                    self._delete_batch_preview_files(batch)
+                    if self._check_all_done_locked():
+                        self._finalize_job_locked()
                 self._cond.notify_all()
         finally:
             with self._cond:
@@ -1425,7 +1491,11 @@ class McpTranslationJob:
                 message=(
                     "All batches completed and saved."
                     if next_payload.done
-                    else "Batch accepted; next batch attached."
+                    else (
+                        "Batch accepted; waiting for final render to complete."
+                        if next_payload.waiting and next_payload.waiting_reason == "finalizing_render"
+                        else "Batch accepted; next batch attached."
+                    )
                 ),
             ),
             inline_images,
@@ -1551,9 +1621,18 @@ class McpJobManager:
 
         self._lock = threading.RLock()
         self._jobs: Dict[str, McpTranslationJob] = {}
+        self._completed_job_summaries: OrderedDict[str, Dict[str, Any]] = OrderedDict()
+        self._max_completed_summaries: int = 20
+        self._creating_job: bool = False
         self._active_job_id: Optional[str] = None
         self._latest_job_id: Optional[str] = None
         self._idle_timer: Optional[threading.Timer] = None
+
+    def _record_completed_summary_locked(self, job_id: str, summary: Dict[str, Any]) -> None:
+        self._completed_job_summaries[job_id] = dict(summary)
+        self._completed_job_summaries.move_to_end(job_id)
+        while len(self._completed_job_summaries) > self._max_completed_summaries:
+            self._completed_job_summaries.popitem(last=False)
 
     def _cancel_idle_timer_locked(self) -> None:
         if self._idle_timer is not None:
@@ -1592,6 +1671,8 @@ class McpJobManager:
 
     def has_active_job(self) -> bool:
         with self._lock:
+            if self._creating_job:
+                return True
             if not self._active_job_id:
                 return False
             job = self._jobs.get(self._active_job_id)
@@ -1615,7 +1696,10 @@ class McpJobManager:
             if self._active_job_id == job.job_id:
                 self._active_job_id = None
             self._schedule_idle_cleanup_locked()
-            summary = job.get_status_dict()
+            status_snapshot = job.get_status_dict()
+            self._record_completed_summary_locked(job.job_id, status_snapshot)
+            self._jobs.pop(job.job_id, None)
+            summary = dict(status_snapshot)
             summary["completed_output_sources"] = dict(job.completed_output_sources)
 
         if self._on_job_finished is not None:
@@ -1658,7 +1742,10 @@ class McpJobManager:
         if gui_busy:
             busy_reason = "GUI translation task is currently running."
         elif mcp_busy:
-            busy_reason = f"MCP job {self._active_job_id} is currently running."
+            if self._active_job_id:
+                busy_reason = f"MCP job {self._active_job_id} is currently running."
+            else:
+                busy_reason = "An MCP translation job is currently being initialized."
 
         return WorkspaceInfoResponse(
             preset=str(app_cfg.get("current_preset") or "默认"),
@@ -1707,154 +1794,165 @@ class McpJobManager:
             if self._is_gui_busy and self._is_gui_busy():
                 raise RuntimeError("A GUI translation task is currently running. Wait for it to finish or stop it first.")
             if self.has_active_job():
+                if self._creating_job and not self._active_job_id:
+                    raise RuntimeError("Another MCP translation job is currently being initialized.")
                 raise RuntimeError(f"MCP translation job '{self._active_job_id}' is already running.")
+            self._creating_job = True
             self._cancel_idle_timer_locked()
 
-        cfg = self._get_config()
-        cfg_dict = cfg.model_dump() if hasattr(cfg, "model_dump") else dict(cfg or {})
-        conflicts = find_api_backend_conflicts(cfg_dict)
-        if conflicts:
-            details = "\n".join(f"- {c.section}.{c.setting} = {c.value}" for c in conflicts)
-            raise RuntimeError(
-                "0-API policy violation: switch the following settings to local models before starting an MCP job:\n"
-                + details
+        try:
+            cfg = self._get_config()
+            cfg_dict = cfg.model_dump() if hasattr(cfg, "model_dump") else dict(cfg or {})
+            conflicts = find_api_backend_conflicts(cfg_dict)
+            if conflicts:
+                details = "\n".join(f"- {c.section}.{c.setting} = {c.value}" for c in conflicts)
+                raise RuntimeError(
+                    "0-API policy violation: switch the following settings to local models before starting an MCP job:\n"
+                    + details
+                )
+
+            mcp_cfg = dict(cfg_dict.get("mcp") or {})
+            mode = translation_mode or str(mcp_cfg.get("translation_mode", "hq") or "hq")
+            allow_on_demand = (
+                bool(allow_on_demand_image)
+                if allow_on_demand_image is not None
+                else bool(mcp_cfg.get("allow_on_demand_image", True))
+            )
+            if mode == "hq":
+                effective_mode: EffectiveMode = "hq"
+            elif allow_on_demand:
+                effective_mode = "text_on_demand"
+            else:
+                effective_mode = "text_only"
+
+            gui_snap = self._get_gui_snapshot() if self._get_gui_snapshot else {}
+            use_gui = (
+                bool(use_gui_files)
+                if use_gui_files is not None
+                else bool(mcp_cfg.get("use_gui_files_by_default", True))
             )
 
-        mcp_cfg = dict(cfg_dict.get("mcp") or {})
-        mode = translation_mode or str(mcp_cfg.get("translation_mode", "hq") or "hq")
-        allow_on_demand = (
-            bool(allow_on_demand_image)
-            if allow_on_demand_image is not None
-            else bool(mcp_cfg.get("allow_on_demand_image", True))
-        )
-        if mode == "hq":
-            effective_mode: EffectiveMode = "hq"
-        elif allow_on_demand:
-            effective_mode = "text_on_demand"
-        else:
-            effective_mode = "text_only"
+            if inputs:
+                raw_sources = [str(p) for p in inputs if str(p).strip()]
+                excluded_subfolders: Sequence[str] = ()
+                excluded_files: Sequence[str] = ()
+            elif use_gui:
+                raw_sources = list(gui_snap.get("source_files") or ())
+                excluded_subfolders = list(gui_snap.get("excluded_subfolders") or ())
+                excluded_files = list(gui_snap.get("excluded_files") or ())
+            else:
+                raw_sources = []
+                excluded_subfolders = ()
+                excluded_files = ()
 
-        gui_snap = self._get_gui_snapshot() if self._get_gui_snapshot else {}
-        use_gui = (
-            bool(use_gui_files)
-            if use_gui_files is not None
-            else bool(mcp_cfg.get("use_gui_files_by_default", True))
-        )
+            if not raw_sources:
+                raise ValueError("No input files provided and GUI file list is empty.")
 
-        if inputs:
-            raw_sources = [str(p) for p in inputs if str(p).strip()]
-            excluded_subfolders: Sequence[str] = ()
-            excluded_files: Sequence[str] = ()
-        elif use_gui:
-            raw_sources = list(gui_snap.get("source_files") or ())
-            excluded_subfolders = list(gui_snap.get("excluded_subfolders") or ())
-            excluded_files = list(gui_snap.get("excluded_files") or ())
-        else:
-            raw_sources = []
-            excluded_subfolders = ()
-            excluded_files = ()
+            resolved_output_dir = str(
+                output_dir
+                if output_dir is not None and str(output_dir).strip()
+                else (gui_snap.get("output_dir") or (cfg_dict.get("app") or {}).get("last_output_path") or "")
+            ).strip()
+            save_to_source_dir = bool((cfg_dict.get("cli") or {}).get("save_to_source_dir", False))
+            if not save_to_source_dir:
+                if not resolved_output_dir:
+                    raise ValueError("Output directory is empty. Provide output_dir or set Output Directory in GUI.")
+                os.makedirs(resolved_output_dir, exist_ok=True)
 
-        if not raw_sources:
-            raise ValueError("No input files provided and GUI file list is empty.")
-
-        resolved_output_dir = str(
-            output_dir
-            if output_dir is not None and str(output_dir).strip()
-            else (gui_snap.get("output_dir") or (cfg_dict.get("app") or {}).get("last_output_path") or "")
-        ).strip()
-        save_to_source_dir = bool((cfg_dict.get("cli") or {}).get("save_to_source_dir", False))
-        if not save_to_source_dir:
-            if not resolved_output_dir:
-                raise ValueError("Output directory is empty. Provide output_dir or set Output Directory in GUI.")
-            os.makedirs(resolved_output_dir, exist_ok=True)
-
-        engine_config, translator_params = build_mcp_engine_config(
-            cfg_dict,
-            self.root_dir,
-            target_lang=target_lang,
-            overwrite=overwrite,
-            batch_size=batch_size,
-            context_size=context_size,
-        )
-
-        overwrite_flag = bool(engine_config.cli.overwrite)
-        if self._file_expander is not None:
-            resolved_files, file_to_folder_map, archive_to_temp_map = self._file_expander(
-                raw_sources,
-                excluded_subfolders,
-                excluded_files,
-                resolved_output_dir,
-                overwrite_flag,
-            )
-        else:
-            resolved_files, file_to_folder_map, archive_to_temp_map = _default_expand_inputs(
-                raw_sources,
-                excluded_subfolders,
-                excluded_files,
-                resolved_output_dir,
-                overwrite_flag,
+            effective_overwrite = True if (retranslate_json and overwrite is None) else overwrite
+            engine_config, translator_params = build_mcp_engine_config(
+                cfg_dict,
+                self.root_dir,
+                target_lang=target_lang,
+                overwrite=effective_overwrite,
+                batch_size=batch_size,
+                context_size=context_size,
             )
 
-        if not resolved_files:
-            raise ValueError("No supported image files found in the provided inputs.")
+            overwrite_flag = bool(engine_config.cli.overwrite)
+            if self._file_expander is not None:
+                resolved_files, file_to_folder_map, archive_to_temp_map = self._file_expander(
+                    raw_sources,
+                    excluded_subfolders,
+                    excluded_files,
+                    resolved_output_dir,
+                    overwrite_flag,
+                )
+            else:
+                resolved_files, file_to_folder_map, archive_to_temp_map = _default_expand_inputs(
+                    raw_sources,
+                    excluded_subfolders,
+                    excluded_files,
+                    resolved_output_dir,
+                    overwrite_flag,
+                )
 
-        input_folders = {
-            os.path.normpath(folder)
-            for folder in file_to_folder_map.values()
-            if folder
-        }
-        output_format = getattr(engine_config.cli, "format", None)
-        if not output_format or output_format == "不指定":
-            output_format = None
+            if not resolved_files:
+                raise ValueError("No supported image files found in the provided inputs.")
 
-        save_info = {
-            "output_folder": resolved_output_dir,
-            "format": output_format,
-            "overwrite": overwrite_flag,
-            "input_folders": input_folders,
-            "save_to_source_dir": save_to_source_dir,
-        }
+            input_folders = {
+                os.path.normpath(folder)
+                for folder in file_to_folder_map.values()
+                if folder
+            }
+            output_format = getattr(engine_config.cli, "format", None)
+            if not output_format or output_format == "不指定":
+                output_format = None
 
-        translator = self._translator_factory(translator_params)
-        guidelines, glossary, resolved_prompt_path = _run_coro_sync(
-            load_job_guidelines_and_glossary(translator, engine_config, self.root_dir)
-        )
+            save_info = {
+                "output_folder": resolved_output_dir,
+                "format": output_format,
+                "overwrite": overwrite_flag,
+                "input_folders": input_folders,
+                "save_to_source_dir": save_to_source_dir,
+            }
 
-        from manga_translator.utils.batch_skip import plan_batch_inputs
+            translator = self._translator_factory(translator_params)
+            guidelines, glossary, resolved_prompt_path = _run_coro_sync(
+                load_job_guidelines_and_glossary(translator, engine_config, self.root_dir)
+            )
 
-        items = [(fpath, engine_config) for fpath in resolved_files]
-        plan = plan_batch_inputs(translator, items, save_info)
+            from manga_translator.utils.batch_skip import plan_batch_inputs
 
-        job_id = uuid.uuid4().hex[:12]
-        preview_base = resolved_output_dir or os.path.dirname(resolved_files[0])
-        preview_dir = os.path.join(preview_base, "manga_translator_work", "mcp_preview", job_id)
+            items = [(fpath, engine_config) for fpath in resolved_files]
+            plan = plan_batch_inputs(translator, items, save_info)
 
-        job = McpTranslationJob(
-            job_id=job_id,
-            config=engine_config,
-            translator=translator,
-            mcp_settings=mcp_cfg,
-            save_info=save_info,
-            plan=plan,
-            archive_to_temp_map=archive_to_temp_map,
-            preview_dir=preview_dir,
-            guidelines=guidelines,
-            glossary=glossary,
-            prompt_file_path=resolved_prompt_path,
-            effective_mode=effective_mode,
-            retranslate_json=bool(retranslate_json),
-            on_progress=self._on_progress,
-            on_finished=self._handle_job_finished,
-        )
+            job_id = uuid.uuid4().hex[:12]
+            preview_base = resolved_output_dir or os.path.dirname(resolved_files[0])
+            preview_dir = os.path.join(preview_base, "manga_translator_work", "mcp_preview", job_id)
 
-        with self._lock:
-            self._jobs[job_id] = job
-            self._latest_job_id = job_id
+            job = McpTranslationJob(
+                job_id=job_id,
+                config=engine_config,
+                translator=translator,
+                mcp_settings=mcp_cfg,
+                save_info=save_info,
+                plan=plan,
+                archive_to_temp_map=archive_to_temp_map,
+                preview_dir=preview_dir,
+                guidelines=guidelines,
+                glossary=glossary,
+                prompt_file_path=resolved_prompt_path,
+                effective_mode=effective_mode,
+                retranslate_json=bool(retranslate_json),
+                on_progress=self._on_progress,
+                on_finished=self._handle_job_finished,
+            )
+
+            with self._lock:
+                self._latest_job_id = job_id
+                if job.pages:
+                    self._jobs[job_id] = job
+                    self._active_job_id = job_id
+                else:
+                    self._record_completed_summary_locked(job_id, job.get_status_dict())
+                self._creating_job = False
+
             if job.pages:
-                self._active_job_id = job_id
-
-        if job.pages:
-            job.start()
+                job.start()
+        finally:
+            with self._lock:
+                self._creating_job = False
 
         return CreateJobResponse(
             job_id=job_id,
@@ -1917,15 +2015,35 @@ class McpJobManager:
         return job.release_batch(batch_id)
 
     def get_job_status(self, job_id: Optional[str] = None) -> Dict[str, Any]:
-        job = self._get_job(job_id)
+        with self._lock:
+            target_id = job_id or self._active_job_id or self._latest_job_id
+            if not target_id:
+                raise KeyError(f"Translation job not found: {job_id or '<active>'}")
+            job = self._jobs.get(target_id)
+            if job is None:
+                cached = self._completed_job_summaries.get(target_id)
+                if cached is not None:
+                    return dict(cached)
+                raise KeyError(f"Translation job not found: {job_id or '<active>'}")
         return job.get_status_dict()
 
     def cancel_job(self, job_id: Optional[str] = None) -> Dict[str, Any]:
-        job = self._get_job(job_id)
+        with self._lock:
+            target_id = job_id or self._active_job_id or self._latest_job_id
+            if not target_id:
+                raise KeyError(f"Translation job not found: {job_id or '<active>'}")
+            job = self._jobs.get(target_id)
+            if job is None:
+                cached = self._completed_job_summaries.get(target_id)
+                if cached is not None:
+                    return dict(cached)
+                raise KeyError(f"Translation job not found: {job_id or '<active>'}")
         status = job.cancel()
         with self._lock:
             if self._active_job_id == job.job_id:
                 self._active_job_id = None
+            self._record_completed_summary_locked(job.job_id, status)
+            self._jobs.pop(job.job_id, None)
             self._schedule_idle_cleanup_locked()
         return status
 

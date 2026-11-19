@@ -15,7 +15,12 @@ from typing import Any, Callable, Dict, List, Literal, Optional
 
 from PyQt6.QtCore import QObject, pyqtSignal
 
-from manga_translator.mcp import McpHttpServer, McpJobManager, find_api_backend_conflicts
+from manga_translator.mcp import (
+    McpHttpServer,
+    McpJobManager,
+    find_api_backend_conflicts,
+    format_mcp_endpoint_url,
+)
 from services.log_service import subscribe_log_records, unsubscribe_log_records
 
 logger = logging.getLogger("manga_translator.mcp.service")
@@ -128,6 +133,7 @@ MCP_CLIENT_PROFILES: Dict[str, McpClientProfile] = {
 _CODEX_SECTION_RE = re.compile(
     r"""^\s*\[\s*mcp_servers\s*\.\s*(?:manga-translator|"manga-translator"|'manga-translator')\s*\]\s*(?:#.*)?$"""
 )
+_CODEX_INLINE_TABLE_RE = re.compile(r"^\s*mcp_servers\s*=\s*\{", re.MULTILINE)
 _TOML_TABLE_HEADER_RE = re.compile(r"^\s*\[")
 _TOML_URL_LINE_RE = re.compile(r"^(\s*)url\s*=")
 
@@ -207,6 +213,12 @@ def _merge_codex_toml_config(existing_text: str, url: str) -> str:
     try:
         validated = tomllib.loads(merged)
     except tomllib.TOMLDecodeError as exc:
+        if _CODEX_INLINE_TABLE_RE.search(existing_text):
+            raise ValueError(
+                "Detected inline table syntax 'mcp_servers = { ... }' in Codex config.toml, "
+                "which cannot be combined with a [mcp_servers.manga-translator] section. "
+                "Please rewrite mcp_servers as standard [mcp_servers.<name>] sections first."
+            ) from exc
         raise ValueError(f"Merged Codex TOML is invalid: {exc}") from exc
 
     servers = validated.get("mcp_servers")
@@ -247,6 +259,7 @@ class McpService(QObject):
     job_finished = pyqtSignal(dict)
     log_record_received = pyqtSignal(dict)
     api_conflicts_changed = pyqtSignal(list)
+    models_unload_finished = pyqtSignal(bool, str)
 
     def __init__(
         self,
@@ -380,7 +393,7 @@ class McpService(QObject):
         if self.http_server.is_running:
             return self.http_server.endpoint_url
         host, port = self._configured_host_port()
-        return f"http://{host}:{port}/mcp"
+        return format_mcp_endpoint_url(host, port)
 
     def is_server_running(self) -> bool:
         return self.http_server.is_running
@@ -395,7 +408,7 @@ class McpService(QObject):
         except Exception as exc:
             err = str(exc)
             logger.error(f"Failed to start MCP server: {err}")
-            url = f"http://{host}:{target_port}/mcp"
+            url = format_mcp_endpoint_url(host, target_port)
             self.server_state_changed.emit(False, url, err)
             return False, url, err
 
@@ -440,11 +453,22 @@ class McpService(QObject):
         def _worker() -> None:
             try:
                 result = self.job_manager.unload_models()
+                if not self._shutdown_done:
+                    try:
+                        self.models_unload_finished.emit(True, "")
+                    except RuntimeError:
+                        pass
                 if callable(on_done):
                     on_done(result)
             except Exception as exc:
+                err = str(exc)
+                if not self._shutdown_done:
+                    try:
+                        self.models_unload_finished.emit(False, err)
+                    except RuntimeError:
+                        pass
                 if callable(on_error):
-                    on_error(str(exc))
+                    on_error(err)
 
         threading.Thread(target=_worker, name="mcp-unload-models", daemon=True).start()
 
@@ -471,7 +495,7 @@ class McpService(QObject):
     def _resolved_endpoint_url(self, port: Optional[int] = None) -> str:
         host, cfg_port = self._configured_host_port()
         resolved_port = int(port) if port is not None else cfg_port
-        return f"http://{host}:{resolved_port}/mcp"
+        return format_mcp_endpoint_url(host, resolved_port)
 
     def get_mcp_client_config_snippet(
         self,

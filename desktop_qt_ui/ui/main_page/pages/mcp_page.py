@@ -594,6 +594,9 @@ class McpPagePanel(QWidget):
             self.mcp_service.api_conflicts_changed.connect(
                 self._on_api_conflicts_changed, type=Qt.ConnectionType.QueuedConnection
             )
+            self.mcp_service.models_unload_finished.connect(
+                self._on_models_unload_finished, type=Qt.ConnectionType.QueuedConnection
+            )
 
     # ------------------------------------------------------------------
     # Config synchronization & persistence
@@ -852,30 +855,15 @@ class McpPagePanel(QWidget):
         if self.mcp_service is None:
             return
         self.unload_models_button.setEnabled(False)
+        self.mcp_service.unload_models_async()
 
-        def _done(_res):
-            from PyQt6.QtCore import QTimer
-
-            QTimer.singleShot(
-                0,
-                lambda: (
-                    self.unload_models_button.setEnabled(True),
-                    self._show_toast(self._t("MCP Service"), self._t("MCP Models Unloaded")),
-                ),
-            )
-
-        def _err(msg: str):
-            from PyQt6.QtCore import QTimer
-
-            QTimer.singleShot(
-                0,
-                lambda: (
-                    self.unload_models_button.setEnabled(True),
-                    self._show_toast(self._t("Error"), msg, error=True),
-                ),
-            )
-
-        self.mcp_service.unload_models_async(on_done=_done, on_error=_err)
+    @pyqtSlot(bool, str)
+    def _on_models_unload_finished(self, ok: bool, error: str) -> None:
+        self.unload_models_button.setEnabled(True)
+        if ok:
+            self._show_toast(self._t("MCP Service"), self._t("MCP Models Unloaded"))
+        else:
+            self._show_toast(self._t("Error"), error or self._t("Error"), error=True)
 
     # ------------------------------------------------------------------
     # Status, conflicts & log updates

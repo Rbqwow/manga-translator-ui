@@ -18,7 +18,7 @@ from .protocol_models import (
     ValidationErrorItem,
     WorkspaceInfoResponse,
 )
-from .server_app import McpHttpServer, create_fastmcp_server
+from .server_app import McpHttpServer, create_fastmcp_server, format_mcp_endpoint_url
 
 __all__ = [
     "ApiConflictItem",
@@ -37,4 +37,5 @@ __all__ = [
     "WorkspaceInfoResponse",
     "create_fastmcp_server",
     "find_api_backend_conflicts",
+    "format_mcp_endpoint_url",
 ]
