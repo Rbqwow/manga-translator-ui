@@ -175,5 +175,21 @@
     "export_editable_psd": false,
     "psd_script_only": false,
     "replace_translation": false
+  },
+  "mcp": {
+    "auto_start": false,
+    "host": "127.0.0.1",
+    "port": 8765,
+    "translation_mode": "hq",
+    "allow_on_demand_image": true,
+    "image_delivery": "auto",
+    "inline_image_budget_mb": 2.0,
+    "preview_max_size": 1024,
+    "preview_format": "jpeg",
+    "preview_quality": 82,
+    "max_parallel_batches": 1,
+    "lease_timeout_seconds": 180,
+    "models_idle_ttl": 300,
+    "use_gui_files_by_default": true
   }
 }

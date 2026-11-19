@@ -24,6 +24,7 @@ INPAINTED_SUBDIR = "inpainted"
 PAINT_OVERLAY_SUBDIR = "paint_overlay"  # 彩色画笔涂鸦图层目录
 TRANSLATED_IMAGES_SUBDIR = "translated_images"  # 已翻译图片目录（替换翻译模式使用）
 EDITOR_BASE_SUBDIR = "editor_base"
+MCP_PREVIEW_SUBDIR = "mcp_preview"
 WORK_DIR_RESERVED_NAMES = {
     JSON_SUBDIR,
     TRANSLATIONS_SUBDIR,
@@ -33,6 +34,7 @@ WORK_DIR_RESERVED_NAMES = {
     PAINT_OVERLAY_SUBDIR,
     TRANSLATED_IMAGES_SUBDIR,
     EDITOR_BASE_SUBDIR,
+    MCP_PREVIEW_SUBDIR,
 }
 
 

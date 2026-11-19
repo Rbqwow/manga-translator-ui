@@ -168,3 +168,78 @@ def test_inpaint_dispatch_resolves_device_preference_in_job(
     assert calls == [expected]
     assert probe.call_count == int(requested == "cuda")
     assert np.array_equal(result, image)
+
+
+def test_mcp_cold_startup_defers_heavy_and_asgi_imports():
+    """P2-13: McpService construction and cold queries must not eagerly import torch/mcp/uvicorn/starlette/cv2."""
+    import ast
+    from pathlib import Path
+
+    res1 = subprocess.run([sys.executable, "-c", """
+import sys
+import desktop_qt_ui.main
+import desktop_qt_ui.services as services
+svc = services.McpService(root_dir='.')
+assert svc._http_server is None
+assert svc._job_manager is None
+assert svc.is_server_running() is False
+assert svc.has_active_job() is False
+assert svc.get_current_job_status() is None
+assert svc.endpoint_url().endswith('/mcp')
+svc.shutdown()
+assert svc._http_server is None
+assert svc._job_manager is None
+loaded = {'torch', 'mcp', 'uvicorn', 'starlette'} & set(sys.modules)
+assert loaded == set(), f"Unexpected eager imports: {sorted(loaded)}"
+"""], cwd=_bootstrap.ROOT, capture_output=True, text=True, check=False, timeout=45)
+    assert res1.returncode == 0, f"stdout:\n{res1.stdout}\nstderr:\n{res1.stderr}"
+
+    res2 = subprocess.run([sys.executable, "-c", """
+import pathlib
+import sys
+import types
+
+root = pathlib.Path('.').resolve()
+mt = types.ModuleType('manga_translator')
+mt.__path__ = [str(root / 'manga_translator')]
+sys.modules['manga_translator'] = mt
+
+sv = types.ModuleType('services')
+sv.__path__ = [str(root / 'desktop_qt_ui' / 'services')]
+sys.modules['services'] = sv
+
+sys.path.insert(0, str(root / 'desktop_qt_ui'))
+
+import manga_translator.mcp
+from services.mcp_service import McpService
+svc = McpService(root_dir='.')
+assert svc._http_server is None
+assert svc._job_manager is None
+assert svc.is_server_running() is False
+assert svc.has_active_job() is False
+assert svc.get_current_job_status() is None
+assert svc.endpoint_url().endswith('/mcp')
+svc.shutdown()
+assert svc._http_server is None
+assert svc._job_manager is None
+heavy = {'torch', 'cv2', 'numpy', 'PIL', 'mcp', 'uvicorn', 'starlette'}
+loaded = heavy & set(sys.modules)
+assert loaded == set(), f"Unexpected eager imports in mcp_service: {sorted(loaded)}"
+"""], cwd=_bootstrap.ROOT, capture_output=True, text=True, check=False, timeout=45)
+    assert res2.returncode == 0, f"stdout:\n{res2.stdout}\nstderr:\n{res2.stderr}"
+
+    forbidden = {"cv2", "numpy", "PIL", "torch", "mcp", "uvicorn", "starlette"}
+    targets = [
+        Path(_bootstrap.ROOT) / "manga_translator" / "mcp" / "batch_adapter.py",
+        Path(_bootstrap.ROOT) / "manga_translator" / "mcp" / "__init__.py",
+        Path(_bootstrap.ROOT) / "manga_translator" / "mcp" / "job_manager.py",
+        Path(_bootstrap.ROOT) / "desktop_qt_ui" / "services" / "mcp_service.py",
+    ]
+    for path in targets:
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        for node in tree.body:
+            if isinstance(node, ast.Import):
+                for alias in node.names:
+                    assert alias.name.split(".")[0] not in forbidden, f"{path}: top-level import {alias.name}"
+            elif isinstance(node, ast.ImportFrom) and node.module:
+                assert node.module.split(".")[0] not in forbidden, f"{path}: top-level from {node.module}"

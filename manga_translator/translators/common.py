@@ -2125,7 +2125,7 @@ class CommonTranslator(InfererModule):
             if region_count >= 2:
                 needs_check_count += 1
                 # 检查是否包含BR标记
-                has_br = bool(re.search(r'(\[BR\]|【BR】|<br>)', translation, flags=re.IGNORECASE))
+                has_br = bool(re.search(r'(\[BR\]|【BR】|<br\s*/?>)', translation, flags=re.IGNORECASE))
                 if not has_br:
                     missing_br_count += 1
                     missing_indices.append(idx + 1)
@@ -3423,32 +3423,44 @@ def _merge_auto_glossary_aliases(
     return modified
 
 
-def merge_glossary_to_file(file_path: str, new_terms: List[Dict[str, Any]]) -> bool:
-    """Serialize the entire read/merge/write with other workers and readers."""
+def merge_glossary_to_file_with_delta(
+    file_path: str, new_terms: List[Dict[str, Any]]
+) -> tuple[bool, List[Dict[str, Any]]]:
+    """Serialize the entire read/merge/write and return (modified, merged_terms)."""
     from .prompt_loader import prompt_file_lock
 
     with prompt_file_lock:
-        return _merge_glossary_to_file(file_path, new_terms)
+        return _merge_glossary_to_file_impl(file_path, new_terms)
+
+
+def merge_glossary_to_file(file_path: str, new_terms: List[Dict[str, Any]]) -> bool:
+    """Serialize the entire read/merge/write with other workers and readers."""
+    modified, _merged_terms = merge_glossary_to_file_with_delta(file_path, new_terms)
+    return modified
 
 
 def _merge_glossary_to_file(file_path: str, new_terms: List[Dict[str, Any]]) -> bool:
+    modified, _merged_terms = _merge_glossary_to_file_impl(file_path, new_terms)
+    return modified
+
+
+def _merge_glossary_to_file_impl(
+    file_path: str, new_terms: List[Dict[str, Any]]
+) -> tuple[bool, List[Dict[str, Any]]]:
     """
-    将新提取的术语合并到提示词文件中
-    Merge newly extracted terms into the prompt file
-    
+    将新提取的术语合并到提示词文件中，并返回是否修改及实际合并的标准化术语列表。
+    Merge newly extracted terms into the prompt file and return (modified, merged_terms).
+
     支持 JSON (.json) 和 YAML (.yaml/.yml) 格式，根据文件扩展名自动选择。
-    
-    Args:
-        file_path: 提示词文件路径
-        new_terms: 统一别名结构的新增或追加增量
     """
+    import copy
     import json
     import os
 
     from .prompt_loader import load_prompt_file
-    
+
     if not new_terms:
-        return False
+        return False, []
 
     ext = os.path.splitext(file_path)[1].lower()
     is_yaml = ext in ('.yaml', '.yml')
@@ -3460,40 +3472,41 @@ def _merge_glossary_to_file(file_path: str, new_terms: List[Dict[str, Any]]) -> 
             loaded = load_prompt_file(file_path)
             if loaded is not None:
                 data = loaded
-        
+
         # 确保结构完整
         if "glossary" not in data or not isinstance(data["glossary"], dict):
             # 如果旧格式是列表，或者没有 glossary，初始化为新的分类结构
             data["glossary"] = {
                 "Person": [], "Location": [], "Org": [], "Item": [], "Skill": [], "Creature": []
             }
-        
+
         glossary = data["glossary"]
         # 确保所有标准分类键都存在
         valid_keys_map = {
-            "person": "Person", 
-            "location": "Location", 
-            "org": "Org", 
+            "person": "Person",
+            "location": "Location",
+            "org": "Org",
             "organization": "Org",
-            "item": "Item", 
-            "skill": "Skill", 
+            "item": "Item",
+            "skill": "Skill",
             "creature": "Creature"
         }
-        
+
         # 确保标准键存在于 glossary 中
         for key in set(valid_keys_map.values()):
             if key not in glossary:
                 glossary[key] = []
 
         modified = False
-        
+        merged_terms: List[Dict[str, Any]] = []
+
         for term in new_terms:
             if not isinstance(term, dict):
                 continue
             raw_category = term.get("category")
             original = str(term.get("original") or "").strip()
             incoming_aliases = _auto_alias_deltas(term)
-            
+
             if not original or not incoming_aliases:
                 continue
 
@@ -3502,7 +3515,7 @@ def _merge_glossary_to_file(file_path: str, new_terms: List[Dict[str, Any]]) -> 
             target_key = valid_keys_map.get(normalized_cat)
             if target_key is None:
                 continue
-            
+
             if not isinstance(glossary.get(target_key), list):
                 glossary[target_key] = []
 
@@ -3518,10 +3531,27 @@ def _merge_glossary_to_file(file_path: str, new_terms: List[Dict[str, Any]]) -> 
             )
             if target_entry is not None:
                 if target_entry.get("overwrite") is True:
-                    modified = (
-                        _merge_auto_glossary_aliases(target_entry, incoming_aliases)
-                        or modified
-                    )
+                    existing_alias_keys = {
+                        _glossary_match_key(a.get("original"))
+                        for a in (target_entry.get("aliases") or [])
+                        if isinstance(a, dict)
+                    }
+                    if not isinstance(target_entry.get("aliases"), list):
+                        existing_alias_keys.add(_glossary_match_key(target_entry.get("original")))
+                    added_aliases = [
+                        copy.deepcopy(a)
+                        for a in incoming_aliases
+                        if _glossary_match_key(a["original"]) not in existing_alias_keys
+                    ]
+                    if _merge_auto_glossary_aliases(target_entry, incoming_aliases):
+                        modified = True
+                        merged_terms.append(
+                            {
+                                "category": target_key,
+                                "original": original,
+                                "aliases": added_aliases or copy.deepcopy(incoming_aliases),
+                            }
+                        )
                 continue
 
             # A newly created entry must contain its canonical source form.
@@ -3538,7 +3568,14 @@ def _merge_glossary_to_file(file_path: str, new_terms: List[Dict[str, Any]]) -> 
             }
             glossary[target_key].append(new_entry)
             modified = True
-        
+            merged_terms.append(
+                {
+                    "category": target_key,
+                    "original": original,
+                    "aliases": copy.deepcopy(incoming_aliases),
+                }
+            )
+
         if modified:
             # 确保存储目录存在
             os.makedirs(os.path.dirname(os.path.abspath(file_path)), exist_ok=True)
@@ -3553,13 +3590,13 @@ def _merge_glossary_to_file(file_path: str, new_terms: List[Dict[str, Any]]) -> 
                         json.dump(data, f, indent=2, ensure_ascii=False)
                 else:
                     json.dump(data, f, indent=2, ensure_ascii=False)
-            return True
-            
+            return True, merged_terms
+
     except Exception as e:
         print(f"Error merging glossary: {e}")
-        return False
-    
-    return False
+        return False, []
+
+    return False, []
 
 def get_glossary_extraction_prompt(target_lang: str) -> str:
     """

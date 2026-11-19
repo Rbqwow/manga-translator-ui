@@ -15,6 +15,7 @@ from services import (
     get_config_service,
     get_i18n_manager,
     get_logger,
+    get_mcp_service,
     get_state_manager,
 )
 from services.file_list_data_service import FileCatalogSnapshot, FileListDataService
@@ -75,6 +76,7 @@ class MainWindow(FluentWindow):
         self._connect_signals()
 
         self.app_logic.initialize()
+        QTimer.singleShot(0, self.mcp_service.maybe_auto_start)
 
     def _t(self, key: str, **kwargs) -> str:
         """翻译辅助方法"""
@@ -108,6 +110,8 @@ class MainWindow(FluentWindow):
 
         # --- Logic Controllers ---
         self.app_logic = MainAppLogic()
+        self.mcp_service = get_mcp_service()
+        self.mcp_service.attach_app_logic(self.app_logic)
         self.file_list_data_service = FileListDataService(self, max_workers=2)
         self.app_logic.file_list_data_service = self.file_list_data_service
         self._file_catalog_snapshot = FileCatalogSnapshot.empty()
@@ -176,6 +180,12 @@ class MainWindow(FluentWindow):
                 self._t("Batch Management"),
             ),
             (
+                "mcp",
+                self.main_view.mcp_page,
+                FIF.ROBOT,
+                self._t("MCP Service"),
+            ),
+            (
                 "about",
                 self.main_view.about_page,
                 FIF.INFO,
@@ -227,6 +237,9 @@ class MainWindow(FluentWindow):
                     self._file_catalog_snapshot
                 )
                 self.main_view.batch_edit_panel.refresh()
+        elif page_key == "mcp":
+            if hasattr(self.main_view, "mcp_panel"):
+                self.main_view.mcp_panel.refresh_status()
 
     def _ensure_editor_initialized(self):
         if self.editor_view is not None:
@@ -401,6 +414,9 @@ class MainWindow(FluentWindow):
         )
         self.app_logic.task_completed.connect(
             self.on_task_completed, type=Qt.ConnectionType.QueuedConnection
+        )
+        self.mcp_service.job_finished.connect(
+            self._on_mcp_job_finished, type=Qt.ConnectionType.QueuedConnection
         )
         self.app_logic.error_dialog_requested.connect(
             self._show_error_dialog, type=Qt.ConnectionType.QueuedConnection
@@ -716,6 +732,18 @@ class MainWindow(FluentWindow):
 
             traceback.print_exc()
 
+    @pyqtSlot(dict)
+    def _on_mcp_job_finished(self, summary: dict):
+        """Sync main file list state after an MCP translation job completes without modal dialogs."""
+        try:
+            completed_map = (summary or {}).get("completed_output_sources") or {}
+            if completed_map and hasattr(self.app_logic, "register_mcp_completed_outputs"):
+                self.app_logic.register_mcp_completed_outputs(completed_map)
+            if completed_map or (summary or {}).get("rendered_pages"):
+                self._request_main_file_snapshot()
+        except Exception as e:
+            self.logger.error(f"Error in _on_mcp_job_finished: {e}", exc_info=True)
+
     def _should_prompt_open_results_in_editor(self) -> bool:
         """Only prompt for workflows that produce editor-meaningful results."""
         try:
@@ -884,6 +912,7 @@ class MainWindow(FluentWindow):
             "replacements": self._t("Replacement Rules"),
             "rich_text_rules": self._t("Rich Text Rules"),
             "batch_edit": self._t("Batch Management"),
+            "mcp": self._t("MCP Service"),
         }
         for key, text in nav_labels.items():
             item = getattr(self, "_main_navigation_items", {}).get(key)
@@ -896,6 +925,26 @@ class MainWindow(FluentWindow):
         """处理窗口关闭事件"""
         if hasattr(self, "main_view") and hasattr(self.main_view, "update_checker"):
             self.main_view.update_checker.stop()
+        if (
+            hasattr(self, "mcp_service")
+            and self.mcp_service is not None
+            and self.mcp_service.has_active_job()
+        ):
+            from PyQt6.QtWidgets import QMessageBox
+
+            reply = show_error_dialog(
+                self,
+                self._t("MCP Active Job Close Title"),
+                "",
+                self._t("MCP Active Job Close Message"),
+                icon=QMessageBox.Icon.Question,
+                buttons=QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                default_button=QMessageBox.StandardButton.No,
+            )
+            if reply != QMessageBox.StandardButton.Yes:
+                event.ignore()
+                return
+
         unfinished_exports = 0
         if self.editor_controller is not None:
             unfinished_exports = (
@@ -925,8 +974,12 @@ class MainWindow(FluentWindow):
             self.main_view.shutdown_background_threads(3000)
             if hasattr(self.main_view, "batch_edit_panel"):
                 self.main_view.batch_edit_panel.shutdown()
+            if hasattr(self.main_view, "mcp_panel"):
+                self.main_view.mcp_panel.shutdown()
         if self.editor_logic is not None:
             self.editor_logic.shutdown()
+        if hasattr(self, "mcp_service") and self.mcp_service is not None:
+            self.mcp_service.shutdown()
         self.file_list_data_service.shutdown()
         self.app_logic.shutdown()
         event.accept()
