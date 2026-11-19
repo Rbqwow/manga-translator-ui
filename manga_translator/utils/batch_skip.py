@@ -106,19 +106,23 @@ def _skip_decision(
         return None
 
     translator_type = getattr(getattr(config, "translator", None), "translator", None)
+    mcp_context_enabled = bool(getattr(translator, "_mcp_context_enabled", False))
     context_eligible = (
         not translator.load_text
         and not translator.colorize_only
         and not translator.upscale_only
         and not translator.inpaint_only
         and not translator.replace_translation
-        and translator_type
-        in {
-            Translator.openai,
-            Translator.gemini,
-            Translator.openai_hq,
-            Translator.gemini_hq,
-        }
+        and (
+            mcp_context_enabled
+            or translator_type
+            in {
+                Translator.openai,
+                Translator.gemini,
+                Translator.openai_hq,
+                Translator.gemini_hq,
+            }
+        )
     )
     return SkipDecision(
         reason="existing_output",

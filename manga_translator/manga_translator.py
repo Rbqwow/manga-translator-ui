@@ -5320,32 +5320,7 @@ class MangaTranslator:
                         
                 # 过滤逻辑（简化版本，保留主要过滤条件）
                 for ctx, config in batch:
-                    if ctx.text_regions:
-                        new_text_regions = []
-                        for region in ctx.text_regions:
-                            should_filter = False
-                            filter_reason = ""
-                            translation_text = _translation_plain_text(region.translation)
-
-                            if not translation_text.strip():
-                                should_filter = True
-                                filter_reason = "Translation contain blank areas"
-                            elif config.translator.translator != Translator.none:
-                                if translation_text.isnumeric():
-                                    should_filter = True
-                                    filter_reason = "Numeric translation"
-                                elif not config.translator.translator == Translator.original:
-                                    if self._should_filter_identical_translation(config, region):
-                                        should_filter = True
-                                        filter_reason = "Translation identical to original"
-
-                            if should_filter:
-                                if translation_text.strip():
-                                    logger.info(f'Filtered out: {translation_text}')
-                                    logger.info(f'Reason: {filter_reason}')
-                            else:
-                                new_text_regions.append(region)
-                        ctx.text_regions = new_text_regions
+                    self._filter_translated_regions(ctx, config)
                         
                 results.extend(batch)
                 
@@ -5506,6 +5481,49 @@ class MangaTranslator:
         if getattr(config.translator, 'no_text_lang_skip', False):
             return False
         return str(region.text or '').lower().strip() == _translation_plain_text(region.translation).lower().strip()
+
+    def _filter_translated_regions(
+        self,
+        ctx: Context,
+        config: Config,
+        *,
+        force_filter: bool = False,
+    ) -> List:
+        """Filter blank, numeric, or untranslated regions after post-processing."""
+        if not ctx.text_regions:
+            return []
+
+        translator_type = getattr(getattr(config, 'translator', None), 'translator', None)
+        apply_content_filters = force_filter or translator_type != Translator.none
+        skip_identical_check = (not force_filter) and (translator_type == Translator.original)
+
+        new_text_regions = []
+        for region in ctx.text_regions:
+            should_filter = False
+            filter_reason = ""
+            translation_text = _translation_plain_text(region.translation)
+
+            if not translation_text.strip():
+                should_filter = True
+                filter_reason = "Translation contain blank areas"
+            elif apply_content_filters:
+                if translation_text.isnumeric():
+                    should_filter = True
+                    filter_reason = "Numeric translation"
+                elif not skip_identical_check:
+                    if self._should_filter_identical_translation(config, region):
+                        should_filter = True
+                        filter_reason = "Translation identical to original"
+
+            if should_filter:
+                if translation_text.strip():
+                    logger.info(f'Filtered out: {translation_text}')
+                    logger.info(f'Reason: {filter_reason}')
+            else:
+                new_text_regions.append(region)
+
+        ctx.text_regions = new_text_regions
+        return ctx.text_regions
             
     async def _apply_post_translation_processing(self, ctx: Context, config: Config) -> List:
         """

@@ -12,15 +12,33 @@ import sys
 import threading
 from collections import deque
 from datetime import datetime
-from typing import Any, Dict, Iterable, List, Optional
+from typing import Any, Callable, Dict, Iterable, List, Optional
 
 
-_RECENT_LOGS = deque(maxlen=200)
+_RECENT_LOGS = deque(maxlen=1000)
 _RECENT_LOGS_LOCK = threading.Lock()
+_LOG_SUBSCRIBERS_LOCK = threading.Lock()
+_LOG_SUBSCRIBERS: List[Callable[[Dict[str, Any]], None]] = []
 _QUEUE_LOGGING_LOCK = threading.Lock()
 _QUEUE_HANDLER: Optional["BoundedQueueHandler"] = None
 _QUEUE_LISTENER: Optional[logging.handlers.QueueListener] = None
 _QUEUE_DOWNSTREAM_HANDLERS: tuple[logging.Handler, ...] = ()
+
+
+def subscribe_log_records(callback: Callable[[Dict[str, Any]], None]) -> None:
+    """Register a thread-safe callback invoked with each formatted log entry dict."""
+    if not callable(callback):
+        return
+    with _LOG_SUBSCRIBERS_LOCK:
+        if callback not in _LOG_SUBSCRIBERS:
+            _LOG_SUBSCRIBERS.append(callback)
+
+
+def unsubscribe_log_records(callback: Callable[[Dict[str, Any]], None]) -> None:
+    """Unregister a previously registered log record subscriber."""
+    with _LOG_SUBSCRIBERS_LOCK:
+        if callback in _LOG_SUBSCRIBERS:
+            _LOG_SUBSCRIBERS.remove(callback)
 
 
 class RecentLogHandler(logging.Handler):
@@ -40,6 +58,13 @@ class RecentLogHandler(logging.Handler):
                 entry['exception'] = self.format(record)
             with _RECENT_LOGS_LOCK:
                 _RECENT_LOGS.append(entry)
+            with _LOG_SUBSCRIBERS_LOCK:
+                subscribers = list(_LOG_SUBSCRIBERS)
+            for callback in subscribers:
+                try:
+                    callback(dict(entry))
+                except Exception:
+                    pass
         except Exception:
             self.handleError(record)
 
@@ -470,6 +495,14 @@ class LogService:
         """清除最近的日志"""
         with _RECENT_LOGS_LOCK:
             _RECENT_LOGS.clear()
+
+    def subscribe(self, callback: Callable[[Dict[str, Any]], None]) -> None:
+        """订阅实时日志条目（线程安全）。"""
+        subscribe_log_records(callback)
+
+    def unsubscribe(self, callback: Callable[[Dict[str, Any]], None]) -> None:
+        """取消订阅实时日志条目。"""
+        unsubscribe_log_records(callback)
     
     def set_log_level(self, level: int):
         """设置日志级别"""

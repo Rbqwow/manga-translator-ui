@@ -11,6 +11,7 @@ import logging
 import os
 import re
 import textwrap
+import threading
 import time
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
@@ -44,9 +45,12 @@ from manga_translator.utils.system_proxy import (
 )
 from PIL import Image
 from PyQt6.QtCore import (
+    QCoreApplication,
+    QMetaObject,
     QObject,
     QRunnable,
     Qt,
+    QThread,
     QTimer,
     pyqtSignal,
     pyqtSlot,
@@ -157,6 +161,8 @@ class MainAppLogic(QObject):
         self._task_failures: List[Dict[str, str]] = []
         self._task_failure_keys: set[str] = set()
 
+        self._source_snapshot_lock = threading.RLock()
+        self._marshaled_gui_snapshot: Optional[Dict[str, Any]] = None
         self.source_files: List[str] = [] # Holds both files and folders
         self._source_folders: Dict[str, str] = {}
         self.file_to_folder_map: Dict[str, Optional[str]] = {} # 记录文件来自哪个文件夹
@@ -1899,6 +1905,21 @@ class MainAppLogic(QObject):
         """
         Resolves input paths and uses a 'Worker-to-Thread' model to start the translation task.
         """
+        # 双向 GPU 互斥：MCP 正在占卡执行任务时拒绝并发启动 GUI 任务
+        try:
+            from services import get_mcp_service
+
+            mcp_service = get_mcp_service()
+            if mcp_service is not None and mcp_service.has_active_job():
+                self._ui_log(
+                    "Cannot start GUI translation task while an MCP translation job is running.",
+                    "WARNING",
+                )
+                self.warning_dialog_requested.emit(self._t("MCP Active Job Blocks GUI Task"))
+                return
+        except Exception:
+            pass
+
         # 检查是否有任务在运行
         if self.state_manager.is_translating():
             self._ui_log("A task is already running.", "WARNING")
@@ -2083,6 +2104,72 @@ class MainAppLogic(QObject):
 
     def resolve_completed_source(self, output_path: str) -> Optional[str]:
         return self.completed_output_sources.get(self._path_key(output_path))
+
+    def register_mcp_completed_outputs(self, mapping: Dict[str, str]) -> None:
+        """Record output->source mappings produced by MCP jobs for Editor View navigation."""
+        for out_path, src_path in (mapping or {}).items():
+            if out_path and src_path:
+                self.completed_output_sources[self._path_key(out_path)] = os.path.normpath(src_path)
+
+    def is_gui_task_active(self) -> bool:
+        """Return True while the GUI scanning/translation/cleanup pipeline owns GPU/resources."""
+        if self.state_manager.is_translating():
+            return True
+        for future in (self._scan_future, self._translate_future, self._cleanup_future):
+            if future is not None and not future.done():
+                return True
+        return False
+
+    def _build_gui_state_snapshot(self) -> Dict[str, Any]:
+        with self._source_snapshot_lock:
+            config = self.config_service.get_config()
+            snapshot = {
+                "source_files": tuple(self.source_files),
+                "excluded_subfolders": frozenset(self.excluded_subfolders),
+                "excluded_files": frozenset(self.excluded_files),
+                "output_dir": str(getattr(config.app, "last_output_path", "") or ""),
+            }
+            self._marshaled_gui_snapshot = snapshot
+            return snapshot
+
+    @pyqtSlot()
+    def _capture_gui_state_snapshot_slot(self) -> None:
+        self._build_gui_state_snapshot()
+
+    def get_gui_state_snapshot(self) -> Dict[str, Any]:
+        """Thread-safe immutable snapshot of GUI file list and output directory."""
+        app = QCoreApplication.instance()
+        if app is not None and QThread.currentThread() != self.thread() and self.thread().loopLevel() > 0:
+            QMetaObject.invokeMethod(
+                self,
+                "_capture_gui_state_snapshot_slot",
+                Qt.ConnectionType.BlockingQueuedConnection,
+            )
+            with self._source_snapshot_lock:
+                return dict(self._marshaled_gui_snapshot or {})
+        return self._build_gui_state_snapshot()
+
+    def expand_inputs_for_mcp(
+        self,
+        source_files,
+        excluded_subfolders,
+        excluded_files,
+        output_base_dir: str,
+        overwrite_extract: bool,
+    ):
+        """Expand files, folders, and archives identically to FileScannerRunnable."""
+        result = expand_source_inputs(
+            source_files=source_files,
+            excluded_subfolders=excluded_subfolders,
+            excluded_files=excluded_files,
+            file_service=self.file_service,
+            output_base_dir=output_base_dir,
+            overwrite_extract=overwrite_extract,
+        )
+        if result is None:
+            return [], {}, {}
+        unique_files, file_map, archive_map, _ex_folders, _ex_files = result
+        return unique_files, file_map, archive_map
 
     def _cleanup_archive_paths(self, archive_paths: List[str]):
         from desktop_qt_ui.utils.archive_extractor import cleanup_archive_temp
@@ -3237,6 +3324,174 @@ class WorkerSignals(QObject):
     translation_progress = pyqtSignal(int, int, str)
 
 
+def expand_source_inputs(
+    source_files,
+    excluded_subfolders,
+    excluded_files,
+    file_service,
+    output_base_dir: str,
+    overwrite_extract: bool,
+    progress_callback=None,
+    is_running_check=None,
+):
+    """Expand files, folders, and archives while respecting exclusions."""
+    def _still_running() -> bool:
+        return is_running_check() if callable(is_running_check) else True
+
+    def _emit_progress(msg: str) -> None:
+        if callable(progress_callback) and _still_running():
+            progress_callback(msg)
+
+    if not _still_running():
+        return None
+
+    resolved_files = []
+    file_to_folder_map = {}
+    archive_to_temp_map = {}
+    processed_archives = set()
+
+    folders = []
+    individual_files = []
+    archive_files = []
+
+    for path in source_files:
+        if not _still_running():
+            return None
+        if os.path.isdir(path):
+            folders.append(path)
+        elif os.path.isfile(path):
+            if file_service.is_archive_file(path):
+                archive_files.append(path)
+            elif file_service.validate_image_file(path):
+                individual_files.append(path)
+
+    from desktop_qt_ui.utils.archive_extractor import (
+        check_output_extract_conflict,
+        clear_output_extract_root,
+        extract_images_from_archive,
+        get_output_extract_dir,
+        write_output_extract_marker,
+    )
+
+    pruned_excluded_subfolders = {
+        path for path in excluded_subfolders if any(MainAppLogic._path_is_within(path, folder) for folder in folders)
+    }
+    pruned_excluded_files = {
+        path for path in excluded_files if any(MainAppLogic._path_is_within(path, folder) for folder in folders)
+    }
+    excluded_file_keys = {
+        MainAppLogic._path_key(path) for path in pruned_excluded_files
+    }
+
+    def _is_excluded(file_path: str) -> bool:
+        if MainAppLogic._path_key(file_path) in excluded_file_keys:
+            return True
+        return any(
+            MainAppLogic._path_is_within(file_path, excluded_folder)
+            for excluded_folder in pruned_excluded_subfolders
+        )
+
+    def _get_archive_output_base_dir(archive_path: str, scan_root: str = None) -> str:
+        if not (output_base_dir and os.path.isdir(output_base_dir)):
+            return ''
+        if not scan_root:
+            return output_base_dir
+
+        archive_parent = os.path.normpath(os.path.dirname(archive_path))
+        scan_root_norm = os.path.normpath(scan_root)
+        try:
+            relative_parent = os.path.relpath(archive_parent, scan_root_norm)
+        except ValueError:
+            return output_base_dir
+
+        nested_base = os.path.join(output_base_dir, os.path.basename(scan_root_norm))
+        if relative_parent != '.':
+            nested_base = os.path.join(nested_base, relative_parent)
+        return os.path.normpath(nested_base)
+
+    def _extract_archive(archive_path: str, scan_root: str = None) -> None:
+        if not _still_running():
+            return
+        norm_archive = os.path.normcase(os.path.abspath(archive_path))
+        if norm_archive in processed_archives:
+            return
+        processed_archives.add(norm_archive)
+
+        try:
+            _emit_progress(f"Extracting: {os.path.basename(archive_path)}")
+            archive_output_base_dir = _get_archive_output_base_dir(archive_path, scan_root)
+            if archive_output_base_dir:
+                if check_output_extract_conflict(archive_output_base_dir, archive_path):
+                    if not overwrite_extract:
+                        _emit_progress(
+                            f"Skipping extraction (name conflict and overwrite disabled): {os.path.basename(archive_path)}"
+                        )
+                        return
+                    clear_output_extract_root(archive_output_base_dir, archive_path)
+                extract_dir = get_output_extract_dir(archive_output_base_dir, archive_path)
+                images, extracted_dir = extract_images_from_archive(archive_path, extract_dir)
+                if images:
+                    write_output_extract_marker(archive_output_base_dir, archive_path)
+            else:
+                images, extracted_dir = extract_images_from_archive(archive_path)
+
+            if not _still_running():
+                return
+            if images:
+                archive_to_temp_map[archive_path] = extracted_dir
+                for img_path in images:
+                    resolved_files.append(img_path)
+                    file_to_folder_map[img_path] = archive_path
+                _emit_progress(f"Extracted {len(images)} images from {os.path.basename(archive_path)}")
+            else:
+                _emit_progress(f"Warning: no images found in {os.path.basename(archive_path)}")
+        except Exception as e:
+            _emit_progress(f"Failed to extract {os.path.basename(archive_path)}: {e}")
+
+    for archive_path in archive_files:
+        if not _still_running():
+            return None
+        _extract_archive(archive_path)
+
+    folders.sort(key=file_service._natural_sort_key)
+    for folder in folders:
+        if not _still_running():
+            return None
+        _emit_progress(f"Scanning folder: {os.path.basename(folder)}")
+        folder_files, folder_archives = file_service.get_supported_files_from_folder(
+            folder, recursive=True
+        )
+        if not _still_running():
+            return None
+        folder_files = [f for f in folder_files if not _is_excluded(f)]
+        folder_archives = [f for f in folder_archives if not _is_excluded(f)]
+
+        for archive_path in folder_archives:
+            if not _still_running():
+                return None
+            _extract_archive(archive_path, folder)
+
+        resolved_files.extend(folder_files)
+        for file_path in folder_files:
+            file_to_folder_map[file_path] = folder
+
+    individual_files.sort(key=file_service._natural_sort_key)
+    for file_path in individual_files:
+        if not _still_running():
+            return None
+        resolved_files.append(file_path)
+        file_to_folder_map[file_path] = None
+
+    unique_files = list(dict.fromkeys(resolved_files))
+    return (
+        unique_files,
+        file_to_folder_map,
+        archive_to_temp_map,
+        pruned_excluded_subfolders,
+        pruned_excluded_files,
+    )
+
+
 class FileScannerRunnable(QRunnable):
     """文件扫描任务（线程池版本）"""
 
@@ -3276,165 +3531,30 @@ class FileScannerRunnable(QRunnable):
             if not self._is_running:
                 return
             self._emit_progress("Scanning files...")
-            resolved_files = []
-            processed_archives = set()
-             
-            # 分离文件和文件夹
-            folders = []
-            individual_files = []
-            archive_files = []
-            
-            for path in self.source_files:
-                if not self._is_running:
-                    return
-                if os.path.isdir(path):
-                    folders.append(path)
-                elif os.path.isfile(path):
-                    if self.file_service.is_archive_file(path):
-                        archive_files.append(path)
-                    elif self.file_service.validate_image_file(path):
-                        individual_files.append(path)
-
-            from desktop_qt_ui.utils.archive_extractor import (
-                check_output_extract_conflict,
-                clear_output_extract_root,
-                extract_images_from_archive,
-                get_output_extract_dir,
-                write_output_extract_marker,
+            result = expand_source_inputs(
+                source_files=self.source_files,
+                excluded_subfolders=self.excluded_subfolders,
+                excluded_files=self.excluded_files,
+                file_service=self.file_service,
+                output_base_dir=self.output_base_dir,
+                overwrite_extract=self.overwrite_extract,
+                progress_callback=self._emit_progress,
+                is_running_check=lambda: self._is_running,
             )
-
-            output_base_dir = self.output_base_dir
-            overwrite_extract = self.overwrite_extract
-
-            def _is_excluded(file_path: str) -> bool:
-                if MainAppLogic._path_key(file_path) in excluded_file_keys:
-                    return True
-                return any(
-                    MainAppLogic._path_is_within(file_path, excluded_folder)
-                    for excluded_folder in self.excluded_subfolders
-                )
-
-            def _get_archive_output_base_dir(archive_path: str, scan_root: str = None) -> str:
-                if not (output_base_dir and os.path.isdir(output_base_dir)):
-                    return ''
-                if not scan_root:
-                    return output_base_dir
-
-                archive_parent = os.path.normpath(os.path.dirname(archive_path))
-                scan_root_norm = os.path.normpath(scan_root)
-                try:
-                    relative_parent = os.path.relpath(archive_parent, scan_root_norm)
-                except ValueError:
-                    return output_base_dir
-
-                nested_base = os.path.join(output_base_dir, os.path.basename(scan_root_norm))
-                if relative_parent != '.':
-                    nested_base = os.path.join(nested_base, relative_parent)
-                return os.path.normpath(nested_base)
-
-            def _extract_archive(archive_path: str, scan_root: str = None) -> None:
-                if not self._is_running:
-                    return
-                norm_archive = os.path.normcase(os.path.abspath(archive_path))
-                if norm_archive in processed_archives:
-                    return
-                processed_archives.add(norm_archive)
-
-                try:
-                    self._emit_progress(f"Extracting: {os.path.basename(archive_path)}")
-                    archive_output_base_dir = _get_archive_output_base_dir(archive_path, scan_root)
-                    if archive_output_base_dir:
-                        if check_output_extract_conflict(archive_output_base_dir, archive_path):
-                            if not overwrite_extract:
-                                self._emit_progress(
-                                    f"Skipping extraction (name conflict and overwrite disabled): {os.path.basename(archive_path)}"
-                                )
-                                return
-                            clear_output_extract_root(archive_output_base_dir, archive_path)
-                        extract_dir = get_output_extract_dir(archive_output_base_dir, archive_path)
-                        images, extracted_dir = extract_images_from_archive(archive_path, extract_dir)
-                        if images:
-                            write_output_extract_marker(archive_output_base_dir, archive_path)
-                    else:
-                        images, extracted_dir = extract_images_from_archive(archive_path)
-
-                    if not self._is_running:
-                        return
-                    if images:
-                        self.archive_to_temp_map[archive_path] = extracted_dir
-                        for img_path in images:
-                            resolved_files.append(img_path)
-                            self.file_to_folder_map[img_path] = archive_path
-                        self._emit_progress(f"Extracted {len(images)} images from {os.path.basename(archive_path)}")
-                    else:
-                        self._emit_progress(f"Warning: no images found in {os.path.basename(archive_path)}")
-                except Exception as e:
-                    self._emit_progress(f"Failed to extract {os.path.basename(archive_path)}: {e}")
-
-            # 处理顶层压缩包文件
-            for archive_path in archive_files:
-                if not self._is_running:
-                    return
-                _extract_archive(archive_path)
-
-            def _belongs_to_source_folder(path: str) -> bool:
-                return any(MainAppLogic._path_is_within(path, folder) for folder in folders)
-
-            self.excluded_subfolders = {
-                path for path in self.excluded_subfolders if _belongs_to_source_folder(path)
-            }
-            self.excluded_files = {
-                path for path in self.excluded_files if _belongs_to_source_folder(path)
-            }
-            excluded_file_keys = {
-                MainAppLogic._path_key(path) for path in self.excluded_files
-            }
-            
-            # 对文件夹进行自然排序
-            folders.sort(key=self.file_service._natural_sort_key)
-            
-            # 按文件夹分组处理
-            for folder in folders:
-                if not self._is_running:
-                    return
-                self._emit_progress(f"Scanning folder: {os.path.basename(folder)}")
-                folder_files, folder_archives = self.file_service.get_supported_files_from_folder(
-                    folder, recursive=True
-                )
-
-                if not self._is_running:
-                    return
-                folder_files = [f for f in folder_files if not _is_excluded(f)]
-                folder_archives = [f for f in folder_archives if not _is_excluded(f)]
-
-                # 处理文件夹内的压缩包文件
-                for archive_path in folder_archives:
-                    if not self._is_running:
-                        return
-                    _extract_archive(archive_path, folder)
-                 
-                resolved_files.extend(folder_files)
-                for file_path in folder_files:
-                    self.file_to_folder_map[file_path] = folder
-            
-            # 处理单独添加的文件
-            individual_files.sort(key=self.file_service._natural_sort_key)
-            for file_path in individual_files:
-                if not self._is_running:
-                    return
-                resolved_files.append(file_path)
-                self.file_to_folder_map[file_path] = None
-
-            unique_files = list(dict.fromkeys(resolved_files))
-            if self._is_running:
-                self._emit_finished(
-                    unique_files,
-                    self.file_to_folder_map,
-                    self.archive_to_temp_map,
-                    self.excluded_subfolders,
-                    self.excluded_files,
-                )
-            
+            if result is None or not self._is_running:
+                return
+            unique_files, file_map, archive_map, pruned_subfolders, pruned_files = result
+            self.file_to_folder_map = file_map
+            self.archive_to_temp_map = archive_map
+            self.excluded_subfolders = pruned_subfolders
+            self.excluded_files = pruned_files
+            self._emit_finished(
+                unique_files,
+                self.file_to_folder_map,
+                self.archive_to_temp_map,
+                self.excluded_subfolders,
+                self.excluded_files,
+            )
         except Exception as e:
             if self._is_running:
                 self._emit_error(str(e))

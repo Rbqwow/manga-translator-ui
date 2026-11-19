@@ -26,6 +26,7 @@ from ui.main_page.pages.about_page import (
 )
 from ui.main_page.pages.batch_edit_page import create_batch_edit_page
 from ui.main_page.pages.env_page import create_env_page
+from ui.main_page.pages.mcp_page import create_mcp_page
 from ui.main_page.pages.prompt_page import create_prompt_page
 from ui.main_page.pages.replacements_page import create_replacements_page
 from ui.main_page.pages.rich_text_rules_page import create_rich_text_rules_page
@@ -89,6 +90,7 @@ class MainView(QObject):
     _create_replacements_page = create_replacements_page
     _create_rich_text_rules_page = create_rich_text_rules_page
     _create_batch_edit_page = create_batch_edit_page
+    _create_mcp_page = create_mcp_page
     update_progress = main_view_runtime.update_progress
     reset_progress = main_view_runtime.reset_progress
 
@@ -157,6 +159,7 @@ class MainView(QObject):
         self.replacements_page = self._create_replacements_page()
         self.rich_text_rules_page = self._create_rich_text_rules_page()
         self.batch_edit_page = self._create_batch_edit_page()
+        self.mcp_page = self._create_mcp_page()
         self.page_widgets = {
             "translation": self.translation_interface,
             "settings": self.settings_page,
@@ -166,6 +169,7 @@ class MainView(QObject):
             "replacements": self.replacements_page,
             "rich_text_rules": self.rich_text_rules_page,
             "batch_edit": self.batch_edit_page,
+            "mcp": self.mcp_page,
         }
         # 不在这里调用 _create_dynamic_settings，等待 app_logic.initialize 发送 config_loaded 信号
         # self._create_dynamic_settings()  # 删除这行，避免重复创建
@@ -295,6 +299,8 @@ class MainView(QObject):
             self.rich_text_rules_editor_panel.apply_theme()
         if hasattr(self, "batch_edit_panel") and self.batch_edit_panel:
             self.batch_edit_panel.apply_theme()
+        if hasattr(self, "mcp_panel") and self.mcp_panel:
+            self.mcp_panel.apply_theme()
         if hasattr(self, "settings_page") and self.settings_page:
             self.settings_page.update()
         self._refresh_api_slot_status_styles()
@@ -304,6 +310,8 @@ class MainView(QObject):
     @pyqtSlot(dict)
     def set_parameters(self, config: dict):
         main_view_dynamic.set_parameters(self, config)
+        if hasattr(self, "mcp_panel") and self.mcp_panel:
+            self.mcp_panel.sync_from_config(config)
 
     def _show_setting_description(self, key: str, name: str, description: str):
         """更新右侧描述面板"""
@@ -531,6 +539,8 @@ class MainView(QObject):
             )
         if hasattr(self, "batch_edit_panel"):
             self.batch_edit_panel.refresh_ui_texts()
+        if hasattr(self, "mcp_panel") and self.mcp_panel:
+            self.mcp_panel.refresh_ui_texts()
 
     def _clear_dynamic_settings(self):
         """清理所有动态创建的设置控件。"""
