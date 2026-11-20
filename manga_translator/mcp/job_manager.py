@@ -618,22 +618,35 @@ class McpTranslationJob:
     def _render_batch_previews(self, batch: McpBatchState) -> None:
         for p_idx in batch.page_indices:
             page = self.pages[p_idx]
-            if self.cancel_event.is_set():
-                page.preview_ready.set()
-                continue
+            with self._cond:
+                if self._finalized or self.cancel_event.is_set() or page.committed or page.ctx is None:
+                    page.preview_ready.set()
+                    continue
+                ctx = page.ctx
+                text_order = list(page.text_order)
+                filename = page.filename
+
+            encoded = None
+            err_msg: Optional[str] = None
             try:
                 encoded = render_numbered_page_preview(
-                    page.ctx,
-                    page.text_order,
+                    ctx,
+                    text_order,
                     max_size=self.preview_max_size,
                     fmt=self.preview_format,
                     quality=self.preview_quality,
                 )
-                page.preview_cache = encoded
             except Exception as exc:
-                page.preview_error = str(exc)
-                logger.warning(f"[MCP] Preview render failed for {page.filename}: {exc}")
+                err_msg = str(exc)
+                logger.warning(f"[MCP] Preview render failed for {filename}: {exc}")
             finally:
+                # Finalize/commit may have already cleared preview buffers; do not resurrect them.
+                with self._cond:
+                    if not self._finalized and not self.cancel_event.is_set() and not page.committed:
+                        if encoded is not None and page.preview_cache is None and page.preview_error is None:
+                            page.preview_cache = encoded
+                        elif err_msg is not None and page.preview_error is None:
+                            page.preview_error = err_msg
                 page.preview_ready.set()
 
     # ------------------------------------------------------------------
@@ -1002,17 +1015,21 @@ class McpTranslationJob:
         worker_key = str(worker_id or "_default")
         deadline = time.monotonic() + max(0.5, float(wait_timeout))
 
+        def _terminal_done_payload() -> BatchPayload:
+            # Caller must hold self._cond; the job has already terminated.
+            return BatchPayload(
+                done=True,
+                job_id=self.job_id,
+                progress=self._progress_summary_locked(),
+                summary=self._build_completion_summary_locked(),
+            )
+
         selected_batch: Optional[McpBatchState] = None
         while True:
             with self._cond:
                 if self.cancel_event.is_set():
                     return (
-                        BatchPayload(
-                            done=True,
-                            job_id=self.job_id,
-                            progress=self._progress_summary_locked(),
-                            summary=self._build_completion_summary_locked(),
-                        ),
+                        _terminal_done_payload(),
                         [],
                     )
 
@@ -1109,19 +1126,46 @@ class McpTranslationJob:
             for p_idx in selected_batch.page_indices:
                 page = self.pages[p_idx]
                 page.preview_ready.wait(timeout=30.0)
-                if page.preview_cache is None and not page.preview_error:
+
+                with self._cond:
+                    if self.cancel_event.is_set() or self._finalized:
+                        # Cancel/finalize woke us up; page buffers may already be cleared.
+                        return _terminal_done_payload(), []
+                    preview_cache = page.preview_cache
+                    preview_error = page.preview_error
+                    fallback_ctx = page.ctx
+                    fallback_text_order = list(page.text_order)
+
+                if preview_cache is None and preview_error is None and fallback_ctx is not None:
+                    # Sync fallback render outside the lock from the snapshot above.
+                    encoded = None
+                    err_msg: Optional[str] = None
                     try:
-                        page.preview_cache = render_numbered_page_preview(
-                            page.ctx,
-                            page.text_order,
+                        encoded = render_numbered_page_preview(
+                            fallback_ctx,
+                            fallback_text_order,
                             max_size=self.preview_max_size,
                             fmt=self.preview_format,
                             quality=self.preview_quality,
                         )
                     except Exception as exc:
-                        page.preview_error = str(exc)
-                if page.preview_cache is not None:
-                    raw_bytes, mime, pw, ph = page.preview_cache
+                        err_msg = str(exc)
+                        logger.warning(f"[MCP] Preview render failed for {page.filename}: {exc}")
+
+                    with self._cond:
+                        if self.cancel_event.is_set() or self._finalized:
+                            return _terminal_done_payload(), []
+                        if not page.committed:
+                            if encoded is not None and page.preview_cache is None:
+                                page.preview_cache = encoded
+                                page.preview_error = None
+                            elif err_msg is not None and page.preview_cache is None and page.preview_error is None:
+                                page.preview_error = err_msg
+                        preview_cache = page.preview_cache
+                        preview_error = page.preview_error
+
+                if preview_cache is not None and preview_error is None:
+                    raw_bytes, mime, pw, ph = preview_cache
                     encoded_pages[page.page_index] = (raw_bytes, mime, pw, ph, page.filename)
 
         delivery_map, hints = resolve_batch_image_delivery(
@@ -1135,8 +1179,12 @@ class McpTranslationJob:
 
         inline_images: List[Tuple[bytes, str]] = []
         page_items: List[PageBatchItem] = []
+        preview_error_names: List[str] = []
 
         with self._cond:
+            if self.cancel_event.is_set() or self._finalized:
+                return _terminal_done_payload(), []
+
             for info in delivery_map.values():
                 if info.get("file_path"):
                     selected_batch.preview_files.append(info["file_path"])
@@ -1151,10 +1199,14 @@ class McpTranslationJob:
                     preview_mime = d_info.get("mime_type")
                     if mode == "mcp_image" and d_info.get("bytes") is not None:
                         inline_images.append((d_info["bytes"], preview_mime))
+                    item_preview_error = None
                 else:
                     mode = "none"
                     preview_path = None
                     preview_mime = None
+                    item_preview_error = page.preview_error
+                    if page.preview_error:
+                        preview_error_names.append(page.filename)
 
                 page_items.append(
                     PageBatchItem(
@@ -1168,6 +1220,7 @@ class McpTranslationJob:
                         image_delivery_mode=mode,
                         preview_path=preview_path,
                         preview_mime=preview_mime,
+                        preview_error=item_preview_error,
                     )
                 )
 
@@ -1182,6 +1235,12 @@ class McpTranslationJob:
             )
         elif self.effective_mode == "text_only":
             hints.append("Strict text-only mode: get_page_preview is disabled.")
+
+        if preview_error_names:
+            hints.append(
+                "Preview rendering failed for pages [" + ", ".join(preview_error_names) + "]; "
+                "translate these pages from OCR text and prev_context."
+            )
 
         return (
             BatchPayload(
@@ -1582,14 +1641,7 @@ class McpTranslationJob:
         if self._preview_pool is not None:
             self._preview_pool.shutdown(wait=False, cancel_futures=True)
         with self._cond:
-            for p in self.pages:
-                if p.ctx is not None:
-                    try:
-                        self.translator._cleanup_context_memory(p.ctx, keep_result=False)
-                    except Exception:
-                        pass
-                p.preview_cache = None
-                p.preview_ready.set()
+            # _finalize_job_locked() already cleans up ctx, preview buffers, and wake events.
             self._finalize_job_locked()
         self._emit_progress()
         return self.get_status_dict()

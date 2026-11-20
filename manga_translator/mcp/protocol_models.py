@@ -96,6 +96,7 @@ class PageBatchItem(BaseModel):
     image_delivery_mode: Literal["none", "mcp_image", "file_path"] = "none"
     preview_path: Optional[str] = None
     preview_mime: Optional[str] = None
+    preview_error: Optional[str] = None
 
 
 class JobProgressSummary(BaseModel):

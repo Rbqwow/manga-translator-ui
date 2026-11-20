@@ -1118,6 +1118,7 @@ class McpPagePanel(QWidget):
             (self.mcp_service.job_progress_changed, self._on_job_progress_changed),
             (self.mcp_service.log_record_received, self._on_log_record_received),
             (self.mcp_service.api_conflicts_changed, self._on_api_conflicts_changed),
+            (self.mcp_service.models_unload_finished, self._on_models_unload_finished),
         ):
             try:
                 sig.disconnect(slot)

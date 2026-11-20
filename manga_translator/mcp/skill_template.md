@@ -93,6 +93,12 @@ If `submit_translation_batch` returns `status == "retry_needed"`:
   - If your host supports spawning subagents, launch up to `max_parallel_batches`
     worker subagents concurrently, each with a distinct `worker_id` (e.g.,
     `"worker-1"`, `"worker-2"`), consuming the same `job_id`.
+  - Every subagent must poll `next_translation_batch` with its **own** distinct
+    `worker_id`, and a single worker must not poll again while it still holds a
+    lease (submit the current batch or call `release_batch` first). Repeated
+    polling under the same `worker_id` can hand that worker additional leases,
+    and a worker juggling several batches may let an earlier lease expire and
+    force rework.
   - If your host only supports a single session, process batches sequentially in
     the main session or resume with the same `job_id` in a new session.
   - Any worker that must exit early while holding a lease **must** call

@@ -1348,3 +1348,183 @@ def test_ipv6_endpoint_formatting_and_codex_inline_table_error(tmp_path):
     with pytest.raises(ValueError, match="inline table"):
         _merge_codex_toml_config(inline_toml, "http://127.0.0.1:8765/mcp")
 
+
+def test_hq_preview_error_reported_in_batch_payload(tmp_path, monkeypatch):
+    """R2-1: HQ preview render failure must surface as preview_error + hints, not silent 'none'."""
+    import manga_translator.mcp.job_manager as job_manager_module
+    from manga_translator.mcp.batch_adapter import render_numbered_page_preview as _orig_render
+
+    p1 = _make_png(tmp_path / "01.png")
+    p2 = _make_png(tmp_path / "02.png")
+    factory, _calls = _make_stub_factory(
+        {
+            "01.png": [_make_block("一页原文")],
+            "02.png": [_make_block("二页原文")],
+        }
+    )
+
+    def _maybe_fail_render(ctx, text_order, **kwargs):
+        fname = os.path.basename(str(getattr(ctx, "image_name", "") or ""))
+        if fname == "01.png":
+            raise RuntimeError("simulated preview render crash")
+        return _orig_render(ctx, text_order, **kwargs)
+
+    monkeypatch.setattr(job_manager_module, "render_numbered_page_preview", _maybe_fail_render)
+
+    out_dir = tmp_path / "out"
+    cfg = _base_config(str(out_dir))
+    cfg["cli"]["batch_size"] = 1
+
+    mgr = McpJobManager(root_dir=str(_bootstrap.ROOT), get_config=lambda: cfg, translator_factory=factory)
+    try:
+        job = mgr.create_translation_job(inputs=[p1, p2], output_dir=str(out_dir))
+
+        b1, inline1 = mgr.next_translation_batch(job.job_id)
+        assert b1.pages[0].filename == "01.png"
+        assert b1.pages[0].image_delivery_mode == "none"
+        assert b1.pages[0].preview_error is not None
+        assert "simulated preview render crash" in b1.pages[0].preview_error
+        assert inline1 == []
+        assert any(
+            "Preview rendering failed for pages" in h and "01.png" in h for h in b1.hints
+        )
+
+        sub1, inline2 = mgr.submit_translation_batch(
+            job.job_id,
+            b1.batch_id,
+            [{"id": 1, "translation": "第一页"}],
+            return_next=True,
+        )
+        assert sub1.status == "accepted"
+        b2 = sub1.next_batch
+        assert b2 is not None and not b2.done
+        assert b2.pages[0].filename == "02.png"
+        assert b2.pages[0].preview_error is None
+        assert b2.pages[0].image_delivery_mode == "mcp_image"
+        assert len(inline2) == 1  # healthy page still delivers its preview inline
+        assert all("Preview rendering failed" not in h for h in b2.hints)
+
+        done_resp, _ = mgr.submit_translation_batch(
+            job.job_id,
+            b2.batch_id,
+            [{"id": 1, "translation": "第二页"}],
+            return_next=True,
+        )
+        assert done_resp.done is True
+        assert done_resp.summary["rendered_pages"] == 2
+        assert done_resp.summary["failed_pages"] == 0  # preview error ≠ page failure
+    finally:
+        mgr.shutdown()
+
+
+@pytest.mark.parametrize("render_raises", [False, True])
+def test_finalize_before_preview_writeback_is_ignored(tmp_path, monkeypatch, render_raises):
+    """R2-3: a preview thread blocked in render must not resurrect buffers after finalize."""
+    import threading
+
+    import manga_translator.mcp.job_manager as job_manager_module
+    from manga_translator.mcp.batch_adapter import render_numbered_page_preview as _orig_render
+
+    out_dir = tmp_path / "out"
+    img_path = _make_png(tmp_path / "p1.png")
+    factory, _calls = _make_stub_factory({"p1.png": [_make_block("竞态防护")]})
+
+    render_entered = threading.Event()
+    allow_proceed = threading.Event()
+
+    def _blocked_render(ctx, text_order, **kwargs):
+        render_entered.set()
+        allow_proceed.wait(timeout=5.0)
+        if render_raises:
+            raise RuntimeError("simulated preview crash")
+        return _orig_render(ctx, text_order, **kwargs)
+
+    monkeypatch.setattr(job_manager_module, "render_numbered_page_preview", _blocked_render)
+
+    cfg = _base_config(str(out_dir))
+    mgr = McpJobManager(root_dir=str(_bootstrap.ROOT), get_config=lambda: cfg, translator_factory=factory)
+    try:
+        job = mgr.create_translation_job(inputs=[img_path], output_dir=str(out_dir))
+        internal_job = mgr._jobs[job.job_id]
+        pool_prefix = f"mcp-preview-{job.job_id[:6]}"
+
+        # Pool thread passed its final-state snapshot check and is parked inside render.
+        assert render_entered.wait(timeout=10.0)
+
+        # Finalize (via cancel) while the preview thread is still inside render.
+        status = mgr.cancel_job(job.job_id)
+        assert status["status"] == "cancelled"
+
+        allow_proceed.set()
+        deadline = time.monotonic() + 5.0
+        while time.monotonic() < deadline:
+            if not any(t.is_alive() and t.name.startswith(pool_prefix) for t in threading.enumerate()):
+                break
+            time.sleep(0.02)
+
+        page = internal_job.pages[0]
+        assert page.preview_cache is None
+        assert page.preview_error is None
+        assert page.preview_ready.is_set() is True
+        assert page.ctx is None  # finalize already released page buffers
+    finally:
+        allow_proceed.set()
+        mgr.shutdown()
+
+
+def test_next_translation_batch_cancel_wakeup_returns_done_without_fallback(tmp_path, monkeypatch):
+    """R2-3: cancel/finalize waking preview_ready.wait() must yield done=True, no fallback render."""
+    import threading
+
+    import manga_translator.mcp.job_manager as job_manager_module
+    from manga_translator.mcp.batch_adapter import render_numbered_page_preview as _orig_render
+
+    out_dir = tmp_path / "out"
+    img_path = _make_png(tmp_path / "p1.png")
+    factory, _calls = _make_stub_factory({"p1.png": [_make_block("取消唤醒")]})
+
+    render_entered = threading.Event()
+    allow_proceed = threading.Event()
+    render_calls = []
+
+    def _blocked_render(ctx, text_order, **kwargs):
+        render_calls.append(1)
+        render_entered.set()
+        allow_proceed.wait(timeout=5.0)
+        return _orig_render(ctx, text_order, **kwargs)
+
+    monkeypatch.setattr(job_manager_module, "render_numbered_page_preview", _blocked_render)
+
+    cfg = _base_config(str(out_dir))
+    mgr = McpJobManager(root_dir=str(_bootstrap.ROOT), get_config=lambda: cfg, translator_factory=factory)
+    try:
+        job = mgr.create_translation_job(inputs=[img_path], output_dir=str(out_dir))
+
+        holder = {}
+
+        def _lease():
+            payload, inline = mgr.next_translation_batch(job.job_id)
+            holder["payload"] = payload
+            holder["inline"] = inline
+
+        t = threading.Thread(target=_lease, daemon=True)
+        t.start()
+        assert render_entered.wait(timeout=10.0)
+        time.sleep(0.1)  # let the leasing thread park in preview_ready.wait()
+
+        status = mgr.cancel_job(job.job_id)
+        assert status["status"] == "cancelled"
+
+        t.join(timeout=5.0)
+        assert not t.is_alive()
+        payload = holder["payload"]
+        assert payload.done is True
+        assert payload.batch_id is None
+        assert payload.summary["status"] == "cancelled"
+        assert len(render_calls) == 1  # no sync fallback render after cancel wakeup
+
+        allow_proceed.set()
+    finally:
+        allow_proceed.set()
+        mgr.shutdown()
+
