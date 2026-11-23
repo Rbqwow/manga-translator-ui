@@ -795,6 +795,7 @@ def test_global_attempt_precheck_raises_retry_exhausted(monkeypatch):
     'connection is not configured',
     'unsupported connection mode',
     'the connect stage is disabled',
+    'this is a hassle-free misconfiguration',
 ])
 def test_configuration_phrases_are_not_retryable(message):
     assert not is_retryable_api_error(RuntimeError(message))
@@ -807,6 +808,10 @@ def test_configuration_phrases_are_not_retryable(message):
     'network is unreachable',
     'read timed out',
     'HTTP 503 Service Unavailable',
+    '[SSL: WRONG_VERSION_NUMBER] wrong version number',
+    'ConnectError: [SSL: UNEXPECTED_EOF_WHILE_READING] EOF occurred in violation of protocol',
+    'SSLError: sslv3 alert handshake failure',
+    'TLS handshake timeout',
 ])
 def test_real_transport_failures_remain_retryable(message):
     assert is_retryable_api_error(RuntimeError(message))
