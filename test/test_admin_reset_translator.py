@@ -142,11 +142,18 @@ def test_new_translation_waits_for_an_unload_in_progress(monkeypatch):
     def task():
         order.append("task")
 
-    runner = threading.Thread(
-        target=lambda: asyncio.run(task_manager.run_in_translator_thread(task)), daemon=True
-    )
+    submitted = threading.Event()
+
+    def run_task():
+        submitted.set()
+        asyncio.run(task_manager.run_in_translator_thread(task))
+
+    runner = threading.Thread(target=run_task, daemon=True)
     runner.start()
+    # Only check for waiting once the task has really been handed over.
+    assert submitted.wait(timeout=5.0)
     runner.join(timeout=0.3)
+    assert runner.is_alive(), "the task must still be waiting for the unload"
     assert order == [], "a task must not load models while they are being unloaded"
 
     finish_unload.set()

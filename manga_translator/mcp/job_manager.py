@@ -2016,8 +2016,10 @@ class McpJobManager:
         with self._lock:
             if self.has_active_job():
                 return False
+            # The idle timer stays armed: _safe_unload_if_idle() already skips
+            # while the GUI is busy, and cancelling it here left models loaded
+            # indefinitely once the GUI task ended.
             self._gui_reservations += 1
-            self._cancel_idle_timer_locked()
             return True
 
     def release_gpu_for_gui(self) -> None:

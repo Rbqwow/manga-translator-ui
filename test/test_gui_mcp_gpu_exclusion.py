@@ -118,3 +118,20 @@ def test_gui_reservation_does_not_load_the_mcp_stack_and_carries_over(tmp_path):
         assert svc.job_manager._gui_reservations == 0
     finally:
         svc.shutdown()
+
+
+def test_gui_reservation_keeps_the_idle_unload_timer_armed(tmp_path):
+    cfg = _base_config(str(tmp_path / "out"), models_idle_ttl=300)
+    mgr = McpJobManager(root_dir=str(_bootstrap.ROOT), get_config=lambda: cfg)
+    try:
+        with mgr._lock:
+            mgr._schedule_idle_cleanup_locked()
+        timer = mgr._idle_timer
+        assert timer is not None
+
+        assert mgr.try_reserve_gpu_for_gui() is True
+        mgr.release_gpu_for_gui()
+
+        assert mgr._idle_timer is timer, "a GUI task must not drop the pending idle unload"
+    finally:
+        mgr.shutdown()
