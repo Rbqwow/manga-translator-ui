@@ -388,6 +388,9 @@ class McpService(QObject):
         self._server_op_lock = threading.Lock()
         self._job_manager: Optional[Any] = None
         self._http_server: Optional[Any] = None
+        # GUI reservations taken before the job manager exists (no MCP job can
+        # run yet); a manager created meanwhile starts with them.
+        self._early_gui_reservations = 0
 
         if self._config_service is not None and hasattr(self._config_service, "config_changed"):
             try:
@@ -410,6 +413,7 @@ class McpService(QObject):
                     on_progress=self._on_job_progress,
                     on_job_finished=self._on_job_finished,
                 )
+                self._job_manager._gui_reservations = self._early_gui_reservations
             return self._job_manager
 
     @property
@@ -595,6 +599,28 @@ class McpService(QObject):
 
     def has_active_job(self) -> bool:
         return bool(self._job_manager is not None and self._job_manager.has_active_job())
+
+    def try_reserve_gpu_for_gui(self) -> bool:
+        """Claim the GPU for a starting GUI task; False while an MCP job owns it."""
+        with self._lock:
+            if self._job_manager is None:
+                # Avoid loading the MCP stack just to start a GUI task.
+                self._early_gui_reservations += 1
+                return True
+            manager = self._job_manager
+        return manager.try_reserve_gpu_for_gui()
+
+    def release_gpu_for_gui(self) -> None:
+        with self._lock:
+            manager = self._job_manager
+            if self._early_gui_reservations:
+                self._early_gui_reservations -= 1
+                if manager is not None:
+                    # The reservation was handed over when the manager was created.
+                    manager.release_gpu_for_gui()
+                return
+        if manager is not None:
+            manager.release_gpu_for_gui()
 
     def get_current_job_status(self) -> Optional[Dict[str, Any]]:
         if self._job_manager is None:

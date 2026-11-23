@@ -1920,21 +1920,35 @@ class MainAppLogic(QObject):
         """
         Resolves input paths and uses a 'Worker-to-Thread' model to start the translation task.
         """
-        # 双向 GPU 互斥：MCP 正在占卡执行任务时拒绝并发启动 GUI 任务
+        # 双向 GPU 互斥：MCP 正在占卡执行任务时拒绝并发启动 GUI 任务。
+        # 检查与预约在 MCP 管理器的同一把锁内完成；预约一直保持到本任务
+        # 自身的忙碌状态（is_gui_task_active）可见，避免两边同时启动。
+        mcp_service = None
+        reserved = False
         try:
             from services import get_mcp_service
 
             mcp_service = get_mcp_service()
-            if mcp_service is not None and mcp_service.has_active_job():
-                self._ui_log(
-                    "Cannot start GUI translation task while an MCP translation job is running.",
-                    "WARNING",
-                )
-                self.warning_dialog_requested.emit(self._t("MCP Active Job Blocks GUI Task"))
-                return
+            if mcp_service is not None:
+                if not mcp_service.try_reserve_gpu_for_gui():
+                    self._ui_log(
+                        "Cannot start GUI translation task while an MCP translation job is running.",
+                        "WARNING",
+                    )
+                    self.warning_dialog_requested.emit(self._t("MCP Active Job Blocks GUI Task"))
+                    return
+                reserved = True
         except Exception:
             pass
 
+        try:
+            self._start_backend_task_reserved()
+        finally:
+            if reserved:
+                mcp_service.release_gpu_for_gui()
+
+    def _start_backend_task_reserved(self):
+        """Validate inputs and start scanning; runs while the GPU is reserved for the GUI."""
         # 检查是否有任务在运行
         if self.state_manager.is_translating():
             self._ui_log("A task is already running.", "WARNING")
