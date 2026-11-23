@@ -3499,3 +3499,31 @@ def test_mcp_page_open_output_button_prefers_last_job_output_dir(tmp_path, monke
 
 
 
+def test_prev_context_prefers_preceding_pages_over_resume_pages_at_the_end(tmp_path):
+    """Resume pages from the end of the book must not crowd out the pages right before a batch."""
+    out_dir = tmp_path / "out"
+    pages = [_make_png(tmp_path / f"{i:02d}.png") for i in range(3)]
+    factory, _ = _make_stub_factory({f"{i:02d}.png": [_make_block(f"原文{i}")] for i in range(3)})
+    cfg = _base_config(str(out_dir))
+    cfg["cli"]["batch_size"] = 1
+    cfg["cli"]["context_size"] = 2
+
+    mgr = McpJobManager(root_dir=str(_bootstrap.ROOT), get_config=lambda: cfg, translator_factory=factory)
+    try:
+        job = mgr.create_translation_job(inputs=pages, output_dir=str(out_dir))
+        internal_job = mgr._jobs[job.job_id]
+        with internal_job._cond:
+            # Saved translations near the end of the book, as resume context provides them.
+            internal_job._translation_history[50] = [{"text": "終盤", "translation": "终盘"}]
+            internal_job._translation_history[51] = [{"text": "最終話", "translation": "最终话"}]
+
+        batch, _ = mgr.next_translation_batch(job.job_id)
+        for translation in ("第一页译文", "第二页译文"):
+            sub, _ = mgr.submit_translation_batch(
+                job.job_id, batch.batch_id, [{"id": 1, "translation": translation}], return_next=True
+            )
+            batch = sub.next_batch
+        assert batch is not None and batch.batch_id
+        assert [entry["page_index"] for entry in batch.prev_context] == [0, 1]
+    finally:
+        mgr.shutdown()

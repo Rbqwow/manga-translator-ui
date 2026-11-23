@@ -175,7 +175,10 @@ def test_concurrency_one_preserves_sequential_history_and_final_partial_batch():
     assert translator.started == [tuple(names[:3]), tuple(names[3:6]), tuple(names[6:])]
     assert translator.histories[names[0]] == []
     assert [page[0]['text'] for page in translator.histories[names[3]]] == names[:3]
-    assert [page[0]['text'] for page in translator.histories[names[6]]] == names[:6]
+    # Each batch receives exactly the pages it uses as context: the nearest
+    # context_size (3) pages before it, which is also what _build_prev_context
+    # kept when it was handed every finished page.
+    assert [page[0]['text'] for page in translator.histories[names[6]]] == names[3:6]
 
 
 def test_cancellation_aborts_all_inflight_batches_and_restores_callback():
@@ -544,3 +547,18 @@ def test_concurrent_glossary_updates_preserve_every_term(tmp_path, monkeypatch):
     data = load_prompt_file(str(prompt_path))
     assert data['system'] == 'Keep this prompt'
     assert {entry['original'] for entry in data['glossary']['Person']} == {f'name-{i}' for i in range(4)}
+
+
+def test_context_prefers_finished_preceding_pages_over_later_resume_pages():
+    async def request(_translator, _names):
+        await asyncio.sleep(0)
+
+    translator = FakeTranslator(request)
+    translator.context_size = 2
+    translator._resume_context_order = {normalize_path('late.png'): 10}
+    translator._resume_context_pages = [(10, 'late.png', [{'text': 'saved', 'translation': 'Saved page'}])]
+    pipeline, names = build_pipeline(translator, count=3, batch_size=1, workers=1)
+    run_pipeline(pipeline, names)
+
+    history = translator.histories[names[2]]
+    assert [page[0]['text'] for page in history] == [names[0], names[1]]
