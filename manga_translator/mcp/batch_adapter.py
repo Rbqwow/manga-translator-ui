@@ -877,6 +877,21 @@ async def validate_batch_translations(
     return True, [], cleaned_map
 
 
+def _snapshot_page_regions(ctx: Any) -> Tuple[Optional[List[Any]], List[Tuple[Any, Dict[str, Any]]]]:
+    regions = getattr(ctx, "text_regions", None)
+    region_list = list(regions) if regions is not None else None
+    states = [(region, dict(vars(region))) for region in (region_list or []) if hasattr(region, "__dict__")]
+    return region_list, states
+
+
+def _restore_page_regions(ctx: Any, snapshot: Tuple[Optional[List[Any]], List[Tuple[Any, Dict[str, Any]]]]) -> None:
+    region_list, states = snapshot
+    for region, state in states:
+        region.__dict__.clear()
+        region.__dict__.update(state)
+    ctx.text_regions = region_list
+
+
 async def apply_batch_post_processing(
     translator: Any,
     config: Any,
@@ -896,53 +911,64 @@ async def apply_batch_post_processing(
     post_config.translator.enable_post_translation_check = False
 
     redo_pages: List[int] = []
-    for page in pages_in_batch:
-        if cancel_event is not None and cancel_event.is_set():
-            break
-        if getattr(page, "failed", False):
-            continue
-        ctx = page.ctx
-        regions = list(getattr(ctx, "text_regions", None) or [])
-        if not regions:
-            continue
+    # The batch stays leased when this raises, and a resubmission pairs
+    # page.text_order with ctx.text_regions by position. Leaving translated or
+    # filtered regions behind would shift every later ID onto the wrong bubble,
+    # so a failure restores each page touched so far.
+    snapshots: List[Tuple[Any, Any]] = []
+    try:
+        for page in pages_in_batch:
+            if cancel_event is not None and cancel_event.is_set():
+                break
+            if getattr(page, "failed", False):
+                continue
+            ctx = page.ctx
+            regions = list(getattr(ctx, "text_regions", None) or [])
+            if not regions:
+                continue
+            snapshots.append((ctx, _snapshot_page_regions(ctx)))
 
-        initial_ids = getattr(ctx, "_initial_region_ids", None)
-        if initial_ids is None:
-            initial_ids = {id(r) for r in regions}
-            ctx._initial_region_ids = initial_ids
+            initial_ids = getattr(ctx, "_initial_region_ids", None)
+            if initial_ids is None:
+                initial_ids = {id(r) for r in regions}
+                ctx._initial_region_ids = initial_ids
 
-        for rid, region in zip(page.text_order, regions):
-            trans = id_to_translation.get(rid, "")
-            if getattr(config.render, "uppercase", False):
-                trans = trans.upper()
-            elif getattr(config.render, "lowercase", False):
-                trans = trans.lower()
-            region.translation = trans
-            region.target_lang = config.translator.target_lang
-            region._alignment = config.render.alignment
-            region._direction = config.render.direction
+            for rid, region in zip(page.text_order, regions):
+                trans = id_to_translation.get(rid, "")
+                if getattr(config.render, "uppercase", False):
+                    trans = trans.upper()
+                elif getattr(config.render, "lowercase", False):
+                    trans = trans.lower()
+                region.translation = trans
+                region.target_lang = config.translator.target_lang
+                region._alignment = config.render.alignment
+                region._direction = config.render.direction
 
-        ctx.text_regions = await translator._apply_post_translation_processing(ctx, post_config)
-        ctx.text_regions = translator._filter_translated_regions(ctx, config, force_filter=True)
+            ctx.text_regions = await translator._apply_post_translation_processing(ctx, post_config)
+            ctx.text_regions = translator._filter_translated_regions(ctx, config, force_filter=True)
 
-        final_ids = {id(r) for r in (ctx.text_regions or [])}
-        if initial_ids - final_ids:
-            redo_pages.append(page.page_index)
+            final_ids = {id(r) for r in (ctx.text_regions or [])}
+            if initial_ids - final_ids:
+                redo_pages.append(page.page_index)
 
-    merged_terms: List[Dict[str, Any]] = []
-    if (
-        (cancel_event is None or not cancel_event.is_set())
-        and new_terms
-        and bool(getattr(config.translator, "extract_glossary", False))
-        and prompt_file_path
-    ):
-        with _GLOSSARY_MERGE_LOCK:
-            if cancel_event is None or not cancel_event.is_set():
-                glossary_modified, merged_terms = merge_glossary_to_file_with_delta(
-                    prompt_file_path, new_terms
-                )
-                if not glossary_modified:
-                    merged_terms = []
+        merged_terms: List[Dict[str, Any]] = []
+        if (
+            (cancel_event is None or not cancel_event.is_set())
+            and new_terms
+            and bool(getattr(config.translator, "extract_glossary", False))
+            and prompt_file_path
+        ):
+            with _GLOSSARY_MERGE_LOCK:
+                if cancel_event is None or not cancel_event.is_set():
+                    glossary_modified, merged_terms = merge_glossary_to_file_with_delta(
+                        prompt_file_path, new_terms
+                    )
+                    if not glossary_modified:
+                        merged_terms = []
+    except BaseException:
+        for ctx, snapshot in reversed(snapshots):
+            _restore_page_regions(ctx, snapshot)
+        raise
 
     return redo_pages, merged_terms
 

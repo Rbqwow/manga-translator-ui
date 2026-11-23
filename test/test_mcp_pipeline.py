@@ -3527,3 +3527,63 @@ def test_prev_context_prefers_preceding_pages_over_resume_pages_at_the_end(tmp_p
         assert [entry["page_index"] for entry in batch.prev_context] == [0, 1]
     finally:
         mgr.shutdown()
+
+
+def _glossary_term(category, original, translation):
+    return {
+        "category": category,
+        "original": original,
+        "aliases": [{"original": original, "translations": [{"text": translation}]}],
+    }
+
+
+def test_failed_post_processing_restores_regions_so_resubmit_maps_ids(tmp_path, monkeypatch):
+    """A submission that fails after filtering must not shift IDs for the retry."""
+    import manga_translator.translators.common as common_module
+
+    out_dir = tmp_path / "out"
+    prompt_file = tmp_path / "prompt.yaml"
+    prompt_file.write_text(
+        yaml.safe_dump({"system_prompt": "Translate", "glossary": {}}, allow_unicode=True),
+        encoding="utf-8",
+    )
+    p1 = _make_png(tmp_path / "p1.png")
+    factory, _ = _make_stub_factory(
+        {"p1.png": [_make_block("一", y=20), _make_block("二", y=80), _make_block("三", y=140)]}
+    )
+    cfg = _base_config(str(out_dir))
+    cfg["translator"]["extract_glossary"] = True
+    cfg["translator"]["high_quality_prompt_path"] = str(prompt_file)
+
+    def _failing_merge(*_args, **_kwargs):
+        raise OSError("disk full")
+
+    mgr = McpJobManager(root_dir=str(_bootstrap.ROOT), get_config=lambda: cfg, translator_factory=factory)
+    try:
+        job = mgr.create_translation_job(inputs=[p1], output_dir=str(out_dir))
+        internal_job = mgr._jobs[job.job_id]
+        batch, _ = mgr.next_translation_batch(job.job_id)
+        assert [r.id for r in batch.pages[0].regions] == [1, 2, 3]
+
+        with monkeypatch.context() as patch:
+            patch.setattr(common_module, "merge_glossary_to_file_with_delta", _failing_merge)
+            with pytest.raises(OSError):
+                # The blank id=2 is filtered before the glossary merge fails.
+                mgr.submit_translation_batch(
+                    job.job_id, batch.batch_id,
+                    [{"id": 1, "translation": "猫"}, {"id": 2, "translation": ""}, {"id": 3, "translation": "狗"}],
+                    new_terms=[_glossary_term("Item", "聖剣", "圣剑")], return_next=False,
+                )
+
+        ctx = internal_job.pages[0].ctx
+        assert [r.text for r in ctx.text_regions] == ["一", "二", "三"]
+        assert all(not r.translation for r in ctx.text_regions)
+
+        retry, _ = mgr.submit_translation_batch(
+            job.job_id, batch.batch_id,
+            [{"id": 1, "translation": "甲"}, {"id": 2, "translation": "乙"}, {"id": 3, "translation": "丙"}],
+            return_next=False,
+        )
+        assert retry.status == "accepted", retry.errors
+    finally:
+        mgr.shutdown()
