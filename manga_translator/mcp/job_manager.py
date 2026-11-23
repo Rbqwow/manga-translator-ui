@@ -2129,6 +2129,9 @@ class McpJobManager:
         else:
             effective = "text_only"
 
+        # 0 disables cross-page context; `or 3` used to report it as 3.
+        raw_context_size = cli_cfg.get("context_size")
+        context_size = 3 if raw_context_size is None else max(0, int(raw_context_size))
         gui_snap = self._get_gui_snapshot() if self._get_gui_snapshot else {}
         gui_files = list(gui_snap.get("source_files") or ())
         output_dir = str(gui_snap.get("output_dir") or app_cfg.get("last_output_path") or "")
@@ -2164,7 +2167,7 @@ class McpJobManager:
             preview_quality=int(mcp_cfg.get("preview_quality", 82) or 82),
             max_parallel_batches=int(mcp_cfg.get("max_parallel_batches", 1) or 1),
             batch_size=int(cli_cfg.get("batch_size", 3) or 3),
-            context_size=int(cli_cfg.get("context_size", 3) or 3),
+            context_size=context_size,
             ai_line_break_enabled=bool(render_cfg.get("disable_auto_wrap", False)),
             check_br_and_retry=bool(render_cfg.get("check_br_and_retry", False)),
             extract_glossary=bool(trans_cfg.get("extract_glossary", False)),

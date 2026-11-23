@@ -3587,3 +3587,15 @@ def test_failed_post_processing_restores_regions_so_resubmit_maps_ids(tmp_path, 
         assert retry.status == "accepted", retry.errors
     finally:
         mgr.shutdown()
+
+
+def test_workspace_info_reports_disabled_context_as_zero(tmp_path):
+    cfg = _base_config(str(tmp_path / "out"))
+    cfg["cli"]["context_size"] = 0
+    mgr = McpJobManager(root_dir=str(_bootstrap.ROOT), get_config=lambda: cfg)
+    try:
+        assert mgr.get_workspace_info().context_size == 0
+        del cfg["cli"]["context_size"]
+        assert mgr.get_workspace_info().context_size == 3
+    finally:
+        mgr.shutdown()
