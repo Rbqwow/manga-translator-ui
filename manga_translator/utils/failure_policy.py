@@ -33,7 +33,7 @@ def is_retry_exhausted(error):
 
 
 class FailureSkipPolicy:
-    def __init__(self, enabled=False, max_skips=3):
+    def __init__(self, enabled=False, max_skips=5):
         self.enabled = enabled
         self.max_skips = max(0, int(max_skips))
         self._lock = threading.Lock()

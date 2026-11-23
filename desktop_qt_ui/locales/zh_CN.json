@@ -1534,7 +1534,7 @@
   "label_skip_failed_after_retries": "重试耗尽后跳过",
   "label_max_failure_skips": "失败跳过上限",
   "desc_cli_skip_failed_after_retries": "请求按现有重试次数及 API 通道轮换仍失败后，跳过对应图片并继续。批量请求失败按受影响图片数累计；其他错误仍由“忽略错误”控制。重试次数为 -1 时仍会无限重试。",
-  "desc_cli_max_failure_skips": "累计跳过这么多张重试耗尽的图片后停止整个任务（默认 3；0 表示不限）。仅在“重试耗尽后跳过”开启时生效，即使开启“忽略错误”也会停止。已有输出、无文本等正常跳过不计入。",
+  "desc_cli_max_failure_skips": "累计跳过这么多张重试耗尽的图片后停止整个任务（默认 5；0 表示不限）。仅在“重试耗尽后跳过”开启时生效，即使开启“忽略错误”也会停止。已有输出、无文本等正常跳过不计入。",
   "task_skipped_summary": "重试耗尽，已跳过 {count} 个文件：",
   "failure_skip_limit_reached": "任务已停止：因重试耗尽而跳过的图片已达到上限 {count} 张。可调整“失败跳过上限”，或检查以下失败原因后重试。",
   "MCP Service": "MCP 服务",

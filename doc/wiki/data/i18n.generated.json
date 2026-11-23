@@ -5156,8 +5156,8 @@
     },
     {
       "key": "desc_cli_max_failure_skips",
-      "en_US": "Stop the task when this many images have been skipped after exhausted retries (default 3; 0 means unlimited). Only applies when skipping after retries is enabled, and takes precedence over Ignore Errors. Existing outputs and other normal skips do not count.",
-      "zh_CN": "累计跳过这么多张重试耗尽的图片后停止整个任务（默认 3；0 表示不限）。仅在“重试耗尽后跳过”开启时生效，即使开启“忽略错误”也会停止。已有输出、无文本等正常跳过不计入。",
+      "en_US": "Stop the task when this many images have been skipped after exhausted retries (default 5; 0 means unlimited). Only applies when skipping after retries is enabled, and takes precedence over Ignore Errors. Existing outputs and other normal skips do not count.",
+      "zh_CN": "累计跳过这么多张重试耗尽的图片后停止整个任务（默认 5；0 表示不限）。仅在“重试耗尽后跳过”开启时生效，即使开启“忽略错误”也会停止。已有输出、无文本等正常跳过不计入。",
       "status": "exact"
     },
     {
