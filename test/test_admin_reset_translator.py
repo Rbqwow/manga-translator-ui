@@ -94,3 +94,87 @@ def test_endpoint_returns_the_reset_result(monkeypatch):
 
     assert calls == [True]
     assert result["unloaded"] == 2
+
+
+def test_reset_is_refused_while_a_translation_task_runs(unloaded):
+    """Tasks load models from the same caches; unloading under them fails them."""
+    translator = task_manager._global_translator
+
+    with task_manager._model_gate.use():
+        result = task_manager.reset_global_translator()
+
+    assert result["success"] is False
+    assert result["busy"] is True
+    assert unloaded == [], "caches must not be unloaded while a task runs"
+    assert task_manager._global_translator is translator
+
+
+def test_translator_thread_holds_the_model_gate_for_the_whole_task():
+    seen = []
+
+    def task():
+        seen.append(task_manager._model_gate.users)
+        return "done"
+
+    assert asyncio.run(task_manager.run_in_translator_thread(task)) == "done"
+    assert seen == [1]
+    assert task_manager._model_gate.users == 0
+
+
+def test_new_translation_waits_for_an_unload_in_progress(monkeypatch):
+    import threading
+
+    unload_started = threading.Event()
+    finish_unload = threading.Event()
+    order = []
+
+    def slow_cleanup(unload_models=False):
+        unload_started.set()
+        finish_unload.wait(timeout=5.0)
+        order.append("unload")
+        return 1
+
+    monkeypatch.setattr(task_manager.model_cleanup, "cleanup_model_caches_sync", slow_cleanup)
+    resetter = threading.Thread(target=task_manager.reset_global_translator, daemon=True)
+    resetter.start()
+    assert unload_started.wait(timeout=5.0)
+
+    def task():
+        order.append("task")
+
+    runner = threading.Thread(
+        target=lambda: asyncio.run(task_manager.run_in_translator_thread(task)), daemon=True
+    )
+    runner.start()
+    runner.join(timeout=0.3)
+    assert order == [], "a task must not load models while they are being unloaded"
+
+    finish_unload.set()
+    resetter.join(timeout=5.0)
+    runner.join(timeout=5.0)
+    assert order == ["unload", "task"]
+
+
+def test_model_gate_refuses_exclusive_access_while_in_use():
+    gate = task_manager._ModelUsageGate()
+    with gate.use():
+        with gate.try_exclusive() as acquired:
+            assert acquired is False
+    with gate.try_exclusive() as acquired:
+        assert acquired is True
+    assert gate.users == 0
+
+
+def test_endpoint_reports_a_refused_reset_as_conflict(monkeypatch):
+    from fastapi import HTTPException
+
+    monkeypatch.setattr(
+        task_manager,
+        "reset_global_translator",
+        lambda: {"success": False, "busy": True, "unloaded": 0, "message": "有 1 个翻译任务正在运行"},
+    )
+
+    with pytest.raises(HTTPException) as excinfo:
+        asyncio.run(admin_routes.reset_translator_endpoint(session=SimpleNamespace(username="admin")))
+
+    assert excinfo.value.status_code == 409

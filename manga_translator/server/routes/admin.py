@@ -140,6 +140,13 @@ async def reset_translator_endpoint(session: Session = Depends(require_admin)):
     from manga_translator.server.core.task_manager import reset_global_translator
 
     result = await asyncio.to_thread(reset_global_translator)
+    if not result.get("success", True):
+        # Running tasks share the caches; unloading now would fail them.
+        add_log(
+            f"Administrator {session.username} model release refused: {result.get('message', '')}",
+            "WARNING",
+        )
+        raise HTTPException(409, detail=result.get("message") or "Translation tasks are running")
     add_log(
         f"Administrator {session.username} released cached models: "
         f"{result.get('unloaded', 0)} cache(s)",
