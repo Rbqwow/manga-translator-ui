@@ -1373,4 +1373,10 @@ class ConcurrentPipeline:
         
         with self._lock:
             self.translator.all_page_translations = self._available_history(set())
-        return sorted(self._results, key=lambda ctx: self._page_order.get(normalize_path(ctx.image_name), 0))
+        return self.finished_contexts()
+
+    def finished_contexts(self) -> List[Context]:
+        """Pages finished so far, in page order; still valid after an abort."""
+        with self._results_lock:
+            results = list(self._results)
+        return sorted(results, key=lambda ctx: self._page_order.get(normalize_path(ctx.image_name), 0))

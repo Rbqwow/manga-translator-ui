@@ -78,3 +78,34 @@ def test_task_policy_reaches_every_pipeline_worker(monkeypatch, limit):
     assert all(policy is task_policy for policy in request_policies)
     assert len(task_policy.skipped_items) == (limit or len(names))
     assert default_policy.skipped_items == []
+
+
+def test_pages_finished_before_a_pipeline_skip_limit_abort_stay_observable(monkeypatch):
+    """Subprocess mode counts _last_batch_partial_results after an abort.
+
+    Only the sequential path used to fill it, so with the concurrent pipeline
+    (the default) pages that were already saved vanished from the counts.
+    """
+    translator = engine(
+        monkeypatch, batch_concurrent=True, translation_concurrency=1,
+        batch_size=1, max_failure_skips=2,
+    )
+    pipeline, names = build_pipeline(translator, count=6, batch_size=1, workers=1)
+
+    async def translate(texts, *_args, **_kwargs):
+        if texts[0] in names[:2]:
+            return [f'translated {text}' for text in texts]
+        raise RetryExhaustedError('API retries exhausted')
+
+    monkeypatch.setattr(translator, '_batch_translate_texts', translate)
+    pipeline_module = importlib.import_module('manga_translator.utils.concurrent_pipeline')
+    monkeypatch.setattr(pipeline_module, 'ConcurrentPipeline', lambda *_args, **_kwargs: pipeline)
+
+    async def run():
+        with pytest.raises(FailureSkipLimitExceeded):
+            await translator.translate_batch([(name, config()) for name in names])
+
+    asyncio.run(run())
+    finished = [ctx.image_name for ctx in translator._last_batch_partial_results]
+    assert names[0] in finished and names[1] in finished
+    assert finished == sorted(finished), "partial results keep page order"
