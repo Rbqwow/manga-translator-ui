@@ -5393,7 +5393,13 @@ class MangaTranslator:
                     merged_ctx.text_regions = None
                     merged_ctx = None
                 batch = None
-                self._cleanup_gpu_memory(aggressive=True)
+                # Concurrent workers (they always pass context_history) only
+                # wait on network requests while detection/inpainting/rendering
+                # threads own the GPU. A device-wide synchronize + empty_cache
+                # from every worker after every request stalls those stages and
+                # drops the allocator cache they reuse; they clean up themselves.
+                if context_history is None:
+                    self._cleanup_gpu_memory(aggressive=True)
 
         return results
 

@@ -562,3 +562,33 @@ def test_context_prefers_finished_preceding_pages_over_later_resume_pages():
 
     history = translator.histories[names[2]]
     assert [page[0]['text'] for page in history] == [names[0], names[1]]
+
+
+def test_concurrent_translation_workers_leave_gpu_cleanup_to_gpu_stages(monkeypatch):
+    """API-only translation workers must not synchronize and flush the CUDA cache per request."""
+    translator = MangaTranslator(params={'use_gpu': False, 'filter_text_enabled': False, 'context_size': 0})
+    cleanups = []
+    monkeypatch.setattr(translator, '_cleanup_gpu_memory', lambda **kwargs: cleanups.append(kwargs))
+
+    async def translate_texts(texts, *_args, **_kwargs):
+        return [f'translated {text}' for text in texts]
+
+    async def prepare(_config, ctx):
+        return ctx
+
+    async def post(ctx, _config):
+        return ctx.text_regions
+
+    monkeypatch.setattr(translator, '_batch_translate_texts', translate_texts)
+    monkeypatch.setattr(translator, '_load_and_prepare_prompts', prepare)
+    monkeypatch.setattr(translator, '_apply_post_translation_processing', post)
+
+    def batch():
+        config = Config(translator=TranslatorConfig(translator=Translator.openai, enable_post_translation_check=False))
+        return [(Context(image_name='p.png', text_regions=[SimpleNamespace(text='p', translation='')]), config)]
+
+    asyncio.run(translator._batch_translate_contexts(batch(), 1, context_history=[]))
+    assert cleanups == []
+
+    asyncio.run(translator._batch_translate_contexts(batch(), 1))
+    assert cleanups == [{'aggressive': True}], "the sequential path still cleans up per batch"
