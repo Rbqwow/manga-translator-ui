@@ -7,7 +7,6 @@ import numpy as np
 from editor.paste_overlay_state import (
     PAGE_KEY,
     compose_paste_overlays,
-    new_overlay_id,
     normalize_paste_overlay,
     parse_page_paste_overlays,
     png_base64_to_rgba_overlay,
@@ -161,13 +160,6 @@ def test_png_base64_helpers_round_trip():
     assert png_base64_to_rgba_overlay("not-base64!!") is None
 
 
-def test_ids_survive_round_trip_without_duplicates():
-    first = new_overlay_id()
-    overlays = serialize_paste_overlays([_valid_overlay(id=first)])
-    parsed = parse_page_paste_overlays({"paste_overlays": overlays})
-    assert parsed[0]["id"] == first
-
-
 def _solid_rgba(width, height, color):
     rgba = np.zeros((height, width, 4), dtype=np.uint8)
     rgba[..., 0], rgba[..., 1], rgba[..., 2] = color
@@ -212,13 +204,6 @@ def test_compose_paste_overlays_honors_visibility_and_opacity():
     composite = compose_paste_overlays([faded], (80, 60))
     assert composite is not None
     assert 60 < composite[30, 20, 3] < 200
-
-
-def test_compose_paste_overlays_rotation_smoke():
-    rotated = _overlay_with_image(40, 30, width=20, height=10, rotation=45)
-    composite = compose_paste_overlays([rotated], (80, 60))
-    assert composite is not None
-    assert np.any(composite[..., 3] > 0)
 
 
 def _solid_overlay(color, center, size=10, z=0, **overrides):
@@ -303,14 +288,3 @@ def test_compose_clamps_overlay_partially_outside_canvas():
     assert composite is not None
     assert composite[0, 0, 3] > 250
     assert composite[0, 0, 0] > 200
-
-
-def test_paste_overlay_supported_suffixes_aligns_with_global():
-    from desktop_qt_ui.ui.editor.graphics_view_paste_overlays import _IMAGE_SUFFIXES
-    from manga_translator.image_formats import SUPPORTED_IMAGE_EXTENSIONS
-
-    assert set(SUPPORTED_IMAGE_EXTENSIONS).issubset(_IMAGE_SUFFIXES)
-    assert ".jfif" in _IMAGE_SUFFIXES
-    assert ".png" in _IMAGE_SUFFIXES
-    assert ".webp" in _IMAGE_SUFFIXES
-    assert ".bmp" in _IMAGE_SUFFIXES

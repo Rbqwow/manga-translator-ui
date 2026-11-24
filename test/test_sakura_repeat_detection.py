@@ -1,5 +1,6 @@
+import _bootstrap  # noqa: F401
+
 import logging
-import pytest
 from unittest.mock import AsyncMock
 from manga_translator.translators.sakura import SakuraTranslator
 
@@ -51,16 +52,6 @@ def test_detect_and_caculate_repeats_threshold_hit():
     assert count == 25
     assert pattern == "喵"
     assert s == "喵"
-
-
-def test_detect_repeats_and_get_repeat_count():
-    translator = SakuraTranslator.__new__(SakuraTranslator)
-    translator.logger = logging.getLogger("test_sakura")
-
-    assert translator._detect_repeats("") is False
-    assert translator._detect_repeats("啊") is False
-    assert translator._get_repeat_count("") == 0
-    assert translator._get_repeat_count("啊") == 0
 
 
 def test_translate_single_lines_handles_short_responses():

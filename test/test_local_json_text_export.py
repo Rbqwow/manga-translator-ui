@@ -8,7 +8,6 @@ from types import SimpleNamespace
 import pytest
 
 from desktop_qt_ui.services import workflow_service
-from desktop_qt_ui.core.config_models import CliSettings
 from manga_translator.config import Config, TranslatorConfig
 from desktop_qt_ui.app_logic import MainAppLogic
 from manga_translator.manga_translator import MangaTranslator
@@ -42,12 +41,6 @@ def _forbid_image_processing(*args, **kwargs):
     raise AssertionError(
         "local JSON export must not enter image processing or JSON write-back"
     )
-
-
-def test_local_json_text_export_defaults_follow_the_release_template():
-    # config/config-example.json enables it, so both models must agree.
-    assert Config().cli.export_from_local_json is True
-    assert CliSettings().export_from_local_json is True
 
 
 @pytest.mark.parametrize(

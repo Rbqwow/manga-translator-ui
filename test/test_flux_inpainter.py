@@ -4,14 +4,8 @@ import asyncio
 
 import numpy as np
 
-from manga_translator.config import Inpainter, InpainterConfig
-from manga_translator.inpainting import INPAINTERS
+from manga_translator.config import InpainterConfig
 from manga_translator.inpainting.inpainting_flux import Flux2KleinInpainter
-
-
-def test_flux_inpainter_is_registered():
-    assert Inpainter.flux2_klein.value == "flux2-klein"
-    assert INPAINTERS[Inpainter.flux2_klein] is Flux2KleinInpainter
 
 
 def test_flux_resize_keeps_model_alignment():

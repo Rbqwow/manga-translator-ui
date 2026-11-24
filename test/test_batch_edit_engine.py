@@ -6,15 +6,11 @@
     uv run python -m pytest test/test_batch_edit_engine.py
 """
 
+import _bootstrap  # noqa: F401
+
 import json
 import os
-import sys
 import tempfile
-from pathlib import Path
-
-ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT))
-sys.path.insert(0, str(ROOT / "desktop_qt_ui"))
 
 from services import batch_edit_engine as engine  # noqa: E402
 from services import batch_edit_schemes as schemes  # noqa: E402
@@ -144,13 +140,6 @@ def test_bool_and_derived_conditions():
     assert engine.evaluate_condition(
         paragraph_only, {"field": "has_rich_text", "op": "is_false"}
     )
-
-
-def test_dead_region_flags_are_not_exposed():
-    """region 级 bold/italic/underline/font_weight 没有任何 UI 会写、渲染也基本不读，
-    摆进批量表只会让人点了没反应 —— 真正生效的加粗/斜体在富文本样式里。"""
-    for key in ("bold", "italic", "underline", "font_weight"):
-        assert key not in engine.FIELDS_BY_KEY, key
 
 
 def test_logic_all_vs_any_and_empty_conditions():

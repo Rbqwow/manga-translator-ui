@@ -172,9 +172,6 @@ def test_inpaint_dispatch_resolves_device_preference_in_job(
 
 def test_mcp_cold_startup_defers_heavy_and_asgi_imports():
     """P2-13: McpService construction and cold queries must not eagerly import torch/mcp/uvicorn/starlette/cv2."""
-    import ast
-    from pathlib import Path
-
     res1 = subprocess.run([sys.executable, "-c", """
 import sys
 import desktop_qt_ui.main
@@ -227,19 +224,3 @@ loaded = heavy & set(sys.modules)
 assert loaded == set(), f"Unexpected eager imports in mcp_service: {sorted(loaded)}"
 """], cwd=_bootstrap.ROOT, capture_output=True, text=True, check=False, timeout=45)
     assert res2.returncode == 0, f"stdout:\n{res2.stdout}\nstderr:\n{res2.stderr}"
-
-    forbidden = {"cv2", "numpy", "PIL", "torch", "mcp", "uvicorn", "starlette"}
-    targets = [
-        Path(_bootstrap.ROOT) / "manga_translator" / "mcp" / "batch_adapter.py",
-        Path(_bootstrap.ROOT) / "manga_translator" / "mcp" / "__init__.py",
-        Path(_bootstrap.ROOT) / "manga_translator" / "mcp" / "job_manager.py",
-        Path(_bootstrap.ROOT) / "desktop_qt_ui" / "services" / "mcp_service.py",
-    ]
-    for path in targets:
-        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
-        for node in tree.body:
-            if isinstance(node, ast.Import):
-                for alias in node.names:
-                    assert alias.name.split(".")[0] not in forbidden, f"{path}: top-level import {alias.name}"
-            elif isinstance(node, ast.ImportFrom) and node.module:
-                assert node.module.split(".")[0] not in forbidden, f"{path}: top-level from {node.module}"

@@ -1,10 +1,4 @@
-from pathlib import Path
-import sys
-
-
-ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT))
-sys.path.insert(0, str(ROOT / "desktop_qt_ui"))
+import _bootstrap  # noqa: F401
 
 from desktop_qt_ui.editor.desktop_ui_geometry import (  # noqa: E402
     calculate_center_scaled_rect,

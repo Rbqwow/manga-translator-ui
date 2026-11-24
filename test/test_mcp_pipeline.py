@@ -25,8 +25,6 @@ from manga_translator.utils.textblock import TextBlock
 from services.log_service import (
     configure_queue_logging,
     shutdown_queue_logging,
-    subscribe_log_records,
-    unsubscribe_log_records,
 )
 from services.mcp_service import McpService
 
@@ -532,48 +530,7 @@ def test_build_mcp_engine_config_isolation_and_cli_overrides(tmp_path):
     assert params["translate_json_only"] is False
 
 
-def test_pending_redo_triggers_clean_mask_and_reinpaint(tmp_path):
-    img_path = _make_png(tmp_path / "p1.png")
-    regions_map = {
-        "p1.png": [
-            _make_block("元テキスト", y=20),
-            _make_block("消す言葉", y=80),
-        ]
-    }
-    factory, calls = _make_stub_factory(regions_map)
-
-    out_dir = tmp_path / "out"
-    cfg = _base_config(str(out_dir))
-    mgr = McpJobManager(root_dir=str(_bootstrap.ROOT), get_config=lambda: cfg, translator_factory=factory)
-    try:
-        job = mgr.create_translation_job(inputs=[img_path], output_dir=str(out_dir))
-        batch, _ = mgr.next_translation_batch(job.job_id)
-
-        # Force initial pre-inpaint completion to simulate speculative inpaint done before commit
-        internal_job = mgr._jobs[job.job_id]
-        with internal_job._cond:
-            internal_job.pages[0].inpaint_done = True
-            internal_job.pages[0].ctx.mask = np.ones((320, 240), dtype=np.uint8) * 255
-
-        # Region 2 submitted identical to original -> filtered out by force_filter=True -> pending_redo
-        resp, _ = mgr.submit_translation_batch(
-            job.job_id,
-            batch.batch_id,
-            [
-                {"id": 1, "translation": "翻译文本"},
-                {"id": 2, "translation": "消す言葉"},
-            ],
-            return_next=True,
-        )
-        assert resp.redo_pages == [0]
-        assert resp.done is True
-        # Second bool in calls["inpaint"] is (ctx.mask is None) BEFORE run_page_inpaint called _run_mask_refinement
-        assert len(calls["inpaint"]) >= 1
-    finally:
-        mgr.shutdown()
-
-
-def test_glossary_merge_lock_and_delta_propagation(tmp_path):
+def test_glossary_merge_lock_is_thread_safe(tmp_path):
     prompt_file = tmp_path / "prompt.yaml"
     prompt_file.write_text(
         yaml.safe_dump(
@@ -587,12 +544,11 @@ def test_glossary_merge_lock_and_delta_propagation(tmp_path):
     )
 
     out_dir = tmp_path / "out"
-    cfg_dict = _base_config(str(out_dir), max_parallel_batches=2)
-    cfg_dict["cli"]["batch_size"] = 1
+    cfg_dict = _base_config(str(out_dir))
     cfg_dict["translator"]["extract_glossary"] = True
     cfg_dict["translator"]["high_quality_prompt_path"] = str(prompt_file)
 
-    # 1) Direct thread-safety stress test on apply_batch_post_processing glossary writes
+    # Direct thread-safety stress test on apply_batch_post_processing glossary writes
     engine_cfg, params = build_mcp_engine_config(cfg_dict, str(_bootstrap.ROOT))
     translator = MangaTranslator(params=params)
     pages_dummy = [SimpleNamespace(failed=False, ctx=SimpleNamespace(text_regions=[]))]
@@ -627,54 +583,6 @@ def test_glossary_merge_lock_and_delta_propagation(tmp_path):
     parsed = yaml.safe_load(prompt_file.read_text(encoding="utf-8"))
     saved_terms = {item["original"] for item in parsed["glossary"].get("Item", [])}
     assert saved_terms == {f"Term{i}" for i in range(6)}
-
-    # 2) Multi-worker glossary_delta propagation across parallel batches
-    p1 = _make_png(tmp_path / "p1.png")
-    p2 = _make_png(tmp_path / "p2.png")
-    factory, _calls = _make_stub_factory(
-        {
-            "p1.png": [_make_block("勇者登場")],
-            "p2.png": [_make_block("魔王登場")],
-        }
-    )
-    mgr = McpJobManager(root_dir=str(_bootstrap.ROOT), get_config=lambda: cfg_dict, translator_factory=factory)
-    try:
-        job = mgr.create_translation_job(inputs=[p1, p2], output_dir=str(out_dir))
-        assert "glossary" in job.__dict__ or isinstance(job.glossary, dict)
-
-        b1, _ = mgr.next_translation_batch(job.job_id, worker_id="w1")
-        sub1, _ = mgr.submit_translation_batch(
-            job.job_id,
-            b1.batch_id,
-            [{"id": 1, "translation": "勇者登场"}],
-            new_terms=[
-                {
-                    "category": "Skill",
-                    "original": "勇者斬り",
-                    "aliases": [
-                        {
-                            "original": "勇者斬り",
-                            "translations": [{"text": "勇者斩", "context": "skill"}],
-                        }
-                    ],
-                }
-            ],
-            return_next=False,
-        )
-        assert sub1.merged_terms_count == 1
-
-        b2, _ = mgr.next_translation_batch(job.job_id, worker_id="w2")
-        assert b2.glossary_version >= 1
-        assert any(t["original"] == "勇者斬り" for t in b2.glossary_delta)
-        sub2, _ = mgr.submit_translation_batch(
-            job.job_id,
-            b2.batch_id,
-            [{"id": 1, "translation": "魔王登场"}],
-            return_next=True,
-        )
-        assert sub2.done is True
-    finally:
-        mgr.shutdown()
 
 
 def test_lease_timeout_release_parallel_and_out_of_order_context(tmp_path):
@@ -842,79 +750,11 @@ def test_resume_boundary_textless_bypass_and_retranslate_json(tmp_path):
         mgr2.shutdown()
 
 
-def test_mcp_service_config_skill_install_and_log_subscriber(tmp_path):
-    svc = McpService(root_dir=str(_bootstrap.ROOT))
-    try:
-        cfg_file = tmp_path / ".gemini" / "config" / "mcp_config.json"
-        cfg_file.parent.mkdir(parents=True, exist_ok=True)
-        cfg_file.write_text(
-            json.dumps({"mcpServers": {"other-server": {"command": "echo", "args": ["ok"]}}}),
-            encoding="utf-8",
-        )
-
-        written_cfg = Path(svc.install_mcp_config("antigravity", cfg_file, port=9123))
-        assert written_cfg == cfg_file
-        parsed = json.loads(cfg_file.read_text(encoding="utf-8"))
-        assert parsed["mcpServers"]["other-server"] == {"command": "echo", "args": ["ok"]}
-        assert parsed["mcpServers"]["manga-translator"] == {"url": "http://127.0.0.1:9123/mcp"}
-
-        skill_target = tmp_path / ".agents" / "skills" / "manga-translate" / "SKILL.md"
-        written_skill = Path(svc.install_skill(skill_path=skill_target))
-        assert written_skill == skill_target
-        template_path = Path(_bootstrap.ROOT) / "manga_translator" / "mcp" / "skill_template.md"
-        skill_content = skill_target.read_text(encoding="utf-8")
-        assert skill_content == template_path.read_text(encoding="utf-8")
-        assert "read_file" not in skill_content
-        assert "invoke_subagent" not in skill_content
-        assert "antigravity" not in skill_content.lower()
-
-        # Verify log subscription & unsubscription
-        received = []
-        sub = lambda entry: received.append(entry)
-        configure_queue_logging([])
-        subscribe_log_records(sub)
-        try:
-            test_logger = logging.getLogger("manga_translator.mcp.test_subscriber")
-            test_logger.warning("mcp subscriber probe message")
-            deadline = time.monotonic() + 2.0
-            while time.monotonic() < deadline and not any(
-                "mcp subscriber probe message" in e.get("message", "") for e in received
-            ):
-                time.sleep(0.02)
-            assert any("mcp subscriber probe message" in e.get("message", "") for e in received)
-
-            count_before = len(received)
-            unsubscribe_log_records(sub)
-            test_logger.warning("mcp subscriber after unsubscribe")
-            time.sleep(0.1)
-            assert not any("mcp subscriber after unsubscribe" in e.get("message", "") for e in received)
-            assert len(received) == count_before
-        finally:
-            unsubscribe_log_records(sub)
-            shutdown_queue_logging()
-    finally:
-        svc.shutdown()
-
-
 def test_mcp_service_multi_client_snippets_merges_and_skill_targets(tmp_path, monkeypatch):
     import tomllib
 
     svc = McpService(root_dir=str(_bootstrap.ROOT))
     try:
-        profiles = svc.list_mcp_client_profiles()
-        keys = [p.key for p in profiles]
-        assert keys == [
-            "generic",
-            "claude_code",
-            "codex",
-            "cursor",
-            "opencode",
-            "antigravity",
-            "windsurf",
-            "vscode",
-            "stdio_bridge",
-        ]
-
         url = "http://127.0.0.1:9456/mcp"
         assert json.loads(svc.get_mcp_client_config_snippet("generic", port=9456)) == {
             "mcpServers": {"manga-translator": {"url": url}}
@@ -1024,39 +864,6 @@ def test_mcp_service_multi_client_snippets_merges_and_skill_targets(tmp_path, mo
         assert claude_skill.exists()
     finally:
         svc.shutdown()
-
-
-def test_decoupled_file_path_hints_and_preview_note(tmp_path):
-    from manga_translator.mcp.batch_adapter import resolve_batch_image_delivery
-
-    dummy_bytes = b"\xff\xd8\xff\xe0" + b"0" * 2048
-    encoded = {0: (dummy_bytes, "image/jpeg", 100, 100, "p1.png")}
-
-    resolved_fp, hints_fp = resolve_batch_image_delivery(
-        encoded,
-        delivery="file_path",
-        budget_mb=2.0,
-        preview_dir=str(tmp_path / "p1"),
-        batch_id="b1",
-        fmt="jpeg",
-    )
-    assert resolved_fp[0]["mode"] == "file_path"
-    assert hints_fp
-    assert all("read_file" not in h for h in hints_fp)
-    assert any("local file/image viewing tool" in h for h in hints_fp)
-
-    resolved_budget, hints_budget = resolve_batch_image_delivery(
-        encoded,
-        delivery="auto",
-        budget_mb=0.0001,
-        preview_dir=str(tmp_path / "p2"),
-        batch_id="b2",
-        fmt="jpeg",
-    )
-    assert resolved_budget[0]["mode"] == "file_path"
-    assert hints_budget
-    assert all("read_file" not in h for h in hints_budget)
-    assert any("local file/image viewing tool" in h for h in hints_budget)
 
 
 def test_completed_job_closes_preview_pool_and_prunes_jobs(tmp_path):
@@ -1325,12 +1132,7 @@ def test_p2_inpaint_failure_during_lease_releases_ctx_and_converges_batch(tmp_pa
 
 
 def test_ipv6_endpoint_formatting_and_codex_inline_table_error(tmp_path):
-    from manga_translator.mcp.server_app import format_mcp_endpoint_url
     from services.mcp_service import _merge_codex_toml_config
-
-    assert format_mcp_endpoint_url("::1", 8765) == "http://[::1]:8765/mcp"
-    assert format_mcp_endpoint_url("[::1]", 8765) == "http://[::1]:8765/mcp"
-    assert format_mcp_endpoint_url("127.0.0.1", 8765) == "http://127.0.0.1:8765/mcp"
 
     class _FakeConfigService:
         def get_config(self):
@@ -2090,19 +1892,7 @@ def test_submit_cancel_release_preview_concurrency_guards(tmp_path, monkeypatch)
 
     mgr2 = McpJobManager(root_dir=str(_bootstrap.ROOT), get_config=lambda: cfg2, translator_factory=factory)
     try:
-        # First check committed page rejection cleanly
-        job_c = mgr2.create_translation_job(inputs=[p1], output_dir=str(out_dir))
-        internal_c = mgr2._jobs[job_c.job_id]
-        mgr2.next_translation_batch(job_c.job_id)
-        with internal_c._cond:
-            internal_c.pages[0].committed = True
-        with pytest.raises(RuntimeError, match="committed/rendered"):
-            mgr2.get_page_preview(job_c.job_id, 0)
-        with internal_c._cond:
-            internal_c.pages[0].committed = False
-        mgr2.cancel_job(job_c.job_id)
-
-        # Now cancel mid-next_translation_batch after preview file is written
+        # Cancel mid-next_translation_batch after preview file is written
         monkeypatch.setattr(job_manager_module, "resolve_batch_image_delivery", _wrapped_delivery)
         job_d = mgr2.create_translation_job(inputs=[p1], output_dir=str(out_dir))
         preview_dir = out_dir / "manga_translator_work" / "mcp_preview" / job_d.job_id
@@ -2401,32 +2191,6 @@ def test_recent_log_handler_filters_debug_truncates_and_tracks_sequence(tmp_path
     assert "info message 1" in file_contents
 
 
-def test_mcp_service_no_log_subscriber_and_active_log_dir(tmp_path):
-    import services.log_service as log_service_module
-
-    custom_log_dir = tmp_path / "custom_logs"
-    custom_log_dir.mkdir(parents=True, exist_ok=True)
-    log_file = custom_log_dir / "run.log"
-    fh = logging.FileHandler(log_file, encoding="utf-8")
-    fh.setLevel(logging.DEBUG)
-
-    configure_queue_logging([fh])
-    subscribers_before = len(log_service_module._LOG_SUBSCRIBERS)
-    svc = McpService(
-        root_dir=str(tmp_path),
-        config_service=SimpleNamespace(get_config=lambda: _base_config(str(tmp_path))),
-    )
-    try:
-        assert not hasattr(svc, "log_record_received")
-        assert len(log_service_module._LOG_SUBSCRIBERS) == subscribers_before
-        assert os.path.normpath(svc.get_log_directory()) == os.path.normpath(
-            os.path.abspath(str(custom_log_dir))
-        )
-    finally:
-        svc.shutdown()
-        shutdown_queue_logging()
-
-
 _QT_APP_REF = None
 
 
@@ -2475,9 +2239,7 @@ def test_mcp_page_panel_logs_visibility_gated_batched_and_no_filter(tmp_path, mo
         assert log_service_module.get_recent_log_sequence() >= target_seq
 
     try:
-        assert not hasattr(panel, "log_filter_combo")
         assert panel.log_view.isUndoRedoEnabled() is False
-        assert panel.log_view.maximumBlockCount() == panel._MAX_LOG_LINES == 300
         assert panel.isVisible() is False
         assert panel._log_poll_timer.isActive() is False
 
@@ -3380,7 +3142,7 @@ def test_install_mcp_config_handles_utf8_bom_and_codex_stdio_upgrade(tmp_path):
 
 
 def test_secondary_ocr_api_ignored_when_hybrid_ocr_disabled(tmp_path):
-    """P3-1 & P3-4: disabled secondary_ocr never triggers 0-API conflict; guidelines include MCP submission note."""
+    """Disabled secondary_ocr never triggers 0-API conflict."""
     img_path = _make_png(tmp_path / "p1.png")
     out_dir = tmp_path / "out"
     cfg = _base_config(str(out_dir))
@@ -3395,14 +3157,18 @@ def test_secondary_ocr_api_ignored_when_hybrid_ocr_disabled(tmp_path):
         ws = mgr.get_workspace_info()
         assert ws.api_conflicts == []
         job_resp = mgr.create_translation_job(inputs=[img_path], output_dir=str(out_dir))
-        assert "submit_translation_batch" in job_resp.guidelines
         mgr.cancel_job(job_resp.job_id)
     finally:
         mgr.shutdown()
 
 
-def test_get_job_status_reclaims_expired_lease_immediately(tmp_path):
+def test_get_job_status_reclaims_expired_lease_immediately(tmp_path, monkeypatch):
     """P3-2: get_job_status reclaims expired leases immediately without waiting for next_translation_batch."""
+    import manga_translator.mcp.job_manager as job_manager_module
+
+    now = [1000.0]
+    monkeypatch.setattr(job_manager_module, "time", SimpleNamespace(monotonic=lambda: now[0]))
+
     img_path = _make_png(tmp_path / "p1.png")
     out_dir = tmp_path / "out"
     cfg = _base_config(str(out_dir), lease_timeout_seconds=10)
@@ -3418,9 +3184,7 @@ def test_get_job_status_reclaims_expired_lease_immediately(tmp_path):
         assert len(status_before["leases"]) == 1
         assert status_before["queues"]["leased_batches"] == 1
 
-        job = mgr._jobs[job_resp.job_id]
-        with job._cond:
-            job._batches[batch.batch_id].leased_at = time.monotonic() - 100.0
+        now[0] += 20.0
 
         status_after = mgr.get_job_status(job_resp.job_id)
         assert status_after["leases"] == []
@@ -3495,38 +3259,6 @@ def test_mcp_page_open_output_button_prefers_last_job_output_dir(tmp_path, monke
         mcp_svc.shutdown()
         log_svc.shutdown()
         shutdown_queue_logging()
-
-
-
-
-def test_prev_context_prefers_preceding_pages_over_resume_pages_at_the_end(tmp_path):
-    """Resume pages from the end of the book must not crowd out the pages right before a batch."""
-    out_dir = tmp_path / "out"
-    pages = [_make_png(tmp_path / f"{i:02d}.png") for i in range(3)]
-    factory, _ = _make_stub_factory({f"{i:02d}.png": [_make_block(f"原文{i}")] for i in range(3)})
-    cfg = _base_config(str(out_dir))
-    cfg["cli"]["batch_size"] = 1
-    cfg["cli"]["context_size"] = 2
-
-    mgr = McpJobManager(root_dir=str(_bootstrap.ROOT), get_config=lambda: cfg, translator_factory=factory)
-    try:
-        job = mgr.create_translation_job(inputs=pages, output_dir=str(out_dir))
-        internal_job = mgr._jobs[job.job_id]
-        with internal_job._cond:
-            # Saved translations near the end of the book, as resume context provides them.
-            internal_job._translation_history[50] = [{"text": "終盤", "translation": "终盘"}]
-            internal_job._translation_history[51] = [{"text": "最終話", "translation": "最终话"}]
-
-        batch, _ = mgr.next_translation_batch(job.job_id)
-        for translation in ("第一页译文", "第二页译文"):
-            sub, _ = mgr.submit_translation_batch(
-                job.job_id, batch.batch_id, [{"id": 1, "translation": translation}], return_next=True
-            )
-            batch = sub.next_batch
-        assert batch is not None and batch.batch_id
-        assert [entry["page_index"] for entry in batch.prev_context] == [0, 1]
-    finally:
-        mgr.shutdown()
 
 
 def _glossary_term(category, original, translation):

@@ -474,7 +474,7 @@ class ChineseLinebreakDebugWindow(QWidget):
                 debug_context="ui_ocr",
             )
 
-            single_w, single_h, _ = calc_box_from_font(
+            single_w, single_h, _, _ = calc_box_from_font(
                 font_size,
                 text,
                 horizontal,
@@ -842,7 +842,7 @@ class ChineseLinebreakDebugWindow(QWidget):
         bubble_h: float,
         letter_spacing: float,
     ) -> CandidateRow:
-        req_w, req_h, n_segments = calc_box_from_font(
+        req_w, req_h, n_segments, _ = calc_box_from_font(
             font_size,
             text_with_br,
             horizontal,

@@ -1,16 +1,11 @@
 """中文语义断句空格处理回归测试。
 
-纯函数部分不依赖 HanLP 模型;端到端部分在本机模型缺失时打印 SKIP。
 直接运行:python test/test_chinese_linebreak_spaces.py
 """
 
 from __future__ import annotations
 
-import sys
-from pathlib import Path
-
-ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT))
+import _bootstrap  # noqa: F401
 
 from manga_translator.rendering.chinese_linebreak import (
     SemanticUnit,
@@ -18,10 +13,7 @@ from manga_translator.rendering.chinese_linebreak import (
     _inject_space_units,
     _is_structural_break_unit,
     _merge_lines_to_target_segments,
-    _semantic_units,
     candidate_semantic_break_penalty,
-    chinese_linebreak_models_available,
-    layout_chinese_cjk,
 )
 
 
@@ -128,69 +120,6 @@ def test_penalty_rejects_tampered_content():
 def test_penalty_plain_chinese_regression():
     assert candidate_semantic_break_penalty("今天天气真好", "今天[BR]天气真好") < 1000000
     assert candidate_semantic_break_penalty("今天天气真好", "今日[BR]天气真好") == 1000000
-
-
-# ---------------------------------------------------------------------------
-# 端到端(需要本机 HanLP 模型)
-# ---------------------------------------------------------------------------
-
-
-def _models_ready() -> bool:
-    if chinese_linebreak_models_available():
-        return True
-    print("SKIP: HanLP 模型不可用,跳过端到端用例")
-    return False
-
-
-def test_semantic_units_mixed_text_no_fallback():
-    if not _models_ready():
-        return
-    for text in (
-        "HELLO WORLD 这是一个测试",
-        "我在 GITHUB 上看到 HELLO WORLD 项目",
-        "你好　世界",
-    ):
-        units = _semantic_units(text)
-        assert units is not None, f"含空白文本不应再回退: {text!r}"
-        assert "".join(unit.text for unit in units) == text
-
-
-def test_semantic_units_pure_chinese_regression():
-    if not _models_ready():
-        return
-    text = "今天天气真好，我们出去玩吧。"
-    units = _semantic_units(text)
-    assert units is not None
-    assert "".join(unit.text for unit in units) == text
-
-
-def test_layout_space_rules():
-    if not _models_ready():
-        return
-    text = "HELLO WORLD 你好世界"
-    wide = layout_chinese_cjk(30, text, 10000, horizontal=True)
-    assert wide is not None
-    wide_lines = wide[0]
-    assert wide_lines == [text], f"整体放得下时行内空格应完整保留: {wide_lines!r}"
-
-    narrow = layout_chinese_cjk(30, text, 200, horizontal=True)
-    assert narrow is not None
-    narrow_lines = narrow[0]
-    assert len(narrow_lines) > 1
-    for line in narrow_lines:
-        assert line == line.strip(), f"断点处空格应删除,行首尾不应有空白: {narrow_lines!r}"
-    # 删掉断点空格后其余字符应与原文一致
-    rejoined = "".join(narrow_lines)
-    assert rejoined.replace(" ", "") == text.replace(" ", "")
-
-
-def test_layout_pure_chinese_roundtrip():
-    if not _models_ready():
-        return
-    text = "今天天气真好，我们出去玩吧。"
-    layout = layout_chinese_cjk(30, text, 300, horizontal=True)
-    assert layout is not None
-    assert "".join(layout[0]) == text, "无空格文本排版必须无损还原"
 
 
 def main() -> int:

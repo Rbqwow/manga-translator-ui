@@ -1,12 +1,8 @@
-import sys
-from pathlib import Path
+import _bootstrap  # noqa: F401
+
 from unittest.mock import patch
 
 import numpy as np
-
-
-ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT))
 
 from manga_translator.detection import merge_detection_boxes  # noqa: E402
 from manga_translator.utils import Quadrilateral  # noqa: E402

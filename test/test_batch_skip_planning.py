@@ -304,14 +304,6 @@ def test_concurrent_translation_splits_at_resume_boundary(tmp_path, monkeypatch)
     assert observed[1][1] == [str(source_paths[0]), "Skipped page"]
 
 
-def main() -> int:
-    return pytest.main([__file__])
-
-
-if __name__ == "__main__":
-    raise SystemExit(main())
-
-
 def test_context_prefers_the_nearest_pages_before_the_batch():
     assert select_context_orders(range(10), {6, 7}, 3) == [3, 4, 5]
 
@@ -326,3 +318,11 @@ def test_context_never_includes_the_batch_and_respects_the_limit():
     assert select_context_orders([0, 1, 2], {5}, 0) == []
     # Without a batch (end-of-run snapshot) the most recent pages are kept.
     assert select_context_orders([4, 0, 9, 2], set(), 2) == [4, 9]
+
+
+def main() -> int:
+    return pytest.main([__file__])
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

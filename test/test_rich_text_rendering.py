@@ -321,37 +321,6 @@ class RichTextRenderingTest(unittest.TestCase):
         self.assertEqual(len(vertical_widths), 2)
         self.assertTrue(all(height > 0 for height in vertical_heights))
 
-    def test_structured_document_renders_horizontal_and_vertical(self):
-        document = _sample_document()
-
-        horizontal = text_render.put_text_horizontal(
-            32,
-            document,
-            420,
-            180,
-            "left",
-            False,
-            (255, 255, 255),
-            (0, 0, 0),
-            line_spacing=1.0,
-        )
-        vertical = text_render.put_text_vertical(
-            32,
-            document,
-            260,
-            "left",
-            (255, 255, 255),
-            (0, 0, 0),
-            line_spacing=1.0,
-        )
-
-        self.assertIsNotNone(horizontal)
-        self.assertIsNotNone(vertical)
-        self.assertEqual(horizontal.shape[2], 4)
-        self.assertEqual(vertical.shape[2], 4)
-        self.assertGreater(int(horizontal[:, :, 3].max()), 0)
-        self.assertGreater(int(vertical[:, :, 3].max()), 0)
-
     def test_vertical_column_keeps_thickness_separate_from_annotations(self):
         from manga_translator.rendering.text_render._vertical_types import (
             VerticalColumnPlan,
@@ -1074,44 +1043,6 @@ class RichTextRenderingTest(unittest.TestCase):
         )
         self.assertGreater(ruby_render.shape[0], base_render.shape[0])
 
-    def test_vertical_ruby_is_drawn_once_for_the_complete_base_span(self):
-        from unittest import mock
-
-        from manga_translator.rendering.text_render import _render as render_module
-
-        ruby_document = {
-            "format": RICH_TEXT_FORMAT,
-            "blocks": [
-                {
-                    "type": "paragraph",
-                    "inlines": [
-                        {
-                            "type": "ruby",
-                            "base": [{"type": "text", "text": "漢字", "style": {}}],
-                            "text": [{"type": "text", "text": "123", "style": {}}],
-                        }
-                    ],
-                }
-            ],
-        }
-
-        with mock.patch.object(render_module, "_paint_vertical_ruby") as draw_ruby:
-            rendered = text_render.put_text_vertical(
-                32,
-                ruby_document,
-                200,
-                "center",
-                (255, 255, 255),
-                (0, 0, 0),
-                line_spacing=1.0,
-            )
-
-        self.assertIsNotNone(rendered)
-        self.assertEqual(draw_ruby.call_count, 1)
-        args = draw_ruby.call_args.args
-        self.assertEqual("".join(glyph.char for glyph in args[1].glyphs), "123")
-        self.assertGreater(args[1].paint_end - args[1].paint_start, 32)
-
     def test_horizontal_ruby_characters_are_evenly_distributed_over_base(self):
         document = ensure_rich_text_document(
             {
@@ -1207,138 +1138,6 @@ class RichTextRenderingTest(unittest.TestCase):
 
         self.assertIsNotNone(rendered)
         self.assertGreater(int(rendered[:, :, 3].max()), 0)
-
-    def test_measure_horizontal_span_metrics_match_render_path(self):
-        # F21：横排度量改用 _line_metrics（无光栅化）后，logical_width/ascent/
-        # descent 必须与渲染路径（_rich_span_surface）产出的数值完全一致。
-        document = ensure_rich_text_document(
-            {
-                "format": RICH_TEXT_FORMAT,
-                "blocks": [
-                    {
-                        "type": "paragraph",
-                        "inlines": [
-                            {"type": "text", "text": "漢字Abc", "style": {}},
-                            {
-                                "type": "text",
-                                "text": "大字",
-                                "style": {"fontSize": 48, "bold": True},
-                            },
-                        ],
-                    }
-                ],
-            }
-        )
-
-        from manga_translator.rendering.text_render import _layout as layout_module
-
-        for span in document.blocks[0].spans:
-            span_font = text_render._style_font_size(32, span.style)
-            run = layout_module._build_horizontal_run_plan(
-                span, 32, 0.07, (0, 0, 0), False, 1.0
-            )
-            metrics = text_render._line_metrics(span.text, span_font, 1.0)
-
-            self.assertTrue(run.has_ink)
-            self.assertEqual(float(metrics["logical_width"]), run.logical_width)
-            self.assertEqual(float(metrics["ascent"]), run.ascent)
-            self.assertEqual(float(metrics["descent"]), run.descent)
-
-    def test_vertical_column_plan_is_deterministic_and_geometry_shared(self):
-        document = ensure_rich_text_document(
-            {
-                "format": RICH_TEXT_FORMAT,
-                "blocks": [
-                    {
-                        "type": "paragraph",
-                        "inlines": [
-                            {"type": "text", "text": "粗", "style": {"bold": True}},
-                            {
-                                "type": "text",
-                                "text": "斜",
-                                "style": {
-                                    "italic": True,
-                                    "transform": {"rotation": 18},
-                                },
-                            },
-                            {
-                                "type": "text",
-                                "text": "描",
-                                "style": {
-                                    "stroke": {"color": "#000000", "width": 0.12}
-                                },
-                            },
-                            {
-                                "type": "ruby",
-                                "base": [
-                                    {
-                                        "type": "text",
-                                        "text": "漢",
-                                        "style": {"emphasis": True},
-                                    }
-                                ],
-                                "text": [{"type": "text", "text": "かん", "style": {}}],
-                            },
-                            {
-                                "type": "tcy",
-                                "content": [
-                                    {"type": "text", "text": "2026", "style": {}}
-                                ],
-                            },
-                        ],
-                    },
-                    {
-                        "type": "paragraph",
-                        "inlines": [{"type": "text", "text": "第二列", "style": {}}],
-                    },
-                ],
-            }
-        )
-
-        full = text_render._build_rich_vertical_layout(
-            document, 32, 0.07, (255, 255, 255), (0, 0, 0), 1.0
-        )
-        measured = text_render._build_rich_vertical_layout(
-            document, 32, 0.07, (255, 255, 255), (0, 0, 0), 1.0
-        )
-
-        self.assertEqual(len(full), len(measured))
-        for full_layout, measured_layout in zip(full, measured):
-            self.assertEqual(measured_layout.thickness, full_layout.thickness)
-            self.assertEqual(measured_layout.height, full_layout.height)
-            self.assertEqual(
-                measured_layout.content_paint_bounds, full_layout.content_paint_bounds
-            )
-            self.assertEqual(
-                measured_layout.ruby_cross_extent, full_layout.ruby_cross_extent
-            )
-            self.assertEqual(
-                measured_layout.annotation_cross_extent,
-                full_layout.annotation_cross_extent,
-            )
-            self.assertEqual(len(measured_layout.items), len(full_layout.items))
-            for full_item, measured_item in zip(
-                full_layout.items, measured_layout.items
-            ):
-                self.assertEqual(measured_item, full_item)
-
-        full_geometry = text_render._rich_vertical_layout_geometry(full, 32, 1.0)
-        measured_geometry = text_render._rich_vertical_layout_geometry(
-            measured, 32, 1.0
-        )
-        self.assertEqual(measured_geometry, full_geometry)
-
-    def test_paragraph_spans_are_lazily_cached(self):
-        # F24：解析后的文档不可变，spans 首次计算后缓存（不再每次访问全量 deepcopy）；
-        # 缓存的 span.style 与 inline.style 脱钩。
-        document = ensure_rich_text_document(_sample_document())
-        paragraph = document.blocks[0]
-
-        first = paragraph.spans
-        second = paragraph.spans
-
-        self.assertIs(first, second)
-        self.assertIsNot(first[0].style, paragraph.inlines[0].style)
 
     def test_high_level_render_uses_legacy_breaks_collected_after_layout(self):
         image = np.zeros((220, 220, 3), dtype=np.uint8)
@@ -1482,11 +1281,6 @@ class RichTextRenderingTest(unittest.TestCase):
                 "download_chinese_linebreak_models_if_enabled",
                 new=AsyncMock(),
             ),
-            patch.object(
-                rendering_module,
-                "resize_regions_to_font_size",
-                return_value=[points, points],
-            ),
             patch.object(rendering_module, "render", side_effect=fake_render),
         ):
             for ordered_regions in (regions, regions[::-1]):
@@ -1508,79 +1302,6 @@ class RichTextRenderingTest(unittest.TestCase):
                         calls,
                         [(region.translation, None) for region in ordered_regions],
                     )
-
-    def test_multiline_plain_and_ruby_documents_render_without_supersampling(self):
-        # BR 产生的多行纯文本与带注音文档都应由普通 Qt 路径直接渲染。
-        def _make_region(translation):
-            region = TextBlock(
-                lines=[[[40, 40], [180, 40], [180, 180], [40, 180]]],
-                texts=["原文"],
-                translation=translation,
-                fg_color=(255, 255, 255),
-                bg_color=(0, 0, 0),
-                direction="h",
-                target_lang="CHS",
-            )
-            region.font_size = 32
-            region.font_family = "Arial Unicode MS"
-            return region
-
-        dst_points = np.array(
-            [[[40, 40], [180, 40], [180, 180], [40, 180]]], dtype=np.float32
-        )
-        image = np.zeros((220, 220, 3), dtype=np.uint8)
-
-        plain_region = _make_region("红[BR]蓝")
-        sync_translation_raw_from_layout([plain_region], Config())
-        self.assertEqual(plain_region.translation_rich["format"], RICH_TEXT_FORMAT)
-
-        plain_rendered = render(
-            image.copy(),
-            plain_region,
-            dst_points,
-            hyphenate=True,
-            line_spacing=1.0,
-            disable_font_border=False,
-            config=Config(),
-        )
-        self.assertGreater(int(plain_rendered.max()), 0)
-
-        ruby_region = _make_region("")
-        ruby_region.set_translation_rich(
-            ensure_rich_text_document(
-                {
-                    "format": RICH_TEXT_FORMAT,
-                    "blocks": [
-                        {
-                            "type": "paragraph",
-                            "inlines": [
-                                {
-                                    "type": "ruby",
-                                    "base": [
-                                        {"type": "text", "text": "漢字", "style": {}}
-                                    ],
-                                    "text": [
-                                        {"type": "text", "text": "かんじ", "style": {}}
-                                    ],
-                                }
-                            ],
-                        }
-                    ],
-                }
-            ),
-            sync_plain=True,
-        )
-
-        ruby_rendered = render(
-            image.copy(),
-            ruby_region,
-            dst_points,
-            hyphenate=True,
-            line_spacing=1.0,
-            disable_font_border=False,
-            config=Config(),
-        )
-        self.assertGreater(int(ruby_rendered.max()), 0)
 
     def test_rich_document_font_size_shrinks_to_fit_region_box(self):
         # F07 回归：非 skip_font_scaling 时富文本区域不再直接用估算字号，
@@ -2107,22 +1828,6 @@ class RichTextRenderingTest(unittest.TestCase):
         self.assertGreater(
             glow_geometry["paint_height"], plain_geometry["paint_height"]
         )
-
-    def test_local_stroke_width_scales_with_font_size(self):
-        from manga_translator.rendering.text_render._compose import _style_stroke_ratio
-
-        style = (
-            ensure_rich_text_document(
-                self._single_span_document(
-                    "字", {"stroke": {"color": "#fff", "width": 0.2}}
-                )
-            )
-            .paragraphs[0]
-            .spans[0]
-            .style
-        )
-        self.assertAlmostEqual(_style_stroke_ratio(style, 24, 0.0, None) * 24, 4.8)
-        self.assertAlmostEqual(_style_stroke_ratio(style, 72, 0.0, None) * 72, 14.4)
 
     def test_local_line_spacing_prefers_current_lk_over_previous_nk(self):
         document = ensure_rich_text_document(

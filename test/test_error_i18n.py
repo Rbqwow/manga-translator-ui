@@ -79,6 +79,28 @@ def test_error_catalogs_are_complete_and_preserve_placeholders():
         }, locale
 
 
+def test_all_locale_catalogs_have_matching_keys_and_placeholders():
+    catalogs = {
+        locale: json.loads((LOCALE_DIR / f"{locale}.json").read_text(encoding="utf-8"))
+        for locale in LOCALES
+    }
+    reference = catalogs["zh_CN"]
+    reference_keys = set(reference.keys())
+
+    for locale, catalog in catalogs.items():
+        actual_keys = set(catalog.keys())
+        missing = sorted(reference_keys - actual_keys)
+        extra = sorted(actual_keys - reference_keys)
+        assert not missing and not extra, f"{locale}: missing={missing}, extra={extra}"
+
+        for key, ref_value in reference.items():
+            value = catalog[key]
+            assert isinstance(value, str), (locale, key)
+            assert _placeholders(value) == _placeholders(ref_value), (locale, key)
+            if key.startswith(("label_", "desc_")) or key in ERROR_KEYS:
+                assert value.strip(), (locale, key)
+
+
 @pytest.mark.parametrize(
     ("locale", "expected"),
     [

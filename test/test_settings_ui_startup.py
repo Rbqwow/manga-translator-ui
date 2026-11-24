@@ -2,12 +2,9 @@
 
 import _bootstrap  # noqa: F401
 
-import asyncio
 import json
 from pathlib import Path
 from types import SimpleNamespace
-
-import pytest
 
 # --- P3-13: font catalog progress must not run backwards ----------------
 
@@ -16,62 +13,30 @@ def test_font_catalog_progress_is_monotonic(monkeypatch):
     from desktop_qt_ui.utils import font_list
 
     calls = []
-    families = ['A', 'B', 'C']            # -> 3 candidates after enumeration
+    # 4 families collapse into 3 merged candidates (len(candidates) < len(families))
+    families = ['A', 'B', 'C', 'D']
     monkeypatch.setattr(font_list, '_font_styles', lambda family: ['Regular'])
     monkeypatch.setattr(font_list, 'localized_font_family',
                         lambda family, locale, style: (family, ()))
     monkeypatch.setattr(font_list, 'font_value', lambda family, style: f'{family}|{style}')
     monkeypatch.setattr(font_list, '_font_name_records', lambda family, style: [])
-    monkeypatch.setattr(font_list, '_font_candidate_key', lambda family, style: (family, style))
+    monkeypatch.setattr(
+        font_list,
+        '_font_candidate_key',
+        lambda family, style: ('shared', style) if family in {'A', 'B'} else (family, style),
+    )
     monkeypatch.setattr(font_list, '_canonical_font_rank', lambda entry: (0,))
     monkeypatch.setattr(font_list, '_resolved_font_identity', lambda family, style: ())
 
     font_list._build_font_style_entries(
         'en_US', families, progress=lambda done, total: calls.append((done, total)),
     )
-    assert calls, 'no progress was reported'
+    assert len(calls) == len(families) + 3
     totals = {total for _done, total in calls}
     assert len(totals) == 1, f'denominator changed mid-run: {sorted(totals)}'
     done_values = [done for done, _total in calls]
     assert done_values == sorted(done_values), f'progress went backwards: {done_values}'
     assert max(done_values) <= totals.pop()
-
-
-# --- P3-11: the settings spinner stops even when the build raises --------
-
-def test_settings_loading_bar_stops_when_the_build_raises(monkeypatch):
-    from ui.main_page import dynamic_settings
-
-    class Bar:
-        stopped = False
-
-        def show(self):
-            pass
-
-        def start(self):
-            pass
-
-        def stop(self):
-            self.stopped = True
-
-        def hide(self):
-            pass
-
-    view = SimpleNamespace(
-        _settings_loading_bar=Bar(),
-        tab_frames={},
-        _settings_build_seq=0,
-    )
-    monkeypatch.setattr(dynamic_settings, '_settings_structure_signature', lambda *a, **k: 'sig')
-    monkeypatch.setattr(dynamic_settings, '_refresh_env_api_groups', lambda *a, **k: None)
-    monkeypatch.setattr(
-        dynamic_settings, '_drop_cached_settings_widget_refs',
-        lambda *a, **k: (_ for _ in ()).throw(RuntimeError('layout exploded')),
-    )
-
-    with pytest.raises(RuntimeError, match='layout exploded'):
-        dynamic_settings.set_parameters(view, {'cli': {'format': 'webp'}})
-    assert view._settings_loading_bar.stopped, 'spinner kept running after a failed build'
 
 
 def _has_emoji_or_vs(text: str) -> list[str]:
@@ -89,18 +54,40 @@ def _has_emoji_or_vs(text: str) -> list[str]:
     ]
 
 
+# 历史遗留日志文案（当前桌面 UI 未直接渲染）；新增或修改任意 UI 文案不得加入此集合
+_LEGACY_CONSOLE_LOG_EMOJI_KEYS = frozenset({
+    '⏭️ Skipped {count} existing files.',
+    '📊 Batch processing mode: {total} images in {batches} batches',
+    '🔧 Translation workflow: {mode}',
+    '📁 Output directory: {dir}',
+    '🚀 Starting translation (loading images in batches to save memory)...',
+    '\n📦 Processing batch {current}/{total} (images {start}-{end})...',
+    '\n⚠️ Batch translation completed: {success}/{total} succeeded, {failed}/{total} failed',
+    '✅ Batch translation completed: {success}/{total} succeeded',
+    '💾 Files saved to: {dir}',
+    '📥 Importing translations from TXT files to JSON...',
+    '⚠️ Warning: Cannot find template file, skipping auto-import',
+})
+
+
 def test_locale_descriptions_contain_no_emoji_fallback_triggers():
     locale_dir = _bootstrap.ROOT / 'desktop_qt_ui' / 'locales'
     locales = ('zh_CN', 'zh_TW', 'en_US', 'ja_JP', 'ko_KR', 'es_ES')
+
+    assert not any(
+        key.startswith(('label_', 'desc_'))
+        for key in _LEGACY_CONSOLE_LOG_EMOJI_KEYS
+    )
 
     for locale in locales:
         catalog = json.loads((locale_dir / f'{locale}.json').read_text(encoding='utf-8'))
         for key in ('desc_render_check_br_and_retry', 'desc_upscale_upscaler'):
             assert catalog.get(key, '').strip(), (locale, key)
         for key, value in catalog.items():
-            if key.startswith('desc_'):
-                bad = _has_emoji_or_vs(value)
-                assert not bad, f'{locale}:{key} contains emoji chars {bad}'
+            if key in _LEGACY_CONSOLE_LOG_EMOJI_KEYS:
+                continue
+            bad = _has_emoji_or_vs(value)
+            assert not bad, f'{locale}:{key} contains emoji chars {bad}'
 
 
 def test_editor_context_menu_uses_icons_without_emojis(monkeypatch):

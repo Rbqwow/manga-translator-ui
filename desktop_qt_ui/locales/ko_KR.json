@@ -193,7 +193,7 @@
   "Logs Directory": "로그",
   "Configuration Directory": "구성",
   "Prompts Directory": "프롬프트",
-  "Open Directory": "디렉터리 열기",
+  "Open Directory": "디렉토리 열기",
   "Web Resources": "웹 리소스",
   "Web Resources Subtitle": "프로젝트 소스 코드와 문서입니다.",
   "Support the Project": "프로젝트 후원",
@@ -575,7 +575,6 @@
   "Start Colorizing": "색상화 시작",
   "Start Upscaling": "업스케일 시작",
   "Generate Original Text Template": "원문 템플릿 생성",
-  "Open Directory": "디렉토리 열기",
   "Find": "찾기",
   "Replace with": "다음으로 바꾸기",
   "Replace All": "모두 바꾸기",
@@ -1610,5 +1609,15 @@
   "desc_builtin_system_prompt_line_break": "dict/system_prompt_line_break.yaml에 해당합니다(조판 → AI 줄바꿈 설정과 동기화). AI에게 [BR] 줄바꿈 규칙을 전달합니다.",
   "desc_builtin_glossary_extraction_prompt": "dict/glossary_extraction_prompt.yaml에 해당합니다(번역 → 용어 자동 추출 설정과 동기화). 유효한 사용자 지정 프롬프트 파일이 활성화된 경우에만 적용됩니다.",
   "desc_builtin_system_prompt_hq_format": "dict/system_prompt_hq_format.yaml에 해당합니다. API 모드와 MCP 모드 모두에서 필요한 JSON 출력 스키마 및 ID 매핑 프로토콜을 정의합니다.",
-  "Builtin Format Prompt Required Hint": "출력 형식 프롬프트는 구조화된 JSON 응답 프로토콜에 필수이므로 끌 수 없습니다. 왼쪽 아이콘으로 미리보기 또는 편집할 수 있습니다."
+  "Builtin Format Prompt Required Hint": "출력 형식 프롬프트는 구조화된 JSON 응답 프로토콜에 필수이므로 끌 수 없습니다. 왼쪽 아이콘으로 미리보기 또는 편집할 수 있습니다.",
+  "Clear Selected": "선택 해제",
+  "Compare with Original (Two Panels)": "원본과 비교 (2분할)",
+  "Start JSON Translation": "JSON 전용 번역 시작",
+  "The selected features are missing required API Keys (.env):\n{details}\n\nPlease fill one of the listed API key fields in API Keys (.env) and try again.": "선택한 기능에 필요한 API Key (.env)가 누락되었습니다:\n{details}\n\nAPI 키(.env)에 나열된 API Key 중 하나를 입력한 후 다시 시도하세요.",
+  "Tip: Requires existing JSON data. The app reads original text from JSON, translates it, writes results back to JSON, and deletes imagename_original.txt after success": "팁: 기존 JSON 데이터가 필요합니다. JSON에서 원문을 읽어 번역하고 결과를 JSON에 다시 기록한 뒤 성공 후 imagename_original.txt를 삭제합니다.",
+  "Unable to validate API Keys (.env). Please check the log and try again.": "API Key (.env)를 검증할 수 없습니다. 로그를 확인한 후 다시 시도하세요.",
+  "desc_colorizer_ai_colorizer_history_pages": "이전에 채색된 페이지를 현재 AI 채색 요청의 참조 이미지로 자동 첨부합니다. 텍스트 없이 이미지 컨텍스트만 전달합니다. 0으로 설정하면 비활성화됩니다.",
+  "desc_detector_import_yolo_labels": "manga_translator_work/yolo_labels에서 이미지와 같은 이름의 YOLO 라벨 파일을 읽습니다. 활성 워크플로에 따라 텍스트 박스를 대체하거나 마스크를 다시 생성합니다.",
+  "label_ai_colorizer_history_pages": "AI 채색 기록 페이지 수",
+  "label_import_yolo_labels": "고정 YOLO 박스 가져오기"
 }

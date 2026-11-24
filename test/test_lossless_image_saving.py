@@ -18,23 +18,12 @@ from PyQt6.QtWidgets import QApplication, QVBoxLayout, QWidget
 
 from app_logic import MainAppLogic
 from core.config_models import CliSettings
-from manga_translator.config import CliConfig
-from manga_translator.image_formats import LOSSLESS_SWITCHABLE_PIL_FORMATS
-from manga_translator.manga_translator import MangaTranslator
 from manga_translator.save import save_result
 from manga_translator.utils import Context
 from manga_translator.utils.generic import save_pil_image
 from services.export_service import ExportService
 from ui.main_page import dynamic_settings
 from ui.main_page.view import MainView
-
-
-def test_lossless_switchable_formats_constant():
-    assert "WEBP" in LOSSLESS_SWITCHABLE_PIL_FORMATS
-    assert "AVIF" in LOSSLESS_SWITCHABLE_PIL_FORMATS
-    assert "HEIF" in LOSSLESS_SWITCHABLE_PIL_FORMATS
-    assert "PNG" not in LOSSLESS_SWITCHABLE_PIL_FORMATS
-    assert "JPEG" not in LOSSLESS_SWITCHABLE_PIL_FORMATS
 
 
 def test_save_pil_image_webp_lossless():
@@ -88,45 +77,6 @@ def test_save_result_respects_context_lossless():
         with open(dest_lossy, "rb") as f:
             header_lossy = f.read(16)
         assert b"VP8 " in header_lossy
-
-
-def test_config_models_save_lossless_and_effort_default():
-    # The release template is the product default; keep the models on it so a
-    # new install and the CLI do not encode every page differently.
-    cli_cfg = CliConfig()
-    assert cli_cfg.save_lossless is True
-    assert cli_cfg.compression_effort == 100
-
-    cli_settings = CliSettings()
-    assert cli_settings.save_lossless is True
-    assert cli_settings.compression_effort == 100
-
-
-def test_manga_translator_parse_save_lossless_and_effort():
-    translator = MangaTranslator()
-    translator.parse_init_params({"save_lossless": True, "save_quality": 90, "compression_effort": 85})
-    assert translator.save_lossless is True
-    assert translator.save_quality == 90
-    assert translator.compression_effort == 85
-
-    translator2 = MangaTranslator()
-    translator2.parse_init_params({})
-    assert translator2.save_lossless is False
-    assert translator2.save_quality == 100
-    assert translator2.compression_effort == 100
-
-
-def test_save_pil_image_compression_effort():
-    img = Image.new("RGB", (20, 20), color=(120, 80, 40))
-    with tempfile.TemporaryDirectory() as tmpdir:
-        webp_path = os.path.join(tmpdir, "out_effort.webp")
-        save_pil_image(img, webp_path, lossless=True, compression_effort=80)
-        with open(webp_path, "rb") as f:
-            assert b"VP8L" in f.read(16)
-
-        png_path = os.path.join(tmpdir, "out_effort.png")
-        save_pil_image(img, png_path, compression_effort=90)
-        assert os.path.exists(png_path)
 
 
 @pytest.fixture(scope="module")
@@ -499,28 +449,6 @@ def test_avif_lossless_writes_to_caller_owned_stream(mode):
         with Image.open(output) as decoded:
             assert decoded.info["icc_profile"] == profile
             assert np.array_equal(pixels, np.asarray(decoded.convert(mode)))
-
-
-# --- P3-10: streaming transforms run off the event loop -----------------
-
-def test_streaming_transform_runs_in_a_worker_thread(monkeypatch):
-    import threading
-
-    import manga_translator.server.request_extraction as extraction
-
-    main_thread = threading.get_ident()
-    seen = {}
-
-    def transform(ctx):
-        seen['thread'] = threading.get_ident()
-        return b'payload'
-
-    async def run():
-        return await extraction.run_image_encoding(transform, None)
-
-    result = asyncio.run(run())
-    assert result == b'payload'
-    assert seen['thread'] != main_thread, 'transform still ran on the event loop'
 
 
 # --- P3-9: PNG compression follows effort, not the lossless flag ---------

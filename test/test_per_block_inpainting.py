@@ -1,14 +1,10 @@
+import _bootstrap  # noqa: F401
+
 import asyncio
-import sys
-from pathlib import Path
 from types import SimpleNamespace
 
 import cv2
 import numpy as np
-
-
-WORKSPACE_ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(WORKSPACE_ROOT))
 
 from manga_translator import manga_translator as translator_module  # noqa: E402
 from manga_translator.inpainting import ballon_fill  # noqa: E402

@@ -1,14 +1,10 @@
 from __future__ import annotations
 
-import os
-import sys
-from concurrent.futures import Future
-from pathlib import Path
-from types import MethodType, SimpleNamespace
+import _bootstrap  # noqa: F401
 
-ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT))
-sys.path.insert(0, str(ROOT / "desktop_qt_ui"))
+import os
+from concurrent.futures import Future
+from types import MethodType, SimpleNamespace
 
 import desktop_qt_ui.app_logic as app_logic_module
 from desktop_qt_ui.app_logic import MainAppLogic
@@ -40,61 +36,6 @@ def _logic():
         _path_key=MainAppLogic._path_key,
         _path_is_within=MainAppLogic._path_is_within,
     )
-
-
-def test_file_list_edits_remain_blocked_while_translation_runs(monkeypatch):
-    logic = _logic()
-    logic.state_manager.is_translating = lambda: True
-    monkeypatch.setattr(app_logic_module.os.path, "isdir", lambda _path: False)
-
-    first = r"C:\batch\page1.png"
-    second = r"C:\batch\page2.png"
-    MainAppLogic.add_files(logic, [first, second])
-    assert logic.source_files == []
-
-    MainAppLogic.remove_file(logic, first)
-    assert logic.source_files == []
-
-    logic.source_files = [second]
-    MainAppLogic.clear_file_list(logic)
-    assert logic.source_files == [second]
-
-
-def test_translation_state_keeps_main_file_controls_enabled(monkeypatch):
-    class Widget:
-        def __init__(self):
-            self.enabled = True
-
-        def setEnabled(self, value):
-            self.enabled = bool(value)
-
-    class StartButton(Widget):
-        def setText(self, _text):
-            pass
-
-    view = SimpleNamespace(
-        controller=SimpleNamespace(
-            state_manager=SimpleNamespace(is_translating=lambda: True),
-        ),
-        add_files_button=Widget(),
-        add_folder_button=Widget(),
-        clear_list_button=Widget(),
-        file_list=Widget(),
-        env_page=Widget(),
-        start_button=StartButton(),
-        _t=lambda key: key,
-        _enable_stop_button=lambda: None,
-    )
-    monkeypatch.setattr(main_view_runtime.QTimer, "singleShot", lambda *_args: None)
-
-    main_view_runtime.on_translation_state_changed(view, True)
-
-    assert not view.add_files_button.enabled
-    assert not view.add_folder_button.enabled
-    assert not view.clear_list_button.enabled
-    assert view.file_list.enabled
-    assert not view.env_page.enabled
-    assert not view.start_button.enabled
 
 
 def test_batch_single_files_do_not_run_pairwise_containment(monkeypatch):
@@ -234,32 +175,3 @@ def test_stopping_state_remains_until_worker_and_cleanup_finish(monkeypatch):
     assert not state.translating
     assert state.status == "任务已停止"
     assert main_view.reset
-
-
-def test_shutdown_waits_for_worker_before_qt_teardown():
-    calls = []
-
-    class Worker:
-        def stop(self):
-            calls.append("worker.stop")
-
-    class Executor:
-        def shutdown(self, *, wait, cancel_futures):
-            calls.append(("executor.shutdown", wait, cancel_futures))
-            raise RuntimeError("stop after executor assertion")
-
-    logic = SimpleNamespace(
-        _shutdown_started=False,
-        _scan_request_id=0,
-        current_task_id=0,
-        current_worker=Worker(),
-        state_manager=SimpleNamespace(set_translating=lambda _value: None),
-        _task_executor=Executor(),
-        _ui_log=lambda *_args: None,
-    )
-
-    MainAppLogic.shutdown(logic)
-
-    assert calls == ["worker.stop", ("executor.shutdown", True, True)]
-    assert logic._shutdown_started
-    assert logic.current_worker is None

@@ -1,10 +1,6 @@
-import sys
-from pathlib import Path
+import _bootstrap  # noqa: F401
 
 import numpy as np
-
-WORKSPACE_ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(WORKSPACE_ROOT))
 
 from manga_translator.detection.yolo_obb import YOLOOBBDetector
 

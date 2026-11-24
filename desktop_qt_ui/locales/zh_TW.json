@@ -576,7 +576,6 @@
   "Start Colorizing": "開始上色",
   "Start Upscaling": "開始放大",
   "Generate Original Text Template": "僅產生原文範本",
-  "Open Directory": "開啟目錄",
   "Find": "尋找",
   "Replace with": "取代为",
   "Replace All": "全部取代",
@@ -1612,5 +1611,13 @@
   "desc_builtin_system_prompt_line_break": "對應 dict/system_prompt_line_break.yaml（同步「排版 → AI 斷句」開關）。開啟後向 AI 下發 [BR] 斷句規則。",
   "desc_builtin_glossary_extraction_prompt": "對應 dict/glossary_extraction_prompt.yaml（同步「翻譯 → 自動提取新術語」開關）。需搭配有效的自訂提示詞檔案才會生效。",
   "desc_builtin_system_prompt_hq_format": "對應 dict/system_prompt_hq_format.yaml。定義 JSON 回傳結構與 ID 對應協議，API 與 MCP 模式下始終需要保留。",
-  "Builtin Format Prompt Required Hint": "輸出格式提示詞是結構化 JSON 回傳協議所必需的，無法關閉；可點擊左側圖示預覽或編輯。"
+  "Builtin Format Prompt Required Hint": "輸出格式提示詞是結構化 JSON 回傳協議所必需的，無法關閉；可點擊左側圖示預覽或編輯。",
+  "Clear Selected": "清除選取",
+  "Compare with Original (Two Panels)": "與原圖對比（雙欄）",
+  "Start JSON Translation": "開始僅翻譯（JSON）",
+  "The selected features are missing required API Keys (.env):\n{details}\n\nPlease fill one of the listed API key fields in API Keys (.env) and try again.": "目前所選功能缺少必填的 API Keys(.env)：\n{details}\n\n請在 API金鑰(.env) 中填寫上面列出的任意一個對應 API Key 後再重試。",
+  "Tip: Requires existing JSON data. The app reads original text from JSON, translates it, writes results back to JSON, and deletes imagename_original.txt after success": "提示：需要預先存在 JSON 資料。程式會從 JSON 讀取原文並執行翻譯，完成後回寫 JSON，並刪除圖片名_original.txt。",
+  "Unable to validate API Keys (.env). Please check the log and try again.": "無法校驗 API Keys(.env)，請檢查日誌後再重試。",
+  "desc_detector_import_yolo_labels": "從 manga_translator_work/yolo_labels 讀取與圖片同名的 YOLO 標註檔案。在不同工作流下依約定替換偵測框或補生成遮罩。",
+  "label_import_yolo_labels": "匯入固定YOLO框"
 }

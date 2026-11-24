@@ -33,17 +33,24 @@ def test_skipped_page_is_distinguishable_from_a_textless_page():
 
 
 def test_skip_summary_matches_the_desktop_summary_shape():
+    fallback_ctx = Context(
+        image_name='fallback.png',
+        skipped=True,
+        skip_reason='render_error',
+        skip_message='font error',
+        skip_display_name=None,
+        text_regions=[],
+        input=SimpleNamespace(size=(8, 8)),
+        result=None,
+    )
     contexts = [
         _context('bad.png', skipped=True, reason='retry_exhausted', message='API unavailable'),
         _context('good.png'),
         _context('existing.png', skipped=True, reason='existing_output', message='already exists'),
+        fallback_ctx,
     ]
     summary = build_skip_summary(contexts)
-    assert summary.count == 2
-    assert [item['original_path'] for item in summary.items] == ['bad.png', 'existing.png']
-    assert summary.items[0]['skip_reason'] == 'retry_exhausted'
-
-
-def test_no_skips_produces_an_empty_summary():
-    assert build_skip_summary([_context('a.png')]).count == 0
-    assert build_skip_summary([]).count == 0
+    assert summary.count == 3
+    assert [item['original_path'] for item in summary.items] == ['bad.png', 'existing.png', 'fallback.png']
+    assert [item['skip_reason'] for item in summary.items] == ['retry_exhausted', 'existing_output', 'render_error']
+    assert [item['skip_message'] for item in summary.items] == ['API unavailable', 'already exists', 'font error']

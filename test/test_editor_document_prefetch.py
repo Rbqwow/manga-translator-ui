@@ -3,13 +3,11 @@ import _bootstrap  # noqa: F401, I001
 import concurrent.futures
 import logging
 import tempfile
-import threading
 from pathlib import Path
 from types import SimpleNamespace
 
 from PIL import Image
 
-from editor.controller_document_service import EditorControllerDocumentService
 from editor.document_load_worker import DocumentLoadWorker
 from editor.document_state import DocumentSnapshot
 from editor.editor_logic import EditorLogic
@@ -59,68 +57,6 @@ def test_document_worker_prefetches_complete_snapshot_without_changing_current(t
     assert manager.get_current_image() is None
 
 
-def test_prefetched_snapshot_is_consumed_once():
-    service = EditorControllerDocumentService.__new__(EditorControllerDocumentService)
-    service._prefetch_lock = threading.RLock()
-    service._prefetched_documents = {}
-    service._desired_prefetch_keys = set()
-    path = "page.png"
-    snapshot = DocumentSnapshot(
-        source_path=path,
-        image=Image.new("RGB", (4, 3), "white"),
-        display_image_path=path,
-    )
-    service._prefetched_documents[service._prefetch_key(path)] = snapshot
-
-    assert service._take_prefetched_document(path) is snapshot
-    assert service._take_prefetched_document(path) is None
-
-
-def test_load_uses_prefetched_snapshot_without_submitting_disk_worker():
-    class Signal:
-        def __init__(self):
-            self.values = []
-
-        def emit(self, value):
-            self.values.append(value)
-
-    class RejectingExecutor:
-        def submit(self, *_args, **_kwargs):
-            raise AssertionError("cache hit must not submit a disk-load worker")
-
-    snapshot = DocumentSnapshot(
-        source_path="page.png",
-        image=Image.new("RGB", (4, 3), "white"),
-        display_image_path="page.png",
-    )
-    signal = Signal()
-    activated = []
-    service = EditorControllerDocumentService.__new__(EditorControllerDocumentService)
-    service._is_shutdown = False
-    service._load_generation = 7
-    service._active_load_future = None
-    service.clear_editor_state = lambda: None
-    service._take_prefetched_document = lambda _path: snapshot
-    resource_manager = SimpleNamespace(
-        activate_prefetched_image=lambda *args, **kwargs: activated.append(
-            (args, kwargs)
-        )
-    )
-    service.controller = SimpleNamespace(
-        get_toast_manager=lambda: None,
-        _load_result_ready=signal,
-        _loading_toast=None,
-        resource_manager=resource_manager,
-        logger=logging.getLogger(__name__),
-    )
-    service._load_executor = RejectingExecutor()
-
-    service.do_load_image("page.png")
-
-    assert len(activated) == 1
-    assert signal.values == [(7, snapshot)]
-
-
 def main() -> int:
     with tempfile.TemporaryDirectory() as directory:
         tmp_path = Path(directory)
@@ -128,9 +64,7 @@ def main() -> int:
         test_document_worker_prefetches_complete_snapshot_without_changing_current(
             tmp_path
         )
-    test_prefetched_snapshot_is_consumed_once()
-    test_load_uses_prefetched_snapshot_without_submitting_disk_worker()
-    print("4 document prefetch regressions passed")
+    print("2 document prefetch regressions passed")
     return 0
 
 

@@ -4,7 +4,7 @@ from PyQt6 import sip
 from PyQt6.QtWidgets import QApplication, QWidget
 from qfluentwidgets import InfoBar, InfoBarPosition, InfoBarManager
 
-from ui.widgets.toast_notification import ToastManager, ToastNotification
+from ui.widgets.toast_notification import ToastManager
 
 
 def _ensure_app():

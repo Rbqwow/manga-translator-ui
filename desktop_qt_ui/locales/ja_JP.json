@@ -193,7 +193,7 @@
   "Logs Directory": "ログ",
   "Configuration Directory": "設定",
   "Prompts Directory": "プロンプト",
-  "Open Directory": "フォルダーを開く",
+  "Open Directory": "ディレクトリを開く",
   "Web Resources": "ウェブリソース",
   "Web Resources Subtitle": "プロジェクトのソースコードとドキュメント。",
   "Support the Project": "プロジェクトを支援",
@@ -575,7 +575,6 @@
   "Start Colorizing": "着色を開始",
   "Start Upscaling": "アップスケールを開始",
   "Generate Original Text Template": "原文テンプレートを生成",
-  "Open Directory": "ディレクトリを開く",
   "Find": "検索",
   "Replace with": "置換",
   "Replace All": "すべて置換",
@@ -1610,5 +1609,15 @@
   "desc_builtin_system_prompt_line_break": "dict/system_prompt_line_break.yaml に対応します（「レイアウト → AI 改行」設定と同期）。[BR] 改行ルールを AI に指示します。",
   "desc_builtin_glossary_extraction_prompt": "dict/glossary_extraction_prompt.yaml に対応します（「翻訳 → 用語自動抽出」設定と同期）。有効なカスタムプロンプトファイルが選択されている場合のみ有効になります。",
   "desc_builtin_system_prompt_hq_format": "dict/system_prompt_hq_format.yaml に対応します。API モードと MCP モードの両方で必要な JSON 出力形式と ID 対応プロトコルを定義します。",
-  "Builtin Format Prompt Required Hint": "出力形式プロンプトは構造化 JSON 出力プロトコルに必須のため無効化できません。プレビューまたは編集は可能です。"
+  "Builtin Format Prompt Required Hint": "出力形式プロンプトは構造化 JSON 出力プロトコルに必須のため無効化できません。プレビューまたは編集は可能です。",
+  "Clear Selected": "選択をクリア",
+  "Compare with Original (Two Panels)": "元画像と比較（2画面）",
+  "Start JSON Translation": "JSON翻訳のみ開始",
+  "The selected features are missing required API Keys (.env):\n{details}\n\nPlease fill one of the listed API key fields in API Keys (.env) and try again.": "選択した機能に必要な API Key (.env) が不足しています：\n{details}\n\nAPIキー(.env) で上記のいずれかの API Key を入力してから再試行してください。",
+  "Tip: Requires existing JSON data. The app reads original text from JSON, translates it, writes results back to JSON, and deletes imagename_original.txt after success": "ヒント：既存の JSON データが必要です。JSON から原文を読み取って翻訳し、結果を JSON に書き戻した後、imagename_original.txt を削除します。",
+  "Unable to validate API Keys (.env). Please check the log and try again.": "API Key (.env) を検証できませんでした。ログを確認して再試行してください。",
+  "desc_colorizer_ai_colorizer_history_pages": "以前に着色したページを現在の AI 着色リクエストの参照画像として自動的に添付します。テキストは含めず画像のみを履歴として渡します。0 を設定すると無効になります。",
+  "desc_detector_import_yolo_labels": "manga_translator_work/yolo_labels から画像と同名の YOLO アノテーションファイルを読み込みます。現在のワークフローに応じて検出枠の置換またはマスクの再生成を行います。",
+  "label_ai_colorizer_history_pages": "AI着色履歴ページ数",
+  "label_import_yolo_labels": "固定YOLO枠をインポート"
 }

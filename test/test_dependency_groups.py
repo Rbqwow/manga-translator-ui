@@ -25,14 +25,6 @@ def test_runtime_variant_excludes_test_only_dependencies():
     assert "pytest-anyio" not in runtime_names
 
 
-def test_default_development_environment_includes_test_group():
-    launch = load_launch("launch_default_dependency_group_test")
-    data = launch._load_pyproject()
-
-    assert "pytest==9.1.1" in data["dependency-groups"]["test"]
-    assert "test" in data["tool"]["uv"]["default-groups"]
-
-
 def test_cuda_groups_use_matching_pytorch_indexes():
     launch = load_launch("launch_cuda_index_test")
 

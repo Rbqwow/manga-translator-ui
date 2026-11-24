@@ -115,7 +115,7 @@ class TextTransform:
 @dataclass
 class TextStyle:
     bold: bool = False
-    # italic: True = 默认斜体角度（渲染层按参考实现取 15°）；数字 = 切变角度
+    # italic: True = 默认斜体角度（渲染层按参考实现取 10°）；数字 = 切变角度
     # （度，正值向右倾）。False/0 = 无斜体。
     italic: bool | float = False
     underline: bool = False

@@ -233,7 +233,7 @@ _MAX_ITALIC_ANGLE = 85.0
 def _style_italic_shear(style: TextStyle) -> float:
     """italic 协议值 → 字形轮廓切变系数（Photoshop 仿斜体语义）。
 
-    True = PS 仿斜体实测默认 10°（见 test/ps_italic_angle.py）；数字 = 角度
+    True = PS 仿斜体实测默认 10°；数字 = 角度
     （度）。切变在字形路径阶段施加（基线原点坐标系 x' = x + shear·y），
     天然绕基线、advance 不变；竖排横躺字先剪切后旋转（R·S）。路径坐标
     y 向下，向右倾斜的系数为 -tan(angle)。

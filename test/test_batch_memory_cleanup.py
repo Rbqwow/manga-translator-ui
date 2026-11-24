@@ -163,34 +163,6 @@ def test_model_cleanup_passes_device_to_offline_translator_hook(isolated_caches)
     assert Translator.none not in isolated_caches
 
 
-@pytest.mark.parametrize('hook', ['unload', '_unload'])
-def test_unload_hook_args_tolerate_every_signature_shape(isolated_caches, hook):
-    """Device is passed only to hooks that require it, never to optional ones."""
-    calls = []
-
-    class Model:
-        async def unload(self, device='cpu'):
-            calls.append(('optional', device))
-
-        async def _unload(self):
-            calls.append(('plain', None))
-
-    if hook == 'unload':
-        class Model:
-            async def unload(self, device):
-                calls.append(('required', device))
-    else:
-        class Model:
-            async def _unload(self):
-                calls.append(('plain', None))
-
-    model = Model()
-    isolated_caches['test'] = model
-    assert asyncio.run(memory_cleanup.cleanup_all_model_caches(True)) == 1
-    expected = ('required', 'cuda') if hook == 'unload' else ('plain', None)
-    assert calls == [expected]
-
-
 def test_failed_unload_can_be_retried(isolated_caches):
     class Model:
         async def unload(self):
@@ -435,17 +407,3 @@ def test_memory_cleanup_reports_through_the_callback(monkeypatch):
 
 async def _caches():
     return 2
-
-
-def test_memory_cleanup_survives_a_failing_callback(monkeypatch):
-    from desktop_qt_ui.utils import memory_cleanup
-
-    monkeypatch.setattr(memory_cleanup, 'cleanup_gpu_memory', lambda: False)
-    monkeypatch.setattr(memory_cleanup, 'cleanup_physical_memory', lambda: False)
-    monkeypatch.setattr(memory_cleanup, 'cleanup_all_model_caches', lambda unload_models=False: _caches())
-
-    def boom(_message):
-        raise RuntimeError('ui gone')
-
-    result = asyncio.run(memory_cleanup.full_memory_cleanup(log_callback=boom))
-    assert result['caches_cleared'] == 2

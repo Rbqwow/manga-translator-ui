@@ -28,7 +28,7 @@ lastUpdated: true
 - 测试函数优先写成 pytest 风格 `test_*`；每个脚本也要能直接运行：`python test/<script>.py`。
 - 会用 Qt 或本仓代码的脚本，第一句 import 必须是 `import _bootstrap  # noqa: F401`。
 - Qt 控件测试优先使用 `pytest-qt` 和 `qtbot`（`test/README.md` 的推荐；`pyproject.toml` 目前未声明 `pytest-qt`，未安装时用脚本直接运行路径兜底）。
-- 当前跟踪的 `test/*.py` 共 52 个，其中 pytest 风格 `test_*.py` 39 个（2026-08-07 经 `git ls-files` 核对）。
+- 当前跟踪的 `test/*.py` 共 111 个，其中 pytest 风格 `test_*.py` 108 个（经 `git ls-files` 核对）。
 
 `test/_bootstrap.py` 把每个测试作者都要自己记的三件事收在一处：
 
@@ -123,14 +123,14 @@ flowchart LR
 | --- | --- | --- |
 | 基础与收集隔离 | `test/_bootstrap.py`、`test/test_test_collection_isolation.py` | sys.path / offscreen / torch 加载顺序；禁止模块级 `sys.modules` 修改 |
 | 安全回归 | `test/test_code_scanning_security.py` | 拒绝远程图片 URL、路径穿越、API 状态指纹脱敏、HQ 响应回退 |
-| 编辑器模型与文档 | `test_editor_dirty_detection.py`、`test_editor_image_lifetime.py`、`test_editor_inpaint_cache_reset.py`、`test_editor_inpainted_fallback.py`、`test_editor_inpainted_layer_switch.py`、`test_editor_performance_refactor.py`、`test_editor_export_executor.py`、`test_translation_edit_ops_capture.py`、`test_textblock_rich_safety.py` | 脏标记、图片生命周期、修复缓存/回退/图层切换、导出执行器、翻译编辑操作、富文本安全 |
-| 编辑器 UI 控件 | `test_editor_center_scale.py`、`test_editor_toolbar_menu.py`、`test_font_combo_box.py`、`test_font_combo_search_menu.py`、`test_font_family_sanitization.py` | 画布缩放、工具栏菜单、字体下拉与搜索、字体族清洗 |
-| 富文本 | `test_rich_text_editing.py`、`test_rich_text_floating_editor.py`、`test_rich_text_rendering.py`、`test_rich_text_rules.py`、`test_rich_text_rules_editor_live.py`、`test_rich_text_sync.py`、`test_rich_text_underline.py` | 编辑、浮动编辑器、渲染、规则、同步、下划线 |
-| 批量编辑 | `test_batch_edit_engine.py`、`test_batch_edit_panel.py` | 批量编辑引擎与面板 |
-| 应用逻辑与文件流水线 | `test_app_logic_file_sources.py`、`test_file_list_snapshot_view.py`、`test_ui_io_pipeline.py`、`test_export_inmemory_payload.py`、`test_update_fetch_failure.py` | 文件来源、快照视图、UI/IO 管线、内存导出、更新检查失败 |
-| 引擎与模型适配 | `test_chinese_linebreak_spaces.py`、`test_layout_mode_common_flow.py`、`test_paddleocr_vl_native_loader.py`、`test_per_block_inpainting.py`、`test_yolo_obb_rearrange_edge_merge.py`、`test_yolo_obb_sfx_filter.py` | 中文断行、排版、PaddleOCR-VL、分块修复、YOLO OBB 重排合并/音效过滤 |
-| 提示词与翻译 | `test_gemini_hq_image_preparation.py`、`test_prompt_preview_fluent_icons.py` | Gemini HQ 图片准备、提示词预览图标 |
-| 可直接运行脚本 | `check_char_tables.py`、`render_golden.py`、`repro_seam_dilution.py`、`ps_italic_angle.py` 等 | 非 pytest 收集的调试/回归脚本，用 `python test/<script>.py` 直接运行 |
+| 编辑器模型与文档 | `test_editor_document_state.py`、`test_editor_image_lifetime.py`、`test_editor_inpaint_cache_reset.py`、`test_editor_inpainted_fallback.py`、`test_editor_export_executor.py`、`test_editor_save_state.py`、`test_editor_delete_recover.py`、`test_editor_region_regressions.py`、`test_paste_overlay_state.py`、`test_textblock_rich_safety.py` | 文档状态、图片生命周期、修复缓存/回退、导出执行器、保存与删除恢复、区域回归、贴图覆层、富文本安全 |
+| 编辑器 UI 控件与字体 | `test_editor_center_scale.py`、`test_font_catalog_worker.py`、`test_font_combo_startup.py`、`test_font_family_sanitization.py`、`test_toast_notification_lifecycle.py`、`test_combo_popup_lifetime.py` | 画布缩放、字体目录子进程、字体下拉与家族清洗、弹窗与 Toast 生命周期 |
+| 富文本 | `test_rich_text_editing.py`、`test_rich_text_rendering.py`、`test_rich_text_rules.py`、`test_rich_text_rules_editor_live.py`、`test_rich_text_sync.py`、`test_rich_text_strikethrough.py` | 编辑、渲染、规则、实时编辑器、同步、删除线 |
+| 批量处理与编辑 | `test_batch_edit_engine.py`、`test_batch_skip_planning.py` | 批量编辑引擎、批次跳过与上下文规划 |
+| 应用逻辑、配置与多语言 | `test_app_logic_file_sources.py`、`test_default_config_coverage.py`、`test_config_autosave.py`、`test_error_i18n.py`、`test_settings_ui_startup.py`、`test_export_inmemory_payload.py`、`test_update_fetch_failure.py` | 文件来源、默认配置覆盖、自动保存、6 语言与无 emoji 校验、内存导出、更新检查失败 |
+| 引擎、模型适配与无损导出 | `test_chinese_linebreak_spaces.py`、`test_layout_mode_common_flow.py`、`test_paddleocr_vl_native_crop.py`、`test_per_block_inpainting.py`、`test_yolo_obb_rearrange_edge_merge.py`、`test_yolo_obb_sfx_filter.py`、`test_lossless_export_config.py`、`test_lossless_image_saving.py` | 中文断行、排版、PaddleOCR-VL、分块修复、YOLO OBB 重排合并/音效过滤、无损导出 |
+| 提示词、翻译与服务端 / MCP | `test_gemini_hq_image_preparation.py`、`test_prompt_priority_and_builtin.py`、`test_api_slot_reorder.py`、`test_mcp_server.py`、`test_mcp_pipeline.py`、`test_server_skip_visibility.py` | Gemini HQ 图片准备、提示词优先级与内置检查、API 槽位重排、MCP 服务/流水线、服务端跳过可见性 |
+| 可直接运行脚本 | `render_golden.py`、`chinese_linebreak_debug_ui.py` | 非 pytest 收集的调试/基线脚本，用 `python test/<script>.py` 直接运行 |
 
 ## 约束与注意事项
 
@@ -170,7 +170,7 @@ flowchart LR
 | `uv.lock` | 锁定依赖版本 | CI 用 `--locked` |
 | `test/README.md` | 测试脚本约定 | 唯一测试约定文档 |
 | `test/_bootstrap.py` | 测试公共前置 | sys.path / offscreen / torch 顺序 |
-| `test/test_*.py` | pytest 用例 | 39 个（2026-08-07 核对） |
+| `test/test_*.py` | pytest 用例 | 108 个（经 `git ls-files` 核对） |
 | `desktop_qt_ui/ruff.toml` | lint/format 配置 | 本地自检入口 |
 | `.github/workflows/tests.yml` | 全量测试 CI | 无 lint 步骤 |
 | `.github/workflows/docs-pages.yml` | Wiki 构建与部署 | `doc/wiki/**` 变更触发 |

@@ -1,46 +1,35 @@
 from __future__ import annotations
 
-import os
-import sys
-from pathlib import Path
+import _bootstrap  # noqa: F401
+
 from types import SimpleNamespace
 
-
-ROOT = Path(__file__).resolve().parents[1]
-os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
-sys.path.insert(0, str(ROOT))
-sys.path.insert(0, str(ROOT / "desktop_qt_ui"))
+import numpy as np
 
 
 def test_async_region_update_uses_region_id_on_main_thread() -> None:
+    from desktop_qt_ui.editor.document_state import DocumentSnapshot
     from desktop_qt_ui.editor.editor_controller import EditorController, _AsyncRegionUpdateRequest
+    from desktop_qt_ui.editor.editor_model import EditorModel
 
-    class FakeModel:
-        def __init__(self):
-            self.ids = [99, 1]
-            self.regions = [{"text": "new"}, {"text": "old"}]
-            self.calls = []
+    model = EditorModel()
+    model.apply_document_snapshot(
+        DocumentSnapshot(
+            source_path="page.png",
+            image=np.zeros((8, 8, 3), dtype=np.uint8),
+            regions=[{"text": "old"}],
+        )
+    )
+    target_id = model.get_region_id(0)
+    assert target_id is not None
 
-        def find_region_index(self, region_id):
-            try:
-                return self.ids.index(region_id)
-            except ValueError:
-                return None
+    # 在前面插入新区域，原区域顺移到索引 1，但 region_id 保持不变
+    model.insert_region(0, {"text": "new"})
+    assert model.find_region_index(target_id) == 1
 
-        def get_region_by_index(self, index):
-            if index is None or not 0 <= index < len(self.regions):
-                return None
-            return dict(self.regions[index])
+    changes = []
+    model.regions_changed.connect(changes.append)
 
-        def get_regions(self):
-            return [dict(region) for region in self.regions]
-
-        def update_regions(self, updates, *, fields=None, source=""):
-            self.calls.append((updates, tuple(fields or ()), source))
-            for index, region in updates.items():
-                self.regions[index] = region
-
-    model = FakeModel()
     finish_calls = []
     executed_commands = []
 
@@ -55,18 +44,22 @@ def test_async_region_update_uses_region_id_on_main_thread() -> None:
         _finish_async_region_update=lambda *args, **kwargs: finish_calls.append((args, kwargs)),
     )
 
-    request = _AsyncRegionUpdateRequest("text", [(1, "ocr result")], "ocr")
+    request = _AsyncRegionUpdateRequest("text", [(target_id, "ocr result")], "ocr")
     EditorController.on_regions_update_finished(controller, request)
 
-    assert model.regions[0]["text"] == "new"
-    assert model.regions[1]["text"] == "ocr result"
-    assert model.calls[0][1] == ("text",)
-    assert model.calls[0][2] == "async"
+    regions = model.get_regions()
+    assert regions[0]["text"] == "new"
+    assert regions[1]["text"] == "ocr result"
+    assert len(changes) == 1
+    assert "text" in changes[0].fields
+    assert changes[0].source == "async"
 
     # 写回必须走撤销栈里的命令，且 undo 能还原
     assert len(executed_commands) == 1
     executed_commands[0].undo()
-    assert model.regions[1]["text"] == "old"
+    regions_after_undo = model.get_regions()
+    assert regions_after_undo[0]["text"] == "new"
+    assert regions_after_undo[1]["text"] == "old"
 
 
 def test_legacy_white_frame_is_normalized_to_render_box() -> None:

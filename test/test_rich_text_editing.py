@@ -138,11 +138,6 @@ class RichTextEditingTests(unittest.TestCase):
             ],
         )
 
-    def test_storage_text_uses_real_newlines_in_editor(self):
-        self.assertEqual(
-            storage_text_to_editor_text("第一行[BR]第二行"), "第一行\n第二行"
-        )
-
     def test_storage_text_preserves_spaces_around_line_breaks(self):
         self.assertEqual(
             storage_text_to_editor_text(

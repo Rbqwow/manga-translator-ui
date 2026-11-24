@@ -294,14 +294,14 @@ Web 管理端控件改动还要实际渲染权限编辑器，确认字段控件�
 
 #### 修改编辑器行为
 
-优先从 `desktop_qt_ui/editor/` 下找：
+优先从 `desktop_qt_ui/editor/` 与 `desktop_qt_ui/ui/editor/` 下找：
 
-- `editor_controller.py`
-- `editor_logic.py`
-- `graphics_view.py`
-- `graphics_items.py`
-- `commands.py`
-- `selection_manager.py`
+- `desktop_qt_ui/editor/editor_controller.py`
+- `desktop_qt_ui/editor/editor_logic.py`
+- `desktop_qt_ui/editor/commands.py`
+- `desktop_qt_ui/ui/editor/graphics_view.py`
+- `desktop_qt_ui/ui/editor/graphics_items.py`
+- `desktop_qt_ui/ui/editor/selection_manager.py`
 
 ## 6. 校验与调试
 
@@ -317,7 +317,7 @@ ruff check desktop_qt_ui manga_translator --config desktop_qt_ui/ruff.toml
 
 这个结论的边界是：
 
-- 仓库根目录的 `pyproject.toml` 只负责依赖声明，不包含 lint 配置；此外没有其他已跟踪的 `setup.cfg`、`tox.ini`、`.flake8`、第二份 `ruff.toml` 等配置文件。
+- 仓库根目录的 `pyproject.toml` 负责依赖声明与 `[tool.pytest.ini_options]`，不包含 lint 配置；此外没有其他已跟踪的 `setup.cfg`、`tox.ini`、`.flake8`、第二份 `ruff.toml` 等配置文件。
 - 当前 GitHub Actions 里也没有显式执行 lint 步骤。
 - 所以上面的命令更适合作为本地自检入口，不表示仓库 CI 当前已经把它当成必过步骤。
 
@@ -351,9 +351,11 @@ python packaging/build_packages.py <version> --build both
 
 面向最终用户的脚本主要在仓库根目录：
 
+- `start.bat`（Windows `uv sync` 与快速启动脚本）
 - `Win-Start.bat`（启动）
 - `Win-Install-or-Update.bat`（安装或更新维护菜单）
 - `Unix-Install-or-Update.sh` / `Unix-Start.sh`（Linux/macOS）
+- `start.command`（macOS 启动脚本）
 
 这些脚本的实际逻辑集中在 `packaging/launch.py`、`packaging/git_update.py` 等文件里。修改安装/更新行为时，不要只改 `.bat` 或 `.sh` 外壳。
 

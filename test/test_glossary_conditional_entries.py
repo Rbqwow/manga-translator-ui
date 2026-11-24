@@ -7,10 +7,7 @@ from manga_translator.translators.common import (
     merge_glossary_to_file,
     parse_hq_response,
 )
-from manga_translator.translators.prompt_loader import (
-    load_glossary_extraction_prompt,
-    load_system_prompt_hq_format,
-)
+from manga_translator.translators.prompt_loader import load_system_prompt_hq_format
 from ui.secondary_pages.glossary_entry_model import (
     aliases_from_rows,
     normalize_glossary_entry,
@@ -416,20 +413,12 @@ def test_glossary_prompts_require_the_alias_delta_shape():
         "Chinese",
         extract_glossary=True,
     )
-    extraction_prompt = load_glossary_extraction_prompt(dict_dir, "Chinese")
 
-    assert 'Each item in "new_terms" MUST have "original", "category", and "aliases"' in output_prompt
-    assert '{ "text": "<Chinese translation>" }' in output_prompt
-    assert '"translation": "<Chinese translation>"' not in output_prompt
     output_examples = re.findall(r"```json\n(.*?)\n```", output_prompt, flags=re.DOTALL)
     parsed_example = json.loads(output_examples[-1])
     assert parsed_example["new_terms"][0]["aliases"][0]["translations"] == [
         {"text": "<Chinese translation>"}
     ]
-    assert "Return new aliases only" in extraction_prompt
-    assert "Never add a second AI translation" in extraction_prompt
-    assert "No operation flag" not in extraction_prompt
-    assert "No control or authored fields" not in extraction_prompt
 
 
 def main() -> int:

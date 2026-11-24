@@ -5,6 +5,8 @@
 该清理与「AI断句检查」（check_br_and_retry）开关无关。
 """
 
+import _bootstrap  # noqa: F401
+
 from types import MethodType, SimpleNamespace
 
 from manga_translator.translators.common import CommonTranslator

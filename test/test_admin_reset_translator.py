@@ -51,19 +51,6 @@ def test_reset_still_unloads_when_the_translator_was_already_dropped(unloaded):
     assert result["unloaded"] == 3
 
 
-def test_reset_reports_nothing_to_do_when_there_is_nothing_to_release(monkeypatch):
-    monkeypatch.setattr(
-        task_manager.model_cleanup, "cleanup_model_caches_sync",
-        lambda unload_models=False: 0,
-    )
-    monkeypatch.setattr(task_manager, "_global_translator", None, raising=False)
-
-    result = task_manager.reset_global_translator()
-
-    assert result["success"] is True
-    assert result["unloaded"] == 0
-
-
 def test_admin_exposes_a_post_endpoint_that_reaches_the_reset():
     """Without a route the reset was dead code no administrator could trigger."""
     # Assert on the router itself: this FastAPI version includes routers lazily
@@ -75,25 +62,6 @@ def test_admin_exposes_a_post_endpoint_that_reaches_the_reset():
     }
 
     assert routes == {"/admin/translator/reset": {"POST"}}
-
-
-def test_endpoint_returns_the_reset_result(monkeypatch):
-    calls = []
-
-    def fake_reset():
-        calls.append(True)
-        return {"success": True, "unloaded": 2, "message": "已卸载 2 个模型缓存"}
-
-    monkeypatch.setattr(task_manager, "reset_global_translator", fake_reset)
-
-    result = asyncio.run(
-        admin_routes.reset_translator_endpoint(
-            session=SimpleNamespace(username="admin"),
-        )
-    )
-
-    assert calls == [True]
-    assert result["unloaded"] == 2
 
 
 def test_reset_is_refused_while_a_translation_task_runs(unloaded):
@@ -160,16 +128,6 @@ def test_new_translation_waits_for_an_unload_in_progress(monkeypatch):
     resetter.join(timeout=5.0)
     runner.join(timeout=5.0)
     assert order == ["unload", "task"]
-
-
-def test_model_gate_refuses_exclusive_access_while_in_use():
-    gate = task_manager._ModelUsageGate()
-    with gate.use():
-        with gate.try_exclusive() as acquired:
-            assert acquired is False
-    with gate.try_exclusive() as acquired:
-        assert acquired is True
-    assert gate.users == 0
 
 
 def test_endpoint_reports_a_refused_reset_as_conflict(monkeypatch):

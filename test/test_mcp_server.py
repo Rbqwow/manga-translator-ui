@@ -1,6 +1,7 @@
 import _bootstrap  # noqa: F401
 
 import asyncio
+import gc
 import json
 import logging
 import os
@@ -210,36 +211,27 @@ def test_streamable_http_server_e2e(tmp_path):
     assert lingering == []
 
 
-def test_ipv6_endpoint_url_and_clean_server_shutdown(tmp_path, caplog):
+def test_format_mcp_endpoint_url_handles_ipv4_and_ipv6():
     from manga_translator.mcp.server_app import format_mcp_endpoint_url
 
     assert format_mcp_endpoint_url("::1", 8765) == "http://[::1]:8765/mcp"
     assert format_mcp_endpoint_url("[::1]", 8765) == "http://[::1]:8765/mcp"
     assert format_mcp_endpoint_url("127.0.0.1", 8765) == "http://127.0.0.1:8765/mcp"
 
-    cfg = {
-        "app": {"last_output_path": str(tmp_path), "current_preset": "默认", "unload_models_after_translation": False},
-        "translator": {"translator": "openai_hq", "target_lang": "CHS"},
-        "ocr": {"ocr": "48px"},
-        "detector": {"detector": "default"},
-        "inpainter": {"inpainter": "lama_large"},
-        "render": {"renderer": "default"},
-        "colorizer": {"colorizer": "none"},
-        "upscale": {"upscale_ratio": None},
-        "cli": {"use_gpu": False},
-        "mcp": {"host": "::1", "port": 8765},
-    }
-    mgr = McpJobManager(root_dir=str(tmp_path), get_config=lambda: cfg, translator_factory=_stub_factory)
+
+def test_mcp_http_server_clean_shutdown_leaves_no_pending_tasks(tmp_path, caplog):
+    mgr = McpJobManager(root_dir=str(tmp_path), get_config=lambda: {}, translator_factory=_stub_factory)
     server = McpHttpServer(mgr)
     with caplog.at_level("WARNING", logger="asyncio"):
         url = server.start(host="127.0.0.1", port=0)
         assert url.startswith("http://127.0.0.1:") and url.endswith("/mcp")
         server.stop()
-    mgr.shutdown()
+        mgr.shutdown()
+        gc.collect()
     assert not any("Task was destroyed but it is pending" in rec.getMessage() for rec in caplog.records)
 
 
-def test_mcp_server_suppresses_transport_log_noise(tmp_path):
+def test_mcp_server_suppresses_transport_log_noise(tmp_path, monkeypatch):
     captured = []
 
     class _CaptureHandler(logging.Handler):
@@ -255,6 +247,7 @@ def test_mcp_server_suppresses_transport_log_noise(tmp_path):
     capture_handler.setLevel(logging.DEBUG)
     root_logger.handlers = [capture_handler]
     root_logger.setLevel(logging.DEBUG)
+    monkeypatch.setattr(logging.getLogger("manga_translator"), "propagate", True)
 
     cfg = {
         "app": {"last_output_path": str(tmp_path), "current_preset": "默认", "unload_models_after_translation": False},

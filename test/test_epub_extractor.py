@@ -1,3 +1,5 @@
+import _bootstrap  # noqa: F401
+
 import io
 import os
 import tempfile

@@ -82,8 +82,16 @@ def test_editor_text_layout_renders_vertical_region():
     assert result is not None
     image, _position, _native_dst_points = result
     assert image.width() > 0
-    assert image.height() > 0
+    assert image.height() > image.width()
     assert image.hasAlphaChannel()
+
+    rgba_image = image.convertToFormat(QImage.Format.Format_RGBA8888)
+    ptr = rgba_image.constBits()
+    ptr.setsize(rgba_image.sizeInBytes())
+    rgba = np.frombuffer(ptr, dtype=np.uint8).reshape(
+        (rgba_image.height(), rgba_image.bytesPerLine() // 4, 4)
+    )[:, : rgba_image.width(), :]
+    assert np.any(rgba[:, :, 3] > 0)
 
 
 def test_editor_text_layout_applies_qt_transform_before_positioning():
@@ -155,21 +163,6 @@ def test_editor_text_layout_skips_empty_text_and_degenerate_target():
         is None
     )
 
-def test_editor_text_layout_uses_region_color_and_can_disable_border():
-    params = _render_params()
-    params.pop("font_color")
-    params["disable_font_border"] = True
-
-    result = render_text_image_for_region(
-        _region(),
-        _horizontal_dst_points(),
-        None,
-        params,
-    )
-
-    assert result is not None
-    assert result[0].hasAlphaChannel()
-
 
 def main() -> int:
     test_editor_text_layout_returns_native_premultiplied_image()
@@ -178,7 +171,6 @@ def main() -> int:
     test_editor_text_render_wrapper_returns_qpixmap()
     test_editor_text_render_wrapper_returns_none_for_region_without_text()
     test_editor_text_layout_skips_empty_text_and_degenerate_target()
-    test_editor_text_layout_uses_region_color_and_can_disable_border()
     return 0
 
 

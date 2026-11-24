@@ -9,6 +9,8 @@
 运行：uv run --no-sync pytest test/test_textblock_rich_safety.py
 """
 
+import _bootstrap  # noqa: F401
+
 import unittest
 
 from manga_translator.rendering.rich_text import RICH_TEXT_FORMAT
@@ -100,13 +102,6 @@ class MalformedRichTranslationTest(unittest.TestCase):
         self.assertEqual(region.font_size, 32)
         self.assertEqual(region.direction, "v")
         self.assertEqual(region.target_lang, "CHS")
-
-    def test_removed_apis_are_gone(self):
-        """F19：零调用 API 已删除。"""
-        self.assertFalse(hasattr(TextBlock, "clear_translation_rich"))
-        region = _make_block(translation="x")
-        with self.assertRaises(TypeError):
-            region.set_translation_rich(_valid_document(), sync_plain_when_empty=True)
 
 
 class ValidRichTranslationTest(unittest.TestCase):

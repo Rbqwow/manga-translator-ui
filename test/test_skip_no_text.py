@@ -7,7 +7,7 @@ import numpy as np
 import pytest
 from PIL import Image
 
-from manga_translator.config import CliConfig, Config
+from manga_translator.config import Config
 from manga_translator.manga_translator import MangaTranslator
 
 

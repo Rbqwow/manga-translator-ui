@@ -575,7 +575,6 @@
   "Start Colorizing": "Iniciar colorización",
   "Start Upscaling": "Iniciar ampliación",
   "Generate Original Text Template": "Generar plantilla de texto original",
-  "Open Directory": "Abrir directorio",
   "Find": "Buscar",
   "Replace with": "Reemplazar con",
   "Replace All": "Reemplazar todo",
@@ -1610,5 +1609,15 @@
   "desc_builtin_system_prompt_line_break": "Corresponde a dict/system_prompt_line_break.yaml (sincronizado con Maquetación -> Salto de línea IA). Indica las reglas [BR] a la IA.",
   "desc_builtin_glossary_extraction_prompt": "Corresponde a dict/glossary_extraction_prompt.yaml (sincronizado con Traducción -> Extracción automática de glosario). Solo surte efecto con un archivo de prompt personalizado válido.",
   "desc_builtin_system_prompt_hq_format": "Corresponde a dict/system_prompt_hq_format.yaml. Define el esquema JSON y el protocolo de mapeo de IDs requerido tanto en modo API como MCP.",
-  "Builtin Format Prompt Required Hint": "El prompt de formato de salida es obligatorio para respuestas JSON estructuradas y no puede desactivarse; aún puedes previsualizarlo o editarlo."
+  "Builtin Format Prompt Required Hint": "El prompt de formato de salida es obligatorio para respuestas JSON estructuradas y no puede desactivarse; aún puedes previsualizarlo o editarlo.",
+  "Clear Selected": "Limpiar selección",
+  "Compare with Original (Two Panels)": "Comparar con original (dos paneles)",
+  "Start JSON Translation": "Iniciar solo traducción JSON",
+  "The selected features are missing required API Keys (.env):\n{details}\n\nPlease fill one of the listed API key fields in API Keys (.env) and try again.": "Faltan claves API (.env) obligatorias para las funciones seleccionadas:\n{details}\n\nCompleta uno de los campos de clave API indicados en Claves API (.env) e inténtalo de nuevo.",
+  "Tip: Requires existing JSON data. The app reads original text from JSON, translates it, writes results back to JSON, and deletes imagename_original.txt after success": "Consejo: Requiere datos JSON existentes. La aplicación lee el texto original desde JSON, lo traduce, guarda los resultados en JSON y elimina imagename_original.txt tras completarse.",
+  "Unable to validate API Keys (.env). Please check the log and try again.": "No se pudieron validar las claves API (.env). Revisa el registro e inténtalo de nuevo.",
+  "desc_colorizer_ai_colorizer_history_pages": "Adjunta automáticamente las páginas ya coloreadas anteriormente como imágenes de referencia para la solicitud actual de coloreado por IA. Solo envía contexto visual, sin texto. Establece 0 para desactivar.",
+  "desc_detector_import_yolo_labels": "Lee archivos de anotación YOLO con el mismo nombre desde manga_translator_work/yolo_labels. Según el flujo de trabajo activo, reemplaza los cuadros detectados o regenera las máscaras.",
+  "label_ai_colorizer_history_pages": "Páginas de historial de coloreado IA",
+  "label_import_yolo_labels": "Importar cuadros YOLO fijos"
 }

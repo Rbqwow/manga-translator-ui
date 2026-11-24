@@ -1,3 +1,5 @@
+import _bootstrap  # noqa: F401
+
 from PIL import Image
 
 from manga_translator.translators.common import draw_text_boxes_on_image

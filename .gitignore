@@ -219,9 +219,6 @@ scripts/
 .gemini/
 gha-creds-*.json
 
-# Local Claude instructions
-CLAUDE.md
-
 # Local temp history
 .tmp_history/
 
@@ -231,7 +228,6 @@ CLAUDE.md
 # Codex local workspace metadata
 /.codex/
 /.agents/
-/AGENTS.md
 /.playwright-mcp/
 
 # Local GitHub command presets

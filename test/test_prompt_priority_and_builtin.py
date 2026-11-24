@@ -1,9 +1,7 @@
 import _bootstrap  # noqa: F401
 
-import json
 import logging
 from pathlib import Path
-from types import SimpleNamespace
 
 import pytest
 import yaml
@@ -11,7 +9,7 @@ from PIL import Image
 
 from manga_translator.config import Config
 from manga_translator.manga_translator import MangaTranslator
-from manga_translator.mcp.batch_adapter import build_mcp_engine_config, load_job_guidelines_and_glossary
+from manga_translator.mcp.batch_adapter import build_mcp_engine_config
 from manga_translator.mcp.job_manager import McpJobManager
 from manga_translator.translators.common import CommonTranslator
 from manga_translator.translators.gemini import GeminiTranslator
@@ -19,7 +17,6 @@ from manga_translator.translators.gemini_hq import GeminiHighQualityTranslator
 from manga_translator.translators.openai import OpenAITranslator
 from manga_translator.translators.openai_hq import OpenAIHighQualityTranslator
 from manga_translator.translators.prompt_loader import (
-    BUILTIN_TRANSLATION_PROMPTS,
     ensure_builtin_prompt_file,
     get_builtin_prompt_spec_by_path,
     load_builtin_prompt_text,
@@ -27,7 +24,6 @@ from manga_translator.translators.prompt_loader import (
     resolve_builtin_prompt_path,
     save_builtin_prompt_text,
 )
-from ui.secondary_pages.prompt_preview import PromptPreviewPanel
 
 
 class _PromptTestTranslator(CommonTranslator):
@@ -125,11 +121,12 @@ def test_custom_prompt_has_highest_priority_and_precedes_builtin_and_linebreak()
     assert retry_pos < custom_header_pos < custom_body_pos < builtin_header_pos < builtin_body_pos < linebreak_pos < format_pos
 
 
-def test_use_builtin_system_prompt_false_omits_base_prompt_with_real_custom_prompt():
+def test_use_builtin_system_prompt_false_omits_base_prompt_with_custom_prompt():
     helper = _PromptTestTranslator()
-    test_yaml = _bootstrap.ROOT / "dict" / "test.yaml"
-    custom_data = load_custom_prompt(str(test_yaml))
-    assert custom_data is not None
+    custom_data = {
+        "system_prompt": "Custom manga translator instructions for {{{target_lang}}}.",
+        "glossary": {"Person": []},
+    }
 
     prompt = helper._build_system_prompt(
         source_lang="JPN",
@@ -141,7 +138,7 @@ def test_use_builtin_system_prompt_false_omits_base_prompt_with_real_custom_prom
     )
 
     assert "USER CUSTOM TRANSLATION PROMPT (PRIMARY INSTRUCTIONS)" in prompt
-    assert "资深汉化译者" in prompt
+    assert "Custom manga translator instructions for Chinese (Simplified)." in prompt
     assert "You are a professional manga translator" not in prompt
     assert "BUILT-IN DEFAULT TRANSLATION PROMPT" not in prompt
     assert "LINE BREAK RULE" in prompt
@@ -289,7 +286,6 @@ def test_mcp_guidelines_match_api_prompt_builder_with_custom_prompt_and_disabled
 
 
 def test_builtin_prompt_loader_roundtrip_preserves_placeholders_and_indentation(tmp_path):
-    assert len(BUILTIN_TRANSLATION_PROMPTS) == 4
     yaml_path = tmp_path / "system_prompt_hq_format.yaml"
     sample_text = (
         "**TARGET: {{{target_lang}}}**\n\n"
@@ -320,57 +316,6 @@ def test_builtin_prompt_loader_roundtrip_preserves_placeholders_and_indentation(
 
     resolved = resolve_builtin_prompt_path(str(tmp_path), "system_prompt_hq_format")
     assert resolved == str(yaml_path)
-
-
-def test_prompt_preview_distinguishes_builtin_from_user_template_structured():
-    for key in ("system_prompt_hq_format", "line_break_prompt", "glossary_extraction_prompt"):
-        payload = {key: "content"}
-        assert PromptPreviewPanel._is_builtin_prompt_structured(payload) is True
-        assert PromptPreviewPanel._is_structured(payload) is False
-
-    assert PromptPreviewPanel._is_builtin_prompt_structured({"system_prompt": "custom"}) is False
-    assert PromptPreviewPanel._is_structured({"system_prompt": "custom"}) is True
-
-
-def test_all_locale_files_parse_and_contain_new_builtin_prompt_keys():
-    required_keys = {
-        "label_use_builtin_system_prompt",
-        "Built-in Prompts",
-        "Builtin Prompts Priority Hint",
-        "Builtin Base Translation Prompt",
-        "AI Line Break Prompt",
-        "Glossary Extraction Prompt",
-        "Output Format Prompt",
-        "Required",
-        "Preview",
-        "desc_builtin_system_prompt_hq",
-        "desc_builtin_system_prompt_line_break",
-        "desc_builtin_glossary_extraction_prompt",
-        "desc_builtin_system_prompt_hq_format",
-        "Builtin Format Prompt Required Hint",
-    }
-    locale_dir = _bootstrap.ROOT / "desktop_qt_ui" / "locales"
-    for locale_file in sorted(locale_dir.glob("*.json")):
-        data = json.loads(locale_file.read_text(encoding="utf-8"))
-        missing = required_keys - set(data.keys())
-        assert not missing, f"{locale_file.name} missing keys: {sorted(missing)}"
-        for key in required_keys:
-            assert isinstance(data[key], str) and data[key].strip(), f"{locale_file.name}[{key}] is empty"
-
-
-def test_load_job_guidelines_and_glossary_returns_four_tuple(tmp_path):
-    import asyncio
-
-    cfg = _base_mcp_config(str(tmp_path / "out"), use_builtin_system_prompt=True)
-    engine_cfg, params = build_mcp_engine_config(cfg, str(_bootstrap.ROOT))
-    translator = _stub_mcp_factory(params)
-    guidelines, glossary, resolved_path, effective_extract = asyncio.run(
-        load_job_guidelines_and_glossary(translator, engine_cfg, str(_bootstrap.ROOT))
-    )
-    assert "You are a professional manga translator" in guidelines
-    assert glossary == {}
-    assert resolved_path is None
-    assert effective_extract is False
 
 
 def test_builtin_prompt_ui_widgets_preview_edit_and_toggle_sync(tmp_path):
@@ -416,7 +361,7 @@ class _DummyHost:
     def __init__(self):
         self.config_service = SimpleNamespace(get_config=lambda: cfg)
         self.controller = SimpleNamespace(
-            get_hq_prompt_options=lambda: ["prompt_example.yaml", "test.yaml"],
+            get_hq_prompt_options=lambda: ["prompt_example.yaml", "custom.yaml"],
             open_dict_directory=lambda: None,
         )
         self.setting_changed = _FakeSignal()

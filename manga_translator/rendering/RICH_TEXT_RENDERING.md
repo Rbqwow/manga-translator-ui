@@ -79,7 +79,7 @@
 - `italic` 接受布尔或数字：数字是切变角度（度，正值向右倾）；`true` 是旧值，渲染时按默认 10°（Photoshop 仿斜体实测角度）处理；`0` 归一为无斜体。
 - `verticalAdvance` 只接受 `half` 或 `full`，仅作用于竖排。它把当前实际字号对应的推进强制为半格或全角，覆盖标点、旋转、省略号和字体自带推进规则；字形只按真实墨迹居中，溢出只扩绘制包络，不扩大推进量。
 - `transform` 字段只认 `offsetX`、`offsetY`、`rotation`、`mirrorX`、`mirrorY`、`scaleX`、`scaleY`；偏移值是当前实际字号的百分比，像素偏移 = `offset / 100 × fontSize`。`scaleX`/`scaleY` 是有限且大于 0 的宽度/高度倍率，`1.0` 为原尺寸；它们在字形矢量轮廓上执行，再统一光栅化，不对已有位图做二次拉伸。
-- `source`、`document`、`font_size`、`fontFamily`、`outer_stroke` 这类非协议字段会直接报错。
+- `source`、`document`、`font_size`、`font_family`、`outer_stroke` 这类非协议字段会直接报错。
 
 唯一保留的旧输入兼容是普通字符串里的强制换行标记：`[BR]`、`【BR】`、`<br>` 和真实换行。它们不会在翻译赋值或布局前提前转换，而是在替换、断句、去换行标点等字符串处理结束后，由 `sync_translation_raw_from_layout()` 统一收口成多个 `paragraph` block。
 
@@ -188,6 +188,7 @@ string
 - 局部旋转、镜像、宽高拉伸、`transform` 偏移，均计入渲染框包络；`offsetX/offsetY` 的 `100` 等于移动一个当前实际字号。`scaleX`/`scaleY` 以墨迹框中心为锚点，只改变外观包络，不改变文字推进距离。
 - 竖排强制推进：`verticalAdvance: half/full` 覆盖字符原有推进规则，真实墨迹在固定槽位内居中，前后字距仍照常叠加。
 - 着重号。
+- 下划线（`underline`）与删除线（`strikethrough`）。
 - 从 `richtext.v1` 直接横排和竖排渲染。
 - 结构化文档测量入口：
   - `get_string_width()`
@@ -250,15 +251,3 @@ offset、ruby 和 emphasis 都在同一个计划中。相邻行按完整 paint �
 - 横排 glyph path、墨迹计划和相邻行碰撞布局位于 `text_render/_layout.py`；
   RGBA 合成位于 `_compose.py`，入口和计划消费位于 `_render.py`。
 - 新增富文本能力时，先定义明确的 node 或 style 字段，再实现布局和绘制。
-
-## 后续工作
-
-- 把富文本横排/竖排布局从 `text_render.py` 拆到独立 layout 模块。
-- 把 span 级 RGBA 合成拆到独立 paint 模块。
-- 增加结构化文档的单元测试：
-  - 解析
-  - 序列化
-  - 测量
-  - 横排渲染
-  - 竖排渲染
-- 编辑器侧本次暂不改；后续应直接编辑 `richtext.v1`，不要再以标记语言字符串作为内部状态。

@@ -21,58 +21,42 @@ def test_region_mask_removal_clears_only_the_selected_polygon():
 
 def test_delete_region_command_restores_region_and_masks_on_undo():
     from editor.commands import DeleteRegionCommand
+    from editor.document_state import DocumentSnapshot
+    from editor.editor_model import EditorModel
 
-    class Model:
-        def __init__(self):
-            self.regions = [{"lines": [[[2, 3], [7, 3], [7, 8], [2, 8]]]}]
-            self.raw_mask = np.full((20, 24), 255, dtype=np.uint8)
-            self.refined_mask = self.raw_mask.copy()
-            self.selection = []
-
-        def remove_region(self, index):
-            return self.regions.pop(index)
-
-        def insert_region(self, index, region):
-            self.regions.insert(index, region)
-            return index
-
-        def set_masks(self, **masks):
-            if "raw" in masks:
-                value = masks["raw"]
-                self.raw_mask = None if value is None else np.array(value, copy=True)
-            if "refined" in masks:
-                value = masks["refined"]
-                self.refined_mask = (
-                    None if value is None else np.array(value, copy=True)
-                )
-
-        def set_selection(self, selection):
-            self.selection = list(selection)
-
-    model = Model()
-    old_raw = model.raw_mask.copy()
-    old_refined = model.refined_mask.copy()
+    old_raw = np.full((20, 24), 255, dtype=np.uint8)
+    old_refined = old_raw.copy()
     new_raw = old_raw.copy()
     new_refined = old_refined.copy()
     new_raw[3:9, 2:8] = 0
     new_refined[3:9, 2:8] = 0
 
+    model = EditorModel()
+    model.apply_document_snapshot(
+        DocumentSnapshot(
+            source_path="page.png",
+            image=np.zeros((20, 24, 3), dtype=np.uint8),
+            regions=[{"lines": [[[2, 3], [7, 3], [7, 8], [2, 8]]]}],
+            raw_mask=old_raw,
+        )
+    )
+
     command = DeleteRegionCommand(
         model,
         0,
-        model.regions[0],
+        model.get_region_by_index(0),
         old_raw_mask=old_raw,
         new_raw_mask=new_raw,
         old_refined_mask=old_refined,
         new_refined_mask=new_refined,
     )
     command.redo()
-    assert model.regions == []
-    assert np.array_equal(model.raw_mask, new_raw)
-    assert np.array_equal(model.refined_mask, new_refined)
+    assert model.get_regions() == []
+    assert np.array_equal(model.get_raw_mask(), new_raw)
+    assert np.array_equal(model.get_refined_mask(), new_refined)
 
     command.undo()
-    assert len(model.regions) == 1
-    assert np.array_equal(model.raw_mask, old_raw)
-    assert np.array_equal(model.refined_mask, old_refined)
-    assert model.selection == [0]
+    assert len(model.get_regions()) == 1
+    assert np.array_equal(model.get_raw_mask(), old_raw)
+    assert np.array_equal(model.get_refined_mask(), old_refined)
+    assert model.get_selection() == [0]

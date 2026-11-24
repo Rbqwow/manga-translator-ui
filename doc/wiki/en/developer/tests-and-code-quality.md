@@ -28,7 +28,7 @@ This guide does not cover packaging and release (see [Packaging and release](./p
 - Prefer pytest-style `test_*` test functions; every script should also run directly: `python test/<script>.py`.
 - Scripts that use Qt or repository code must start with `import _bootstrap  # noqa: F401` as the first import.
 - Prefer `pytest-qt` and `qtbot` for Qt widget tests (recommended by `test/README.md`; `pyproject.toml` does not currently declare `pytest-qt`, so fall back to direct script execution when it is not installed).
-- 52 `test/*.py` files are currently tracked, 39 of them pytest-style `test_*.py` (verified with `git ls-files` on 2026-08-07).
+- 111 `test/*.py` files are currently tracked, 108 of them pytest-style `test_*.py` (verified with `git ls-files`).
 
 `test/_bootstrap.py` centralizes the three things every test author must remember:
 
@@ -123,14 +123,14 @@ The table groups the currently tracked test files by area; it is not a coverage 
 | --- | --- | --- |
 | Bootstrap and collection isolation | `test/_bootstrap.py`, `test/test_test_collection_isolation.py` | sys.path / offscreen / torch load order; bans module-level `sys.modules` mutation |
 | Security regressions | `test/test_code_scanning_security.py` | Rejects remote image URLs and path traversal, API-status fingerprint sanitization, HQ-response fallback |
-| Editor model and document | `test_editor_dirty_detection.py`, `test_editor_image_lifetime.py`, `test_editor_inpaint_cache_reset.py`, `test_editor_inpainted_fallback.py`, `test_editor_inpainted_layer_switch.py`, `test_editor_performance_refactor.py`, `test_editor_export_executor.py`, `test_translation_edit_ops_capture.py`, `test_textblock_rich_safety.py` | Dirty marking, image lifetime, inpaint cache/fallback/layer switching, export executor, translation edit operations, rich-text safety |
-| Editor UI widgets | `test_editor_center_scale.py`, `test_editor_toolbar_menu.py`, `test_font_combo_box.py`, `test_font_combo_search_menu.py`, `test_font_family_sanitization.py` | Canvas scaling, toolbar menus, font combo and search, font-family sanitization |
-| Rich text | `test_rich_text_editing.py`, `test_rich_text_floating_editor.py`, `test_rich_text_rendering.py`, `test_rich_text_rules.py`, `test_rich_text_rules_editor_live.py`, `test_rich_text_sync.py`, `test_rich_text_underline.py` | Editing, floating editor, rendering, rules, sync, underline |
-| Batch editing | `test_batch_edit_engine.py`, `test_batch_edit_panel.py` | Batch-edit engine and panel |
-| App logic and file pipeline | `test_app_logic_file_sources.py`, `test_file_list_snapshot_view.py`, `test_ui_io_pipeline.py`, `test_export_inmemory_payload.py`, `test_update_fetch_failure.py` | File sources, snapshot view, UI/IO pipeline, in-memory export, update-check failure |
-| Engine and model adapters | `test_chinese_linebreak_spaces.py`, `test_layout_mode_common_flow.py`, `test_paddleocr_vl_native_loader.py`, `test_per_block_inpainting.py`, `test_yolo_obb_rearrange_edge_merge.py`, `test_yolo_obb_sfx_filter.py` | Chinese line breaking, layout, PaddleOCR-VL, per-block inpainting, YOLO OBB rearrange-edge merge / SFX filter |
-| Prompts and translation | `test_gemini_hq_image_preparation.py`, `test_prompt_preview_fluent_icons.py` | Gemini HQ image preparation, prompt-preview icons |
-| Directly runnable scripts | `check_char_tables.py`, `render_golden.py`, `repro_seam_dilution.py`, `ps_italic_angle.py`, etc. | Debug/regression scripts not collected by pytest; run with `python test/<script>.py` |
+| Editor model and document | `test_editor_document_state.py`, `test_editor_image_lifetime.py`, `test_editor_inpaint_cache_reset.py`, `test_editor_inpainted_fallback.py`, `test_editor_export_executor.py`, `test_editor_save_state.py`, `test_editor_delete_recover.py`, `test_editor_region_regressions.py`, `test_paste_overlay_state.py`, `test_textblock_rich_safety.py` | Document state, image lifetime, inpaint cache/fallback, export executor, save/delete undo, region regressions, paste overlays, rich-text safety |
+| Editor UI widgets and fonts | `test_editor_center_scale.py`, `test_font_catalog_worker.py`, `test_font_combo_startup.py`, `test_font_family_sanitization.py`, `test_toast_notification_lifecycle.py`, `test_combo_popup_lifetime.py` | Canvas scaling, font-catalog worker, font combo and family sanitization, popup/toast lifecycle |
+| Rich text | `test_rich_text_editing.py`, `test_rich_text_rendering.py`, `test_rich_text_rules.py`, `test_rich_text_rules_editor_live.py`, `test_rich_text_sync.py`, `test_rich_text_strikethrough.py` | Editing, rendering, rules, live rule editor, sync, strikethrough |
+| Batch processing and editing | `test_batch_edit_engine.py`, `test_batch_skip_planning.py` | Batch-edit engine and batch skip/context planning |
+| App logic, config, and i18n | `test_app_logic_file_sources.py`, `test_default_config_coverage.py`, `test_config_autosave.py`, `test_error_i18n.py`, `test_settings_ui_startup.py`, `test_export_inmemory_payload.py`, `test_update_fetch_failure.py` | File sources, default config coverage, autosave, 6-locale & no-emoji checks, in-memory export, update-check failure |
+| Engine, adapters, and lossless export | `test_chinese_linebreak_spaces.py`, `test_layout_mode_common_flow.py`, `test_paddleocr_vl_native_crop.py`, `test_per_block_inpainting.py`, `test_yolo_obb_rearrange_edge_merge.py`, `test_yolo_obb_sfx_filter.py`, `test_lossless_export_config.py`, `test_lossless_image_saving.py` | Chinese line breaking, layout, PaddleOCR-VL, per-block inpainting, YOLO OBB rearrange-edge merge / SFX filter, lossless export |
+| Prompts, translation, and Server / MCP | `test_gemini_hq_image_preparation.py`, `test_prompt_priority_and_builtin.py`, `test_api_slot_reorder.py`, `test_mcp_server.py`, `test_mcp_pipeline.py`, `test_server_skip_visibility.py` | Gemini HQ image preparation, prompt priority/built-ins, API slot reorder, MCP server/pipeline, server skip visibility |
+| Directly runnable scripts | `render_golden.py`, `chinese_linebreak_debug_ui.py` | Debug/baseline scripts not collected by pytest; run with `python test/<script>.py` |
 
 ## Constraints and notes
 
@@ -170,7 +170,7 @@ The desktop app has no "run the test suite" button; the closest testing UI is th
 | `uv.lock` | Locks dependency versions | CI uses `--locked` |
 | `test/README.md` | Test-script conventions | The only test-conventions document |
 | `test/_bootstrap.py` | Common test bootstrap | sys.path / offscreen / torch order |
-| `test/test_*.py` | pytest cases | 39 files (verified 2026-08-07) |
+| `test/test_*.py` | pytest cases | 108 files (verified with `git ls-files`) |
 | `desktop_qt_ui/ruff.toml` | lint/format configuration | Local self-check entry point |
 | `.github/workflows/tests.yml` | Full-suite test CI | No lint step |
 | `.github/workflows/docs-pages.yml` | Wiki build and deployment | Triggered by `doc/wiki/**` changes |

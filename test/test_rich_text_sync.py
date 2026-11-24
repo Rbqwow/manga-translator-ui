@@ -1,11 +1,8 @@
 """rich_text_sync 回归:编辑操作回放、样式继承策略、raw 链路替换同步。"""
 
-import re
-import sys
-from pathlib import Path
+import _bootstrap  # noqa: F401
 
-ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT))
+import re
 
 from manga_translator.rendering.rich_text_sync import (  # noqa: E402
     document_after_edit_ops,

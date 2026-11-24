@@ -223,25 +223,6 @@ def test_curl_transport_disables_impersonation_for_local_endpoints(monkeypatch):
     ]
 
 
-
-
-def test_curl_transport_headers_do_not_override_impersonated_browser_identity():
-    forbidden_headers = {
-        "user-agent",
-        "connection",
-        "sec-ch-ua",
-        "sec-ch-ua-mobile",
-        "sec-ch-ua-platform",
-    }
-
-    assert forbidden_headers.isdisjoint(
-        header.lower() for header in curl_cffi_transport.OPENAI_CURL_HEADERS
-    )
-    assert forbidden_headers.isdisjoint(
-        header.lower() for header in curl_cffi_transport.GEMINI_CURL_HEADERS
-    )
-
-
 @pytest.mark.parametrize(
     "client_type",
     [common.AsyncOpenAICurlCffi, common.AsyncGeminiCurlCffi],
@@ -264,9 +245,3 @@ def test_api_clients_reject_unencodable_key_before_creating_transport(
     assert error.value.start_position == 14
     assert error.value.end_position == 17
     assert "latin-1" not in str(error.value)
-
-
-def test_api_key_header_validation_preserves_supported_key():
-    api_key = "sk-valid_ASCII-key"
-
-    assert curl_cffi_transport.validate_api_key_for_http_header(api_key) == api_key

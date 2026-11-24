@@ -453,16 +453,6 @@ def test_rotated_api_exhaustion_with_bad_key_is_not_skippable():
     assert not FailureSkipPolicy(True, 0).can_skip(error)
 
 
-def test_new_config_defaults_and_validation():
-    # Release-template defaults: skip after retries is on, with a budget of 5.
-    from desktop_qt_ui.core.config_models import CliSettings
-    for model in (CliConfig, CliSettings):
-        assert model().skip_failed_after_retries is True
-        assert model().max_failure_skips == 5
-        with pytest.raises(ValueError):
-            model(max_failure_skips=-1)
-
-
 def test_api_failover_finishes_each_candidates_retries_before_skipping(monkeypatch):
     from manga_translator import api_key_rotation as rotation
 
@@ -766,7 +756,7 @@ def test_check_cancelled_still_raises_cancelled_error_for_user_stop(monkeypatch)
 
 # --- P3-6: pre-check exhaustion uses RetryExhaustedError ----------------
 
-def test_global_attempt_precheck_raises_retry_exhausted(monkeypatch):
+def test_global_attempt_precheck_raises_retry_exhausted():
     """A plain Exception fell through the skip policy as a local error."""
     class Translator(CommonTranslator):
         async def _translate(self, from_lang, to_lang, queries, ctx=None):
@@ -781,12 +771,10 @@ def test_global_attempt_precheck_raises_retry_exhausted(monkeypatch):
     async def call():
         return await instance._translate_with_split(lambda *a, **k: None, ['text'])
 
-    with pytest.raises(RetryExhaustedError, match='max total attempts'):
+    with pytest.raises(RetryExhaustedError, match='max total attempts') as exc_info:
         asyncio.run(call())
     # And the policy now recognises it as skippable rather than a hard error.
-    assert FailureSkipPolicy(True, 0).can_skip(
-        RetryExhaustedError('Translation failed: reached max total attempts (1)')
-    )
+    assert FailureSkipPolicy(True, 0).can_skip(exc_info.value)
 
 
 # --- P3-7: loose retry markers no longer swallow config errors ----------

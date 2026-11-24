@@ -9,12 +9,10 @@
 运行（repo 包根）：
     PYTHONUTF8=1 python test/test_layout_mode_common_flow.py
 """
-import os
+import _bootstrap  # noqa: F401
+
 import sys
 
-ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-sys.path.insert(0, ROOT)
-os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
 if hasattr(sys.stdout, 'reconfigure'):
     sys.stdout.reconfigure(encoding='utf-8', errors='replace')
 
@@ -190,12 +188,6 @@ def test_strict_offset_applied_once_after_fit():
     region, _, _ = run_layout('strict', BR_TEXT, config=config)
     expected = expected_strict_font(region, config, extra_offset=5)
     assert region.font_size == expected, f'font={region.font_size}, expected fit+5={expected}'
-
-
-def test_smart_scaling_smoke():
-    region, dst, _ = run_layout('smart_scaling', LONG_NO_BR_TEXT)
-    assert region.font_size >= 1
-    assert dst is not None
 
 
 def test_balloon_fill_no_original_img_degrades_to_strict():

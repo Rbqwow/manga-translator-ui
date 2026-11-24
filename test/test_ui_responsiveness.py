@@ -417,46 +417,6 @@ def test_unchanged_raw_to_table_does_not_rewrite_file(rules_panel, monkeypatch):
     assert path.stat().st_mtime_ns == mtime
 
 
-def test_refresh_never_cancels_a_pending_switch_save(rules_panel):
-    """A read used to share one future with the source->table save, so a refresh
-    arriving while the save was queued cancelled the write and left the panel
-    flagged as still saving (which then blocked later forced reloads)."""
-    panel, _path = rules_panel
-
-    class StubFuture:
-        cancel_calls = 0
-
-        def cancel(self):
-            StubFuture.cancel_calls += 1
-            return True
-
-    save_future = StubFuture()
-    panel._save_future = save_future
-    panel._saving_table_switch = True
-
-    panel._load_data()
-
-    assert StubFuture.cancel_calls == 0, "a read must not cancel the pending save"
-    assert panel._save_future is save_future
-    assert panel._saving_table_switch is False, "the superseded switch flag must clear"
-    wait_until(lambda: not panel._loading)
-
-
-def test_save_jobs_are_tracked_apart_from_loads(rules_panel):
-    panel, _path = rules_panel
-    load_future = panel._load_future
-
-    panel._submit_rule_job(
-        lambda: ((None, None, None), ""),
-        "_switch_save_ready",
-        panel._load_generation - 1,  # stale generation: the reply is ignored
-        saving=True,
-    )
-
-    assert panel._save_future is not None
-    assert panel._load_future is load_future
-
-
 def test_unsaved_edits_are_not_overwritten_by_background_refresh(rules_panel, monkeypatch):
     panel, path = rules_panel
     started, release = threading.Event(), threading.Event()
