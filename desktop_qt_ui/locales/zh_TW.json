@@ -1598,5 +1598,19 @@
   "MCP Log Clear": "清空顯示",
   "MCP Active Job Close Title": "MCP 任務正在執行",
   "MCP Active Job Close Message": "目前仍有 MCP 翻譯任務正在執行。\n\n確定要終止背景任務與 MCP 服務並結束程式嗎？",
-  "MCP Active Job Blocks GUI Task": "目前有 MCP 翻譯任務正在執行，請先停止或等待該任務完成後再啟動介面翻譯任務。"
+  "MCP Active Job Blocks GUI Task": "目前有 MCP 翻譯任務正在執行，請先停止或等待該任務完成後再啟動介面翻譯任務。",
+  "label_use_builtin_system_prompt": "啟用內建基礎翻譯提示詞",
+  "Built-in Prompts": "內建提示詞",
+  "Builtin Prompts Priority Hint": "使用者自訂翻譯提示詞始終最高優先；以下內建提示詞可依需求檢視、編輯或開關（輸出格式為必選協議）。",
+  "Builtin Base Translation Prompt": "內建基礎翻譯提示詞",
+  "AI Line Break Prompt": "AI 斷句提示詞",
+  "Glossary Extraction Prompt": "術語提取提示詞",
+  "Output Format Prompt": "輸出格式提示詞",
+  "Required": "必選",
+  "Preview": "預覽",
+  "desc_builtin_system_prompt_hq": "對應 dict/system_prompt_hq.yaml。預設開啟；當已套用含正文指令的自訂翻譯提示詞時，可關閉此項以完全交由自訂提示詞主導（若無有效自訂正文，將自動回退保留內建基礎提示詞）。",
+  "desc_builtin_system_prompt_line_break": "對應 dict/system_prompt_line_break.yaml（同步「排版 → AI 斷句」開關）。開啟後向 AI 下發 [BR] 斷句規則。",
+  "desc_builtin_glossary_extraction_prompt": "對應 dict/glossary_extraction_prompt.yaml（同步「翻譯 → 自動提取新術語」開關）。需搭配有效的自訂提示詞檔案才會生效。",
+  "desc_builtin_system_prompt_hq_format": "對應 dict/system_prompt_hq_format.yaml。定義 JSON 回傳結構與 ID 對應協議，API 與 MCP 模式下始終需要保留。",
+  "Builtin Format Prompt Required Hint": "輸出格式提示詞是結構化 JSON 回傳協議所必需的，無法關閉；可點擊左側圖示預覽或編輯。"
 }

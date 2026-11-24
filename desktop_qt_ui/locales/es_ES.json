@@ -1596,5 +1596,19 @@
   "MCP Log Clear": "Limpiar",
   "MCP Active Job Close Title": "Tarea MCP en ejecución",
   "MCP Active Job Close Message": "Hay una tarea de traducción MCP activa en este momento.\n\n¿Seguro que quieres detener la tarea en segundo plano y el servicio MCP y salir?",
-  "MCP Active Job Blocks GUI Task": "Hay una tarea de traducción MCP en curso. Detenla o espera a que finalice antes de iniciar una tarea desde la GUI."
+  "MCP Active Job Blocks GUI Task": "Hay una tarea de traducción MCP en curso. Detenla o espera a que finalice antes de iniciar una tarea desde la GUI.",
+  "label_use_builtin_system_prompt": "Usar prompt base integrado",
+  "Built-in Prompts": "Prompts integrados",
+  "Builtin Prompts Priority Hint": "El prompt personalizado del usuario siempre tiene la máxima prioridad. Puedes previsualizar, editar o activar/desactivar los prompts integrados abajo (el formato de salida es obligatorio).",
+  "Builtin Base Translation Prompt": "Prompt base de traducción integrado",
+  "AI Line Break Prompt": "Prompt de salto de línea IA",
+  "Glossary Extraction Prompt": "Prompt de extracción de glosario",
+  "Output Format Prompt": "Prompt de formato de salida",
+  "Required": "Obligatorio",
+  "Preview": "Vista previa",
+  "desc_builtin_system_prompt_hq": "Corresponde a dict/system_prompt_hq.yaml. Activado por defecto; desactívalo cuando tu prompt personalizado incluya instrucciones de traducción completas (vuelve al integrado si no hay instrucciones personalizadas válidas).",
+  "desc_builtin_system_prompt_line_break": "Corresponde a dict/system_prompt_line_break.yaml (sincronizado con Maquetación -> Salto de línea IA). Indica las reglas [BR] a la IA.",
+  "desc_builtin_glossary_extraction_prompt": "Corresponde a dict/glossary_extraction_prompt.yaml (sincronizado con Traducción -> Extracción automática de glosario). Solo surte efecto con un archivo de prompt personalizado válido.",
+  "desc_builtin_system_prompt_hq_format": "Corresponde a dict/system_prompt_hq_format.yaml. Define el esquema JSON y el protocolo de mapeo de IDs requerido tanto en modo API como MCP.",
+  "Builtin Format Prompt Required Hint": "El prompt de formato de salida es obligatorio para respuestas JSON estructuradas y no puede desactivarse; aún puedes previsualizarlo o editarlo."
 }

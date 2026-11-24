@@ -165,6 +165,7 @@ class TranslationService:
             # The `args` parameter for dispatch_translator is a flexible context object.
             # We build it manually here.
             translator_args = Context()
+            translator_args.config = final_config
 
             if image is not None:
                 translator_args.image = image
@@ -200,14 +201,13 @@ class TranslationService:
                     if not os.path.isabs(prompt_path):
                         # Assuming root_dir is accessible or using a known base path
                         prompt_path = os.path.join(self.config_service.root_dir, prompt_path)
-                    
-                    if os.path.exists(prompt_path):
-                        with open(prompt_path, 'r', encoding='utf-8') as f:
-                            import json
-                            translator_args.custom_prompt_json = json.load(f)
+
+                    from manga_translator.translators.prompt_loader import load_custom_prompt
+                    translator_args.custom_prompt_json = load_custom_prompt(prompt_path)
+                    if translator_args.custom_prompt_json:
                         self.logger.info(f"Successfully loaded custom HQ prompt from: {prompt_path}")
                     else:
-                        self.logger.warning(f"Custom HQ prompt file not found at: {prompt_path}")
+                        self.logger.warning(f"Custom HQ prompt file not found or invalid at: {prompt_path}")
                 except Exception as e:
                     self.logger.error(f"Error loading custom HQ prompt: {e}")
 

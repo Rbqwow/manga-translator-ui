@@ -1,7 +1,7 @@
 import os
 import shutil
 
-from PyQt6.QtCore import Qt, QTimer
+from PyQt6.QtCore import QSignalBlocker, Qt, QTimer
 from PyQt6.QtGui import QBrush
 from PyQt6.QtWidgets import (
     QFileDialog,
@@ -159,7 +159,69 @@ def _emit_pending_language_change(self):
         self.language_change_requested.emit(locale_code)
 
 
+_BUILTIN_PROMPT_STEMS = frozenset({
+    "system_prompt_hq",
+    "system_prompt_line_break",
+    "glossary_extraction_prompt",
+    "system_prompt_hq_format",
+})
+
+_BUILTIN_PROMPT_UI_META = {
+    "system_prompt_hq": {
+        "title_key": "Builtin Base Translation Prompt",
+        "desc_key": "desc_builtin_system_prompt_hq",
+        "section_key": "System Prompt",
+    },
+    "system_prompt_line_break": {
+        "title_key": "AI Line Break Prompt",
+        "desc_key": "desc_builtin_system_prompt_line_break",
+        "section_key": "AI Line Break Prompt",
+    },
+    "glossary_extraction_prompt": {
+        "title_key": "Glossary Extraction Prompt",
+        "desc_key": "desc_builtin_glossary_extraction_prompt",
+        "section_key": "Glossary Extraction Prompt",
+    },
+    "system_prompt_hq_format": {
+        "title_key": "Output Format Prompt",
+        "desc_key": "desc_builtin_system_prompt_hq_format",
+        "section_key": "Output Format Prompt",
+    },
+}
+
+
+def _sync_builtin_prompt_toggles(self, config_dict: dict | None = None):
+    toggles = getattr(self, "builtin_prompt_toggles", None)
+    if not toggles:
+        return
+    if isinstance(config_dict, dict):
+        trans_cfg = config_dict.get("translator") or {}
+        render_cfg = config_dict.get("render") or {}
+        values = {
+            "translator.use_builtin_system_prompt": bool(trans_cfg.get("use_builtin_system_prompt", True)),
+            "render.disable_auto_wrap": bool(render_cfg.get("disable_auto_wrap", False)),
+            "translator.extract_glossary": bool(trans_cfg.get("extract_glossary", False)),
+        }
+    else:
+        config = self.config_service.get_config()
+        values = {
+            "translator.use_builtin_system_prompt": bool(
+                getattr(config.translator, "use_builtin_system_prompt", True)
+            ),
+            "render.disable_auto_wrap": bool(
+                getattr(config.render, "disable_auto_wrap", False)
+            ),
+            "translator.extract_glossary": bool(
+                getattr(config.translator, "extract_glossary", False)
+            ),
+        }
+    for config_key, toggle in toggles.items():
+        if config_key in values:
+            toggle.setCheckedSilently(values[config_key])
+
+
 def refresh_prompt_manager(self):
+    _sync_builtin_prompt_toggles(self)
     if not hasattr(self, "prompt_list_widget"):
         return
     prompt_files = self.controller.get_hq_prompt_options()
@@ -199,9 +261,47 @@ def refresh_prompt_manager(self):
         self.prompt_list_widget.clearSelection()
 
     self._prompt_manager_signature = signature
-    if not self.prompt_list_widget.currentItem() and hasattr(self, "prompt_preview_panel"):
+    current_preview_path = getattr(getattr(self, "prompt_preview_panel", None), "_current_path", None)
+    previewing_builtin = bool(
+        current_preview_path
+        and os.path.splitext(os.path.basename(current_preview_path))[0] in _BUILTIN_PROMPT_STEMS
+    )
+    if (
+        not self.prompt_list_widget.currentItem()
+        and hasattr(self, "prompt_preview_panel")
+        and not previewing_builtin
+    ):
         self.prompt_preview_panel.clear()
     _set_prompt_status(self, "Found {count} prompt files.", count=len(prompt_files))
+
+
+def preview_builtin_prompt(self, stem: str) -> str:
+    """Resolve and preview a built-in translation prompt file."""
+    from manga_translator.translators.prompt_loader import resolve_builtin_prompt_path
+
+    dict_dir = resource_path("dict")
+    file_path = resolve_builtin_prompt_path(dict_dir, stem)
+    if hasattr(self, "prompt_list_widget"):
+        blocker = QSignalBlocker(self.prompt_list_widget)
+        try:
+            self.prompt_list_widget.clearSelection()
+            self.prompt_list_widget.setCurrentRow(-1)
+        finally:
+            del blocker
+    if hasattr(self, "prompt_preview_panel"):
+        self.prompt_preview_panel.load_file(file_path)
+    return file_path
+
+
+def edit_builtin_prompt(self, stem: str):
+    """Preview and open editor dialog for a built-in translation prompt file."""
+    file_path = preview_builtin_prompt(self, stem)
+    open_prompt_editor(self, file_path)
+
+
+def on_builtin_prompt_toggle_changed(self, config_key: str, checked: bool):
+    """Persist built-in prompt enable/disable toggle."""
+    self.setting_changed.emit(config_key, bool(checked))
 
 
 def apply_selected_prompt(self):
@@ -235,6 +335,45 @@ def on_prompt_selection_changed(self, current, previous):
 
 def open_prompt_editor(self, file_path: str):
     """弹出编辑器对话框，关闭后刷新预览。"""
+    from manga_translator.translators.prompt_loader import (
+        ensure_builtin_prompt_file,
+        get_builtin_prompt_spec_by_path,
+        load_builtin_prompt_text,
+        save_builtin_prompt_text,
+    )
+
+    builtin_spec = get_builtin_prompt_spec_by_path(file_path)
+    if builtin_spec is not None:
+        from ui.secondary_pages.simple_prompt_editor_dialog import SimplePromptEditorDialog
+
+        stem = builtin_spec["stem"] or ""
+        field_key = builtin_spec["field_key"] or "system_prompt"
+        meta = _BUILTIN_PROMPT_UI_META.get(stem, {})
+        default_text = ""
+        if stem == "system_prompt_hq":
+            from manga_translator.translators.common import CommonTranslator
+
+            default_text = CommonTranslator._HQ_FALLBACK_PROMPT
+
+        hint_path = os.path.join("dict", os.path.basename(file_path)).replace("\\", "/")
+        dlg = SimplePromptEditorDialog(
+            file_path,
+            title_text=self._t(meta.get("title_key", stem)),
+            description_text=self._t(meta.get("desc_key", "")),
+            section_text=self._t(meta.get("section_key", "Prompt Text")),
+            hint_text=hint_path,
+            default_prompt_text=default_text,
+            ensure_prompt_func=lambda p, fk=field_key, dt=default_text: ensure_builtin_prompt_file(p, fk, dt),
+            load_prompt_func=lambda p, fk=field_key: load_builtin_prompt_text(p, fk),
+            save_prompt_func=lambda p, txt, fk=field_key: save_builtin_prompt_text(p, fk, txt),
+            t_func=self._t,
+            parent=self._dialog_parent(),
+        )
+        dlg.exec()
+        if dlg.get_was_modified() and hasattr(self, "prompt_preview_panel"):
+            self.prompt_preview_panel.load_file(file_path)
+        return
+
     from ui.secondary_pages.ai_colorizer_prompt_editor import (
         AIColorizerPromptEditorDialog,
         is_ai_colorizer_prompt_file,

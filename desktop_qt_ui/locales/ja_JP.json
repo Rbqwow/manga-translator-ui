@@ -1596,5 +1596,19 @@
   "MCP Log Clear": "表示をクリア",
   "MCP Active Job Close Title": "MCP タスク実行中",
   "MCP Active Job Close Message": "現在 MCP 翻訳タスクが実行中です。\n\nバックグラウンドタスクと MCP サービスを停止してアプリを終了しますか？",
-  "MCP Active Job Blocks GUI Task": "現在 MCP 翻訳タスクが実行中のため、停止するか完了を待ってから GUI 翻訳タスクを開始してください。"
+  "MCP Active Job Blocks GUI Task": "現在 MCP 翻訳タスクが実行中のため、停止するか完了を待ってから GUI 翻訳タスクを開始してください。",
+  "label_use_builtin_system_prompt": "組み込み基本翻訳プロンプトを使用",
+  "Built-in Prompts": "組み込みプロンプト",
+  "Builtin Prompts Priority Hint": "ユーザー定義のカスタムプロンプトが常に最優先されます。下の組み込みプロンプトはプレビュー・編集・オン/オフ切り替えが可能です（出力形式は必須）。",
+  "Builtin Base Translation Prompt": "組み込み基本翻訳プロンプト",
+  "AI Line Break Prompt": "AI 改行プロンプト",
+  "Glossary Extraction Prompt": "用語抽出プロンプト",
+  "Output Format Prompt": "出力形式プロンプト",
+  "Required": "必須",
+  "Preview": "プレビュー",
+  "desc_builtin_system_prompt_hq": "dict/system_prompt_hq.yaml に対応します。既定で有効ですが、有効なカスタム翻訳プロンプトが翻訳指示を含む場合はオフにしてカスタムプロンプトを単独で優先できます（カスタム指示がない場合は自動的に組み込みプロンプトへフォールバックします）。",
+  "desc_builtin_system_prompt_line_break": "dict/system_prompt_line_break.yaml に対応します（「レイアウト → AI 改行」設定と同期）。[BR] 改行ルールを AI に指示します。",
+  "desc_builtin_glossary_extraction_prompt": "dict/glossary_extraction_prompt.yaml に対応します（「翻訳 → 用語自動抽出」設定と同期）。有効なカスタムプロンプトファイルが選択されている場合のみ有効になります。",
+  "desc_builtin_system_prompt_hq_format": "dict/system_prompt_hq_format.yaml に対応します。API モードと MCP モードの両方で必要な JSON 出力形式と ID 対応プロトコルを定義します。",
+  "Builtin Format Prompt Required Hint": "出力形式プロンプトは構造化 JSON 出力プロトコルに必須のため無効化できません。プレビューまたは編集は可能です。"
 }

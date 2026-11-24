@@ -1607,5 +1607,19 @@
   "MCP Log Clear": "Clear",
   "MCP Active Job Close Title": "MCP Job Running",
   "MCP Active Job Close Message": "An MCP translation job is currently active.\n\nStop the background job and MCP server and exit?",
-  "MCP Active Job Blocks GUI Task": "An MCP translation job is currently running. Stop or wait for it before starting a GUI task."
+  "MCP Active Job Blocks GUI Task": "An MCP translation job is currently running. Stop or wait for it before starting a GUI task.",
+  "label_use_builtin_system_prompt": "Use Built-in Base Translation Prompt",
+  "Built-in Prompts": "Built-in Prompts",
+  "Builtin Prompts Priority Hint": "User custom prompts always take highest priority. View, edit, or toggle built-in prompts below (Output Format is required).",
+  "Builtin Base Translation Prompt": "Built-in Base Translation Prompt",
+  "AI Line Break Prompt": "AI Line Break Prompt",
+  "Glossary Extraction Prompt": "Glossary Extraction Prompt",
+  "Output Format Prompt": "Output Format Prompt",
+  "Required": "Required",
+  "Preview": "Preview",
+  "desc_builtin_system_prompt_hq": "Maps to dict/system_prompt_hq.yaml. Enabled by default; disable when your active custom prompt provides complete translation instructions (falls back automatically if no custom instructions are present).",
+  "desc_builtin_system_prompt_line_break": "Maps to dict/system_prompt_line_break.yaml (synced with Typesetting -> Disable Auto Wrap / AI Line Break). Instructs the AI on [BR] line-break rules.",
+  "desc_builtin_glossary_extraction_prompt": "Maps to dict/glossary_extraction_prompt.yaml (synced with Translation -> Auto Extract Glossary). Takes effect only when a valid custom prompt file is active.",
+  "desc_builtin_system_prompt_hq_format": "Maps to dict/system_prompt_hq_format.yaml. Defines the JSON schema and ID mapping protocol required by both API and MCP modes.",
+  "Builtin Format Prompt Required Hint": "The output format prompt is required for structured JSON responses and cannot be disabled; you can still preview or edit it."
 }

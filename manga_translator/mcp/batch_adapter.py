@@ -151,8 +151,8 @@ def build_mcp_engine_config(
 
     hq_prompt_path = translator_data.get("high_quality_prompt_path")
     if hq_prompt_path and not os.path.isabs(hq_prompt_path):
-        candidate = os.path.join(root_dir, hq_prompt_path)
-        if os.path.exists(candidate):
+        candidate = resolve_custom_prompt_file_path(hq_prompt_path, root_dir)
+        if candidate and os.path.exists(candidate):
             translator_data["high_quality_prompt_path"] = candidate
 
     upscale_data = dict(raw.get("upscale") or {})
@@ -251,21 +251,27 @@ async def load_job_guidelines_and_glossary(
     translator: Any,
     config: Any,
     root_dir: str,
-) -> Tuple[str, Dict[str, Any], Optional[str]]:
-    """Load task-level system guidelines, glossary snapshot, and resolved glossary path."""
+) -> Tuple[str, Dict[str, Any], Optional[str], bool]:
+    """Load task-level system guidelines, glossary snapshot, resolved glossary path, and effective extract flag."""
     from manga_translator.utils import Context
 
     temp_ctx = Context()
     temp_ctx.config = config
     temp_ctx = await translator._load_and_prepare_prompts(config, temp_ctx)
 
+    custom_prompt_json = getattr(temp_ctx, "custom_prompt_json", None)
     helper = _get_prompt_br_helper()
+    effective_extract_glossary, use_builtin_system_prompt = helper._resolve_prompt_flags(
+        config,
+        custom_prompt_json,
+    )
     guidelines = helper._build_system_prompt(
         source_lang="",
         target_lang=config.translator.target_lang,
-        custom_prompt_json=getattr(temp_ctx, "custom_prompt_json", None),
+        custom_prompt_json=custom_prompt_json,
         line_break_prompt_json=getattr(temp_ctx, "line_break_prompt_json", None),
-        extract_glossary=bool(getattr(config.translator, "extract_glossary", False)),
+        extract_glossary=effective_extract_glossary,
+        use_builtin_system_prompt=use_builtin_system_prompt,
     )
     mcp_note = (
         "\n\n[MCP Submission Note]\n"
@@ -275,13 +281,13 @@ async def load_job_guidelines_and_glossary(
     )
     guidelines = f"{guidelines.rstrip()}{mcp_note}" if guidelines else mcp_note.strip()
 
-    custom_json = getattr(temp_ctx, "custom_prompt_json", None) or {}
+    custom_json = custom_prompt_json or {}
     raw_glossary = custom_json.get("glossary") if isinstance(custom_json, dict) else {}
     glossary = copy.deepcopy(raw_glossary) if isinstance(raw_glossary, dict) else {}
 
     prompt_path = getattr(config.translator, "high_quality_prompt_path", None)
-    resolved_prompt_path = resolve_custom_prompt_file_path(prompt_path, root_dir)
-    return guidelines, glossary, resolved_prompt_path
+    resolved_prompt_path = resolve_custom_prompt_file_path(prompt_path, root_dir) if custom_prompt_json else None
+    return guidelines, glossary, resolved_prompt_path, effective_extract_glossary
 
 
 async def preprocess_page(

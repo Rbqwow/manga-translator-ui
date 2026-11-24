@@ -86,6 +86,9 @@ class MainView(QObject):
     _copy_selected_prompt = layout_parts.copy_selected_prompt
     _rename_selected_prompt = layout_parts.rename_selected_prompt
     _delete_selected_prompt = layout_parts.delete_selected_prompt
+    _preview_builtin_prompt = layout_parts.preview_builtin_prompt
+    _edit_builtin_prompt = layout_parts.edit_builtin_prompt
+    _on_builtin_prompt_toggle_changed = layout_parts.on_builtin_prompt_toggle_changed
 
     _create_replacements_page = create_replacements_page
     _create_rich_text_rules_page = create_rich_text_rules_page
@@ -177,9 +180,24 @@ class MainView(QObject):
         # Connect signals for button state management
         self.controller.state_manager.is_translating_changed.connect(self.on_translation_state_changed, type=Qt.ConnectionType.QueuedConnection)
         self.controller.state_manager.current_config_changed.connect(self.update_start_button_text)
+        if hasattr(self.config_service, "config_changed"):
+            self.config_service.config_changed.connect(self._on_config_changed_sync_prompt_toggles)
         QTimer.singleShot(100, self.update_start_button_text) # Set initial text
         QTimer.singleShot(100, self._sync_workflow_mode_from_config) # Sync workflow mode dropdown
         QTimer.singleShot(5000, self._maybe_auto_check_updates)
+
+    def _on_config_changed_sync_prompt_toggles(self, config_dict: dict):
+        layout_parts._sync_builtin_prompt_toggles(self, config_dict)
+        bindings = getattr(self, "_settings_value_bindings", None) or {}
+        for dotted_key in ("render.disable_auto_wrap", "translator.extract_glossary"):
+            binding = bindings.get(dotted_key)
+            if not binding:
+                continue
+            widget = binding[0]
+            section, field = dotted_key.split(".", 1)
+            val = (config_dict.get(section) or {}).get(field)
+            if val is not None and hasattr(widget, "setCheckedSilently"):
+                widget.setCheckedSilently(bool(val))
 
     def _create_translation_interface(self, translation_page: QWidget) -> QWidget:
         interface = QWidget()
@@ -509,6 +527,28 @@ class MainView(QObject):
             self.prompt_rename_button.setText(self._t("Rename"))
         if hasattr(self, "prompt_delete_button"):
             self.prompt_delete_button.setText(self._t("Delete"))
+        if hasattr(self, "builtin_prompt_card"):
+            self.builtin_prompt_card.setTitle(self._t("Built-in Prompts"))
+        if hasattr(self, "builtin_prompt_hint_label"):
+            self.builtin_prompt_hint_label.setText(self._t("Builtin Prompts Priority Hint"))
+        if hasattr(self, "builtin_prompt_rows"):
+            from ui.widgets.hover_hint import install_hover_hint
+
+            for row_info in self.builtin_prompt_rows.values():
+                desc_text = self._t(row_info["desc_key"])
+                row_info["title_label"].setText(self._t(row_info["title_key"]))
+                install_hover_hint(row_info["title_label"], desc_text)
+                install_hover_hint(row_info["row"], desc_text)
+                install_hover_hint(row_info["preview_button"], self._t("Preview"))
+                install_hover_hint(row_info["edit_button"], self._t("Edit"))
+                if row_info["toggle"] is not None:
+                    install_hover_hint(row_info["toggle"], desc_text)
+                if row_info["required_label"] is not None:
+                    row_info["required_label"].setText(self._t("Required"))
+                    install_hover_hint(
+                        row_info["required_label"],
+                        self._t("Builtin Format Prompt Required Hint"),
+                    )
         if hasattr(self, "prompt_preview_panel") and hasattr(self.prompt_preview_panel, "refresh_ui_texts"):
             self.prompt_preview_panel.refresh_ui_texts()
 

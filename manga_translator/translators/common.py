@@ -1380,6 +1380,27 @@ def _flatten_prompt_data(data, indent: int = 0) -> str:
     return "\n".join(prompt_parts)
 
 
+def _has_meaningful_prompt_value(data: Any) -> bool:
+    """Return True if prompt data contains at least one non-empty string value."""
+    if isinstance(data, str):
+        return bool(data.strip())
+    if isinstance(data, dict):
+        return any(_has_meaningful_prompt_value(v) for v in data.values())
+    if isinstance(data, (list, tuple)):
+        return any(_has_meaningful_prompt_value(item) for item in data)
+    return False
+
+
+def _has_custom_instruction_content(custom_prompt_json: Optional[Dict[str, Any]]) -> bool:
+    """Return True if a custom prompt dict defines non-glossary translation instructions."""
+    if not isinstance(custom_prompt_json, dict):
+        return False
+    return any(
+        key != "glossary" and _has_meaningful_prompt_value(value)
+        for key, value in custom_prompt_json.items()
+    )
+
+
 class CommonTranslator(InfererModule):
     _REQUEST_RATE_LOCK = threading.Lock()
     # Translator has to support all languages listed in here. The language codes will be resolved into
@@ -1791,6 +1812,24 @@ class CommonTranslator(InfererModule):
             messages.append({"role": "model", "parts": [{"text": turn["assistant"]}]})
         return messages
 
+    @staticmethod
+    def _resolve_prompt_flags(
+        config: Any,
+        custom_prompt_json: Optional[Dict[str, Any]],
+    ) -> Tuple[bool, bool]:
+        """Resolve (extract_glossary, use_builtin_system_prompt) identically for API and MCP."""
+        translator_cfg = getattr(config, "translator", None) if config is not None else None
+        if translator_cfg is None and isinstance(config, dict):
+            translator_cfg = config.get("translator")
+        if isinstance(translator_cfg, dict):
+            config_extract = bool(translator_cfg.get("extract_glossary", False))
+            use_builtin_system_prompt = bool(translator_cfg.get("use_builtin_system_prompt", True))
+        else:
+            config_extract = bool(getattr(translator_cfg, "extract_glossary", False))
+            use_builtin_system_prompt = bool(getattr(translator_cfg, "use_builtin_system_prompt", True))
+        extract_glossary = bool(custom_prompt_json) and config_extract
+        return extract_glossary, use_builtin_system_prompt
+
     def _build_system_prompt_prefix(
         self,
         line_break_prompt_str: str,
@@ -1798,17 +1837,17 @@ class CommonTranslator(InfererModule):
         retry_attempt: int = 0,
         retry_reason: str = "",
     ) -> str:
-        """构建系统提示词前缀：[重试提示] → [断句提示] → [自定义提示]"""
+        """构建系统提示词前缀：[重试提示] → [自定义提示] → [断句提示]"""
         prompt_prefix = ""
 
         if retry_attempt > 0:
             prompt_prefix += self._get_retry_hint(retry_attempt, retry_reason) + "\n"
 
-        if line_break_prompt_str:
-            prompt_prefix += f"{line_break_prompt_str}\n\n---\n\n"
-
         if custom_prompt_str:
             prompt_prefix += f"{custom_prompt_str}\n\n---\n\n"
+
+        if line_break_prompt_str:
+            prompt_prefix += f"{line_break_prompt_str}\n\n---\n\n"
 
         return prompt_prefix
 
@@ -1818,11 +1857,14 @@ class CommonTranslator(InfererModule):
         base_prompt: str,
         target_lang_full: str,
     ) -> str:
-        """普通翻译模式：基础系统提示 + 标准 translations 输出格式。"""
-        final_prompt = prompt_prefix + base_prompt
+        """普通翻译模式：基础系统提示（可选） + 标准 translations 输出格式。"""
+        final_prompt = prompt_prefix + base_prompt if base_prompt else prompt_prefix.rstrip()
         output_format_prompt = get_system_prompt_hq_format_prompt(target_lang_full, extract_glossary=False)
         if output_format_prompt:
-            final_prompt += "\n\n---\n\n" + output_format_prompt
+            if final_prompt:
+                final_prompt += "\n\n---\n\n" + output_format_prompt
+            else:
+                final_prompt = output_format_prompt
         else:
             self.logger.info("Automatic term extraction is disabled, but no standard output format prompt was loaded.")
         return final_prompt
@@ -1833,19 +1875,50 @@ class CommonTranslator(InfererModule):
         base_prompt: str,
         target_lang_full: str,
     ) -> str:
-        """术语提取模式：基础系统提示 + 术语提取规则 + 扩展输出格式。"""
-        final_prompt = prompt_prefix + base_prompt
+        """术语提取模式：基础系统提示（可选） + 术语提取规则 + 扩展输出格式。"""
+        final_prompt = prompt_prefix + base_prompt if base_prompt else prompt_prefix.rstrip()
         extraction_prompt = get_glossary_extraction_prompt(target_lang_full)
         output_format_prompt = get_system_prompt_hq_format_prompt(target_lang_full, extract_glossary=True)
         glossary_sections = [p for p in (extraction_prompt, output_format_prompt) if p]
 
         if glossary_sections:
-            final_prompt += "\n\n---\n\n" + "\n\n---\n\n".join(glossary_sections)
+            joined_glossary = "\n\n---\n\n".join(glossary_sections)
+            final_prompt = f"{final_prompt}\n\n---\n\n{joined_glossary}" if final_prompt else joined_glossary
             self.logger.info("Automatic term extraction is enabled; using the system prompt with the new_terms output format.")
         else:
             self.logger.info("Automatic term extraction is enabled, but no supplemental term extraction prompt was loaded.")
 
         return final_prompt
+
+    @staticmethod
+    def _format_custom_prompt_section(custom_prompt_str: str, include_base_prompt: bool) -> str:
+        if include_base_prompt:
+            return (
+                "**USER CUSTOM TRANSLATION PROMPT (HIGHEST PRIORITY):**\n"
+                "Follow the user's custom translation instructions and glossary below with HIGHEST PRIORITY.\n"
+                "Whenever any translation style, tone, register, wording, pronoun, honorific, or localization rule "
+                "in the built-in default prompt below conflicts with this user custom prompt, ALWAYS follow this user custom prompt.\n"
+                "Mandatory technical protocol requirements (output format/schema, ID mapping, `[BR]` markers when enabled, "
+                "and `new_terms` schema when enabled) remain strictly required.\n\n"
+                f"{custom_prompt_str}"
+            )
+        return (
+            "**USER CUSTOM TRANSLATION PROMPT (PRIMARY INSTRUCTIONS):**\n"
+            "Follow the user's custom translation instructions and glossary below as the primary translation instructions.\n"
+            "Mandatory technical protocol requirements appended below (output format/schema, ID mapping, `[BR]` markers when enabled, "
+            "and `new_terms` schema when enabled) remain strictly required.\n\n"
+            f"{custom_prompt_str}"
+        )
+
+    @staticmethod
+    def _format_base_prompt_section(base_prompt: str, has_custom_prompt: bool) -> str:
+        if has_custom_prompt:
+            return (
+                "**BUILT-IN DEFAULT TRANSLATION PROMPT (LOWER PRIORITY FALLBACK):**\n"
+                "Apply the built-in default guidelines below only where they do not conflict with the User Custom Translation Prompt above.\n\n"
+                f"{base_prompt}"
+            )
+        return base_prompt
 
     def _build_system_prompt(
         self,
@@ -1856,64 +1929,82 @@ class CommonTranslator(InfererModule):
         retry_attempt: int = 0,
         retry_reason: str = "",
         extract_glossary: bool = False,
+        use_builtin_system_prompt: bool = True,
     ) -> str:
         """
         构建完整的系统提示词（统一实现，所有翻译器共享）。
 
         不开启自动术语提取时：
-        [重试提示] → [断句提示] → [自定义提示] → [基础系统提示] → [标准输出格式]
+        [重试提示] → [自定义提示（最高优先级）] → [内置基础系统提示（可开关）] → [断句提示] → [标准输出格式]
 
         开启自动术语提取时：
-        [重试提示] → [断句提示] → [自定义提示] → [基础系统提示] → [术语提取规则] → [扩展输出格式]
+        [重试提示] → [自定义提示（最高优先级）] → [内置基础系统提示（可开关）] → [断句提示] → [术语提取规则] → [扩展输出格式]
         """
         target_lang_full = VALID_LANGUAGES.get(target_lang, target_lang)
 
         # --- 处理自定义提示词 ---
         custom_prompt_str = ""
-        if custom_prompt_json:
-            custom_prompt_str = _flatten_prompt_data(custom_prompt_json)
+        if custom_prompt_json and _has_meaningful_prompt_value(custom_prompt_json):
+            custom_prompt_str = _flatten_prompt_data(custom_prompt_json).strip()
+            if custom_prompt_str:
+                custom_prompt_str = custom_prompt_str.replace("{{{target_lang}}}", target_lang_full)
 
         # --- 处理断句提示词 ---
         line_break_prompt_str = ""
         if line_break_prompt_json and line_break_prompt_json.get('line_break_prompt'):
-            line_break_prompt_str = line_break_prompt_json['line_break_prompt']
+            line_break_prompt_str = str(line_break_prompt_json['line_break_prompt']).strip()
 
-        # --- 加载 HQ System Prompt（优先 YAML，兼容 JSON） ---
-        import os
+        # --- 判断是否包含内置基础系统提示词 ---
+        has_custom_instructions = _has_custom_instruction_content(custom_prompt_json)
+        include_base_prompt = bool(use_builtin_system_prompt)
+        if not include_base_prompt and not has_custom_instructions:
+            self.logger.warning(
+                "Built-in base system prompt is disabled, but no active custom translation instructions were found; "
+                "falling back to built-in base prompt."
+            )
+            include_base_prompt = True
 
-        from ..utils import BASE_PATH
-        from .prompt_loader import load_system_prompt_hq
-        dict_dir = os.path.join(BASE_PATH, 'dict')
-        base_prompt = load_system_prompt_hq(dict_dir)
+        base_prompt = ""
+        if include_base_prompt:
+            import os
 
-        # Fallback
-        if not base_prompt:
-            base_prompt = self._HQ_FALLBACK_PROMPT
+            from ..utils import BASE_PATH
+            from .prompt_loader import load_system_prompt_hq
+            dict_dir = os.path.join(BASE_PATH, 'dict')
+            base_prompt = load_system_prompt_hq(dict_dir)
+            if not base_prompt:
+                base_prompt = self._HQ_FALLBACK_PROMPT
+            base_prompt = base_prompt.replace("{{{target_lang}}}", target_lang_full).strip()
 
-        # --- 替换占位符 ---
-        base_prompt = base_prompt.replace("{{{target_lang}}}", target_lang_full)
+        sections: List[str] = []
         if custom_prompt_str:
-            custom_prompt_str = custom_prompt_str.replace("{{{target_lang}}}", target_lang_full)
-
-        prompt_prefix = self._build_system_prompt_prefix(
-            line_break_prompt_str=line_break_prompt_str,
-            custom_prompt_str=custom_prompt_str,
-            retry_attempt=retry_attempt,
-            retry_reason=retry_reason,
-        )
+            sections.append(self._format_custom_prompt_section(custom_prompt_str, include_base_prompt))
+        if include_base_prompt and base_prompt:
+            sections.append(self._format_base_prompt_section(base_prompt, bool(custom_prompt_str)))
+        if line_break_prompt_str:
+            sections.append(line_break_prompt_str)
 
         if extract_glossary:
-            return self._build_system_prompt_with_glossary(
-                prompt_prefix=prompt_prefix,
-                base_prompt=base_prompt,
-                target_lang_full=target_lang_full,
-            )
+            extraction_prompt = get_glossary_extraction_prompt(target_lang_full)
+            output_format_prompt = get_system_prompt_hq_format_prompt(target_lang_full, extract_glossary=True)
+            glossary_sections = [p for p in (extraction_prompt, output_format_prompt) if p]
+            if glossary_sections:
+                sections.extend(glossary_sections)
+                self.logger.info("Automatic term extraction is enabled; using the system prompt with the new_terms output format.")
+            else:
+                self.logger.info("Automatic term extraction is enabled, but no supplemental term extraction prompt was loaded.")
+        else:
+            output_format_prompt = get_system_prompt_hq_format_prompt(target_lang_full, extract_glossary=False)
+            if output_format_prompt:
+                sections.append(output_format_prompt)
+            else:
+                self.logger.info("Automatic term extraction is disabled, but no standard output format prompt was loaded.")
 
-        return self._build_system_prompt_without_glossary(
-            prompt_prefix=prompt_prefix,
-            base_prompt=base_prompt,
-            target_lang_full=target_lang_full,
-        )
+        body = "\n\n---\n\n".join(section for section in sections if section)
+        if retry_attempt > 0:
+            retry_prefix = self._get_retry_hint(retry_attempt, retry_reason) + "\n"
+            return retry_prefix + body
+        return body
 
     def _build_unified_user_prompt(self, batch_data: List[Dict], ctx=None, prev_context: str = "", retry_attempt: int = 0, retry_reason: str = "", is_image_mode: bool = True) -> str:
         """

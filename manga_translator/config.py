@@ -280,6 +280,8 @@ class TranslatorConfig(BaseModel):
     """Path to a JSON file containing custom prompts for high-quality translation."""
     extract_glossary: bool = False
     """Automatically extract new terms to glossary (requires high_quality_prompt_path)"""
+    use_builtin_system_prompt: bool = True
+    """Include the built-in base translation prompt (dict/system_prompt_hq.yaml). Disable to rely on the active custom translation prompt while keeping required technical prompts."""
     remove_trailing_period: bool = True
     """Remove a sentence-final period from the translation when the source text has no terminal punctuation."""
     translator_chain: Optional[str] = None

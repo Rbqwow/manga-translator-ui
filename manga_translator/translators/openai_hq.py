@@ -276,9 +276,9 @@ class OpenAIHighQualityTranslator(CommonTranslator):
         """构建用户提示词（高质量版）- 使用统一方法，只包含当前待翻译文本"""
         return self._build_user_prompt_for_hq(batch_data, ctx, "", retry_attempt=retry_attempt, retry_reason=retry_reason)
     
-    def _get_system_prompt(self, source_lang: str, target_lang: str, custom_prompt_json: Dict[str, Any] = None, line_break_prompt_json: Dict[str, Any] = None, retry_attempt: int = 0, retry_reason: str = "", extract_glossary: bool = False) -> str:
+    def _get_system_prompt(self, source_lang: str, target_lang: str, custom_prompt_json: Dict[str, Any] = None, line_break_prompt_json: Dict[str, Any] = None, retry_attempt: int = 0, retry_reason: str = "", extract_glossary: bool = False, use_builtin_system_prompt: bool = True) -> str:
         """获取完整的系统提示词（包含断句提示词、自定义提示词和基础系统提示词）"""
-        return self._build_system_prompt(source_lang, target_lang, custom_prompt_json=custom_prompt_json, line_break_prompt_json=line_break_prompt_json, retry_attempt=retry_attempt, retry_reason=retry_reason, extract_glossary=extract_glossary)
+        return self._build_system_prompt(source_lang, target_lang, custom_prompt_json=custom_prompt_json, line_break_prompt_json=line_break_prompt_json, retry_attempt=retry_attempt, retry_reason=retry_reason, extract_glossary=extract_glossary, use_builtin_system_prompt=use_builtin_system_prompt)
 
     async def _translate_batch_high_quality(self, texts: List[str], batch_data: List[Dict], source_lang: str, target_lang: str, custom_prompt_json: Dict[str, Any] = None, line_break_prompt_json: Dict[str, Any] = None, ctx: Any = None, split_level: int = 0) -> List[str]:
         """高质量批量翻译方法"""
@@ -352,16 +352,15 @@ class OpenAIHighQualityTranslator(CommonTranslator):
             #     self.logger.warning(f"Triggering split after {local_attempt} local attempts")
             #     raise self.SplitException(local_attempt, texts)
             
-            # 确定是否开启术语提取
-            # 必须同时满足：1. 有自定义提示词（才有地方存） 2. 配置开启了提取开关
-            config_extract = False
-            if ctx and hasattr(ctx, 'config') and hasattr(ctx.config, 'translator'):
-                config_extract = getattr(ctx.config.translator, 'extract_glossary', False)
-            
-            extract_glossary = bool(custom_prompt_json) and config_extract
+            # 确定是否开启术语提取及内置基础提示词
+            # 术语提取必须同时满足：1. 有自定义提示词（才有地方存） 2. 配置开启了提取开关
+            extract_glossary, use_builtin_system_prompt = self._resolve_prompt_flags(
+                getattr(ctx, 'config', None) if ctx else None,
+                custom_prompt_json,
+            )
 
             # 构建系统提示词和用户提示词（包含重试信息以避免缓存）
-            system_prompt = self._get_system_prompt(source_lang, target_lang, custom_prompt_json=custom_prompt_json, line_break_prompt_json=line_break_prompt_json, retry_attempt=retry_attempt, retry_reason=retry_reason, extract_glossary=extract_glossary)
+            system_prompt = self._get_system_prompt(source_lang, target_lang, custom_prompt_json=custom_prompt_json, line_break_prompt_json=line_break_prompt_json, retry_attempt=retry_attempt, retry_reason=retry_reason, extract_glossary=extract_glossary, use_builtin_system_prompt=use_builtin_system_prompt)
             user_prompt = self._build_user_prompt(batch_data, ctx, retry_attempt=retry_attempt, retry_reason=retry_reason)
             user_content = [{"type": "text", "text": user_prompt}]
             

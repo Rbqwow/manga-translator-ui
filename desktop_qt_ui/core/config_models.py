@@ -24,6 +24,7 @@ class TranslatorSettings(BaseModel):
     # 相对路径，后端会用 BASE_PATH 拼接（打包后=app.exe 同级，开发时=项目根目录）
     high_quality_prompt_path: Optional[str] = "dict/prompt_example.yaml"
     extract_glossary: bool = False
+    use_builtin_system_prompt: bool = True
     max_requests_per_minute: int = 0
     remove_trailing_period: bool = True
     convert_to_traditional: bool = False

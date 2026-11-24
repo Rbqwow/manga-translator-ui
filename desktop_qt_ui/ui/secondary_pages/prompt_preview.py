@@ -402,7 +402,9 @@ class PromptPreviewPanel(CardWidget):
 
         # 尝试解析
         data = self._try_load(file_path)
-        if data is not None and self._is_structured(data):
+        if data is not None and self._is_builtin_prompt_structured(data):
+            self._render_builtin_structured(data)
+        elif data is not None and self._is_structured(data):
             self._render_structured(data)
         else:
             self._render_raw(file_path)
@@ -447,6 +449,34 @@ class PromptPreviewPanel(CardWidget):
                 "translation_rules",
             )
         )
+
+    @staticmethod
+    def _is_builtin_prompt_structured(data: Any) -> bool:
+        if not isinstance(data, dict):
+            return False
+        return any(
+            key in data
+            for key in (
+                "system_prompt_hq_format",
+                "line_break_prompt",
+                "glossary_extraction_prompt",
+            )
+        )
+
+    def _render_builtin_structured(self, data: dict):
+        layout = self._content_layout
+        sections = (
+            ("system_prompt_hq_format", "Output Format Prompt", "system_prompt"),
+            ("line_break_prompt", "AI Line Break Prompt", "translation_rules"),
+            ("glossary_extraction_prompt", "Glossary Extraction Prompt", "terminology"),
+        )
+        for field_key, label_key, icon_key in sections:
+            value = data.get(field_key)
+            if isinstance(value, str):
+                layout.addWidget(_section_label(self._t(label_key), _prompt_icon(icon_key)))
+                layout.addWidget(_body_label(value.strip() if value.strip() else ""))
+                layout.addWidget(_divider())
+        layout.addStretch()
 
     # ─── 结构化渲染 ────────────────────────────────────
     def _render_structured(self, data: dict):

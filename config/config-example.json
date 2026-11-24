@@ -44,6 +44,7 @@
     "user_api_model": null,
     "high_quality_prompt_path": "dict/prompt_example.yaml",
     "extract_glossary": false,
+    "use_builtin_system_prompt": true,
     "max_requests_per_minute": 0,
     "remove_trailing_period": true,
     "convert_to_traditional": false,

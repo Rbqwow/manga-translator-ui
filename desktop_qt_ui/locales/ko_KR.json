@@ -1596,5 +1596,19 @@
   "MCP Log Clear": "표시 지우기",
   "MCP Active Job Close Title": "MCP 작업 실행 중",
   "MCP Active Job Close Message": "현재 MCP 번역 작업이 실행 중입니다.\n\n백그라운드 작업과 MCP 서비스를 중지하고 프로그램을 종료하시겠습니까?",
-  "MCP Active Job Blocks GUI Task": "현재 MCP 번역 작업이 실행 중이므로 해당 작업을 중지하거나 완료된 후에 GUI 번역 작업을 시작해 주세요."
+  "MCP Active Job Blocks GUI Task": "현재 MCP 번역 작업이 실행 중이므로 해당 작업을 중지하거나 완료된 후에 GUI 번역 작업을 시작해 주세요.",
+  "label_use_builtin_system_prompt": "내장 기본 번역 프롬프트 사용",
+  "Built-in Prompts": "내장 프롬프트",
+  "Builtin Prompts Priority Hint": "사용자 지정 번역 프롬프트가 항상 최우선으로 적용됩니다. 아래 내장 프롬프트는 미리보기, 편집 또는 켜기/끄기가 가능합니다(출력 형식은 필수).",
+  "Builtin Base Translation Prompt": "내장 기본 번역 프롬프트",
+  "AI Line Break Prompt": "AI 줄바꿈 프롬프트",
+  "Glossary Extraction Prompt": "용어 추출 프롬프트",
+  "Output Format Prompt": "출력 형식 프롬프트",
+  "Required": "필수",
+  "Preview": "미리보기",
+  "desc_builtin_system_prompt_hq": "dict/system_prompt_hq.yaml에 해당합니다. 기본으로 활성화되며, 활성 사용자 지정 프롬프트에 번역 지침이 포함된 경우 이 옵션을 꺼서 사용자 지정 프롬프트만 사용할 수 있습니다(유효한 사용자 지침이 없으면 자동으로 내장 프롬프트로 폴백합니다).",
+  "desc_builtin_system_prompt_line_break": "dict/system_prompt_line_break.yaml에 해당합니다(조판 → AI 줄바꿈 설정과 동기화). AI에게 [BR] 줄바꿈 규칙을 전달합니다.",
+  "desc_builtin_glossary_extraction_prompt": "dict/glossary_extraction_prompt.yaml에 해당합니다(번역 → 용어 자동 추출 설정과 동기화). 유효한 사용자 지정 프롬프트 파일이 활성화된 경우에만 적용됩니다.",
+  "desc_builtin_system_prompt_hq_format": "dict/system_prompt_hq_format.yaml에 해당합니다. API 모드와 MCP 모드 모두에서 필요한 JSON 출력 스키마 및 ID 매핑 프로토콜을 정의합니다.",
+  "Builtin Format Prompt Required Hint": "출력 형식 프롬프트는 구조화된 JSON 응답 프로토콜에 필수이므로 끌 수 없습니다. 왼쪽 아이콘으로 미리보기 또는 편집할 수 있습니다."
 }

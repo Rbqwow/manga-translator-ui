@@ -1245,6 +1245,7 @@ class MainAppLogic(QObject):
                     "no_text_lang_skip": self._t("label_no_text_lang_skip"),
                     "high_quality_prompt_path": self._t("label_high_quality_prompt_path"),
                     "extract_glossary": self._t("label_extract_glossary"),
+                    "use_builtin_system_prompt": self._t("label_use_builtin_system_prompt"),
                     "remove_trailing_period": self._t("label_remove_trailing_period"),
                     "convert_to_traditional": self._t("label_convert_to_traditional"),
                     "convert_to_simplified": self._t("label_convert_to_simplified"),

@@ -214,6 +214,7 @@ _SKIPPED_SETTING_KEYS = frozenset({
     "upscale.realcugan_model",
     "render.gimp_font",
     "translator.high_quality_prompt_path",
+    "translator.use_builtin_system_prompt",
     "app.last_open_dir",
     "app.last_output_path",
     "app.favorite_folders",

@@ -48,6 +48,7 @@ class WorkspaceInfoResponse(BaseModel):
     check_br_and_retry: bool = False
     extract_glossary: bool = False
     high_quality_prompt_path: Optional[str] = None
+    use_builtin_system_prompt: bool = True
     gui_file_count: int = 0
     gui_file_samples: List[str] = Field(default_factory=list)
     output_dir: str = ""
@@ -75,6 +76,7 @@ class CreateJobResponse(BaseModel):
     target_lang: str
     ai_line_break_enabled: bool
     extract_glossary: bool
+    use_builtin_system_prompt: bool = True
     guidelines: str
     glossary: Dict[str, Any] = Field(default_factory=dict)
     glossary_version: int = 0

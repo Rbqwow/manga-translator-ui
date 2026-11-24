@@ -2174,6 +2174,7 @@ class McpJobManager:
             check_br_and_retry=bool(render_cfg.get("check_br_and_retry", False)),
             extract_glossary=bool(trans_cfg.get("extract_glossary", False)),
             high_quality_prompt_path=trans_cfg.get("high_quality_prompt_path"),
+            use_builtin_system_prompt=bool(trans_cfg.get("use_builtin_system_prompt", True)),
             gui_file_count=len(gui_files),
             gui_file_samples=[os.path.basename(p) for p in gui_files[:10]],
             output_dir=output_dir,
@@ -2357,9 +2358,10 @@ class McpJobManager:
                 from manga_translator.utils.text_filter import load_filter_list
 
                 load_filter_list(force_reload=True)
-            guidelines, glossary, resolved_prompt_path = _run_coro_sync(
+            guidelines, glossary, resolved_prompt_path, effective_extract_glossary = _run_coro_sync(
                 load_job_guidelines_and_glossary(translator, engine_config, self.root_dir)
             )
+            engine_config.translator.extract_glossary = effective_extract_glossary
             _check_create_cancelled()
 
             from manga_translator.utils.batch_skip import plan_batch_inputs
@@ -2440,7 +2442,8 @@ class McpJobManager:
             context_size=job.context_size,
             target_lang=engine_config.translator.target_lang,
             ai_line_break_enabled=bool(engine_config.render.disable_auto_wrap),
-            extract_glossary=bool(engine_config.translator.extract_glossary),
+            extract_glossary=effective_extract_glossary,
+            use_builtin_system_prompt=bool(engine_config.translator.use_builtin_system_prompt),
             guidelines=guidelines,
             glossary=glossary,
             glossary_version=0,

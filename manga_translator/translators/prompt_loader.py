@@ -319,3 +319,114 @@ def list_prompt_files(dict_dir: str, exclude_system: bool = True) -> list:
         files.append(f)
 
     return sorted(files)
+
+
+BUILTIN_TRANSLATION_PROMPTS: Tuple[Dict[str, Optional[str]], ...] = (
+    {
+        "stem": "system_prompt_hq",
+        "field_key": "system_prompt",
+        "default_filename": "system_prompt_hq.yaml",
+        "config_key": "translator.use_builtin_system_prompt",
+    },
+    {
+        "stem": "system_prompt_line_break",
+        "field_key": "line_break_prompt",
+        "default_filename": "system_prompt_line_break.yaml",
+        "config_key": "render.disable_auto_wrap",
+    },
+    {
+        "stem": "glossary_extraction_prompt",
+        "field_key": "glossary_extraction_prompt",
+        "default_filename": "glossary_extraction_prompt.yaml",
+        "config_key": "translator.extract_glossary",
+    },
+    {
+        "stem": "system_prompt_hq_format",
+        "field_key": "system_prompt_hq_format",
+        "default_filename": "system_prompt_hq_format.yaml",
+        "config_key": None,
+    },
+)
+
+BUILTIN_TRANSLATION_PROMPT_MAP: Dict[str, Dict[str, Optional[str]]] = {
+    spec["stem"]: spec for spec in BUILTIN_TRANSLATION_PROMPTS if spec.get("stem")
+}
+
+
+def resolve_builtin_prompt_path(dict_dir: str, stem: str) -> str:
+    """Resolve an existing built-in prompt file (.yaml/.yml/.json) or default .yaml path."""
+    found = resolve_prompt_path(dict_dir, stem)
+    if found:
+        return os.path.normpath(found)
+    return os.path.normpath(os.path.join(dict_dir, f"{stem}.yaml"))
+
+
+def get_builtin_prompt_spec_by_path(file_path: Optional[str]) -> Optional[Dict[str, Optional[str]]]:
+    """Return built-in translation prompt metadata if file_path matches a built-in stem."""
+    if not file_path:
+        return None
+    stem = os.path.splitext(os.path.basename(file_path))[0]
+    return BUILTIN_TRANSLATION_PROMPT_MAP.get(stem)
+
+
+def load_builtin_prompt_text(path: str, field_key: str) -> str:
+    """Load raw text for a built-in translation prompt file without expanding placeholders."""
+    data = load_prompt_file(path)
+    if isinstance(data, dict):
+        value = data.get(field_key, "")
+        if isinstance(value, str):
+            return value
+    return ""
+
+
+def save_builtin_prompt_text(path: str, field_key: str, prompt_text: str) -> str:
+    """Persist a built-in translation prompt file while preserving formatting and placeholders."""
+    resolved_path = os.path.normpath(path)
+    normalized = str(prompt_text or "").replace("\r\n", "\n").replace("\r", "\n")
+    ext = os.path.splitext(resolved_path)[1].lower()
+
+    with prompt_file_lock:
+        parent = os.path.dirname(resolved_path)
+        if parent:
+            os.makedirs(parent, exist_ok=True)
+
+        if ext == ".json":
+            payload = {field_key: normalized}
+            content = json.dumps(payload, ensure_ascii=False, indent=2) + "\n"
+        else:
+            if normalized == "":
+                content = f'{field_key}: ""\n'
+            elif normalized.endswith("\n\n"):
+                lines = normalized[:-1].split("\n")
+                yaml_lines = [f"{field_key}: |+2"]
+                yaml_lines.extend(f"  {line}" if line else "" for line in lines)
+                content = "\n".join(yaml_lines) + "\n"
+            elif normalized.endswith("\n"):
+                lines = normalized[:-1].split("\n")
+                yaml_lines = [f"{field_key}: |2"]
+                yaml_lines.extend(f"  {line}" if line else "" for line in lines)
+                content = "\n".join(yaml_lines) + "\n"
+            else:
+                lines = normalized.split("\n")
+                yaml_lines = [f"{field_key}: |-2"]
+                yaml_lines.extend(f"  {line}" if line else "" for line in lines)
+                content = "\n".join(yaml_lines) + "\n"
+
+            yaml = _get_yaml()
+            if yaml is not None:
+                parsed = yaml.safe_load(content)
+                if not isinstance(parsed, dict) or field_key not in parsed:
+                    raise ValueError(f"Serialized YAML for built-in prompt '{field_key}' is invalid")
+
+        with open(resolved_path, "w", encoding="utf-8") as f:
+            f.write(content)
+
+    return resolved_path
+
+
+def ensure_builtin_prompt_file(path: str, field_key: str, default_text: str = "") -> str:
+    """Create a built-in translation prompt file with default_text if missing."""
+    resolved_path = os.path.normpath(path)
+    if not os.path.exists(resolved_path):
+        save_builtin_prompt_text(resolved_path, field_key, default_text)
+    return resolved_path
