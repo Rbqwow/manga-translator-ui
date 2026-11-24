@@ -73,9 +73,17 @@ _RETRYABLE_MARKERS = (
     "network error",
     "network is unreachable",
     # TLS handshakes fail transiently behind proxies and captive portals.
+    # Match OpenSSL/library phrasing, not bare "ssl"/"tls" substrings, which
+    # also occur inside unrelated words ("hassle") like bare "connect" did.
     "certificate verify failed",
-    "ssl",
-    "tls",
+    "[ssl:",
+    "ssl error",
+    "sslerror",
+    "ssl handshake",
+    "sslv3 alert",
+    "tlsv1 alert",
+    "tls handshake",
+    "unexpected eof",
     "eof occurred in violation of protocol",
     "temporary failure",
     "temporarily unavailable",

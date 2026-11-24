@@ -7,6 +7,7 @@
 """
 
 import asyncio
+import contextlib
 import logging
 import threading
 from concurrent.futures import Future, ThreadPoolExecutor
@@ -43,6 +44,59 @@ server_config = {
 # 活动任务跟踪
 active_tasks = {}
 active_tasks_lock = threading.Lock()
+
+
+class _ModelUsageGate:
+    """Translations share the module-level model caches; unloading needs them alone.
+
+    Every task builds its own MangaTranslator but loads models from the same
+    process-wide caches, so unloading a cache entry while a task sits between
+    `load()` and `infer()` makes that task fail ("Tried to forward pass without
+    having loaded the model"). Translations hold the gate shared for their whole
+    run; an unload only proceeds when no translation holds it, and new
+    translations wait for the short unload to finish instead of racing it.
+    """
+
+    def __init__(self):
+        self._cond = threading.Condition()
+        self._users = 0
+        self._unloading = False
+
+    @property
+    def users(self) -> int:
+        with self._cond:
+            return self._users
+
+    @contextlib.contextmanager
+    def use(self):
+        with self._cond:
+            while self._unloading:
+                self._cond.wait()
+            self._users += 1
+        try:
+            yield
+        finally:
+            with self._cond:
+                self._users -= 1
+                self._cond.notify_all()
+
+    @contextlib.contextmanager
+    def try_exclusive(self):
+        """Yield True with the caches reserved, or False when tasks are running."""
+        with self._cond:
+            acquired = not self._users and not self._unloading
+            if acquired:
+                self._unloading = True
+        try:
+            yield acquired
+        finally:
+            if acquired:
+                with self._cond:
+                    self._unloading = False
+                    self._cond.notify_all()
+
+
+_model_gate = _ModelUsageGate()
 
 
 def init_semaphore():
@@ -98,10 +152,14 @@ def start_model_monitor():
                 except (TypeError, ValueError):
                     ttl = 0.0
                 if ttl > 0:
-                    try:
-                        asyncio.run(unload_idle_models(ttl))
-                    except Exception as exc:
-                        logger.warning(f"Idle model cleanup failed: {exc}")
+                    # Skip this round while any task runs: a model idle for
+                    # longer than the TTL may be about to be used again.
+                    with _model_gate.try_exclusive() as acquired:
+                        if acquired:
+                            try:
+                                asyncio.run(unload_idle_models(ttl))
+                            except Exception as exc:
+                                logger.warning(f"Idle model cleanup failed: {exc}")
                 _model_monitor_stop.wait(MODEL_CLEANUP_MIN_INTERVAL_S)
 
         _model_monitor_thread = threading.Thread(
@@ -127,12 +185,14 @@ async def run_in_translator_thread(func: Callable, *args, **kwargs) -> Any:
     """
     if translation_executor is None:
         init_semaphore()
-    
+
+    def _run_with_models():
+        # Held for the whole task so model unloading cannot run underneath it.
+        with _model_gate.use():
+            return func(*args, **kwargs)
+
     loop = asyncio.get_event_loop()
-    return await loop.run_in_executor(
-        translation_executor,
-        lambda: func(*args, **kwargs)
-    )
+    return await loop.run_in_executor(translation_executor, _run_with_models)
 
 
 def register_active_task(
@@ -412,7 +472,23 @@ def reset_global_translator():
     The caches are unloaded unconditionally: a settings change resets
     `_global_translator` but not the caches, so skipping the unload whenever the
     instance is already None would leave the largest allocations resident.
+
+    Running tasks load models from the same caches, so the reset is refused
+    while any translation is in flight instead of unloading underneath it.
     """
+    with _model_gate.try_exclusive() as acquired:
+        if not acquired:
+            busy = _model_gate.users
+            message = (
+                f"有 {busy} 个翻译任务正在运行，请在任务结束后再释放模型"
+                if busy else "另一项模型卸载正在进行，请稍后再试"
+            )
+            logger.info(f"Model reset refused: {busy} translation task(s) running")
+            return {"success": False, "busy": True, "unloaded": 0, "message": message}
+        return _reset_global_translator_exclusive()
+
+
+def _reset_global_translator_exclusive():
     global _global_translator, _translator_params_hash
 
     with _translator_lock:

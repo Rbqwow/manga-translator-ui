@@ -572,6 +572,24 @@ def build_preserved_pil_save_kwargs(source_image: Optional[Image.Image] = None) 
     return save_kwargs
 
 
+def lossless_webp_method(effort: int) -> int:
+    """Map a 0-100 compression effort to libwebp's lossless ``method`` (0-6).
+
+    Lossless WebP uses ``quality=effort``. libwebp treats exactly
+    ``method=6`` with ``quality=100`` (``cwebp -z 9``) as a request to
+    encode the image once per transform/entropy combination and keep the
+    smallest result. On manga pages that took 14-24 s per page, against
+    3-4 s for ``method=5`` at the same quality, and produced files of the
+    same size. Effort 100 therefore stops at method 5; every other effort
+    keeps the linear mapping. Both paths are lossless, so only encoding
+    time changes, never pixels.
+    """
+    method = round(effort * 6 / 100)
+    if method == 6 and effort >= 100:
+        return 5
+    return method
+
+
 def save_pil_image(
     image: Image.Image,
     output_path: str | os.PathLike[str] | BinaryIO,
@@ -627,7 +645,7 @@ def save_pil_image(
             if target_format == 'WEBP':
                 save_kwargs['quality'] = effort
                 save_kwargs.setdefault('exact', True)
-                save_kwargs.setdefault('method', round(effort * 6 / 100))
+                save_kwargs.setdefault('method', lossless_webp_method(effort))
             elif target_format == 'HEIF':
                 save_kwargs['quality'] = -1
                 save_kwargs['chroma'] = '444'

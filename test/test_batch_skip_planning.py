@@ -12,6 +12,7 @@ from manga_translator.utils import Context
 from manga_translator.utils.batch_skip import (
     input_path,
     plan_batch_inputs,
+    select_context_orders,
     slice_batch_indices,
 )
 from manga_translator.utils.concurrent_pipeline import ConcurrentPipeline
@@ -309,3 +310,19 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+
+
+def test_context_prefers_the_nearest_pages_before_the_batch():
+    assert select_context_orders(range(10), {6, 7}, 3) == [3, 4, 5]
+
+
+def test_context_falls_back_to_the_nearest_later_pages():
+    # Only page 0 precedes the batch; later resume pages fill the rest, nearest first.
+    assert select_context_orders([0, 8, 9, 15], {1, 2}, 3) == [0, 8, 9]
+
+
+def test_context_never_includes_the_batch_and_respects_the_limit():
+    assert select_context_orders([1, 2, 3], {1, 2, 3}, 3) == []
+    assert select_context_orders([0, 1, 2], {5}, 0) == []
+    # Without a batch (end-of-run snapshot) the most recent pages are kept.
+    assert select_context_orders([4, 0, 9, 2], set(), 2) == [4, 9]

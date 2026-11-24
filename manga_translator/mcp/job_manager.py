@@ -2000,6 +2000,34 @@ class McpJobManager:
         self._active_job_id: Optional[str] = None
         self._latest_job_id: Optional[str] = None
         self._idle_timer: Optional[threading.Timer] = None
+        # GUI tasks that passed the MCP check but are not yet visible through
+        # is_gui_busy(); see try_reserve_gpu_for_gui().
+        self._gui_reservations: int = 0
+
+    def try_reserve_gpu_for_gui(self) -> bool:
+        """Atomically claim the GPU for a GUI task that is about to start.
+
+        The GUI used to check has_active_job() and only mark itself busy later,
+        while create_translation_job() checked is_gui_busy() from an MCP worker
+        thread: a job created in between saw neither and both used the GPU.
+        Checking and reserving under this lock closes the window. The GUI
+        releases the reservation once its own busy state is visible.
+        """
+        with self._lock:
+            if self.has_active_job():
+                return False
+            # The idle timer stays armed: _safe_unload_if_idle() already skips
+            # while the GUI is busy, and cancelling it here left models loaded
+            # indefinitely once the GUI task ended.
+            self._gui_reservations += 1
+            return True
+
+    def release_gpu_for_gui(self) -> None:
+        with self._lock:
+            self._gui_reservations = max(0, self._gui_reservations - 1)
+
+    def _gui_busy_locked(self) -> bool:
+        return self._gui_reservations > 0 or bool(self._is_gui_busy and self._is_gui_busy())
 
     def _record_completed_summary_locked(self, job_id: str, summary: Dict[str, Any]) -> None:
         self._completed_job_summaries[job_id] = dict(summary)
@@ -2033,7 +2061,7 @@ class McpJobManager:
 
     def _safe_unload_if_idle(self) -> None:
         with self._lock:
-            if self.has_active_job() or (self._is_gui_busy and self._is_gui_busy()):
+            if self.has_active_job() or self._gui_busy_locked():
                 return
         try:
             self.unload_models()
@@ -2103,6 +2131,9 @@ class McpJobManager:
         else:
             effective = "text_only"
 
+        # 0 disables cross-page context; `or 3` used to report it as 3.
+        raw_context_size = cli_cfg.get("context_size")
+        context_size = 3 if raw_context_size is None else max(0, int(raw_context_size))
         gui_snap = self._get_gui_snapshot() if self._get_gui_snapshot else {}
         gui_files = list(gui_snap.get("source_files") or ())
         output_dir = str(gui_snap.get("output_dir") or app_cfg.get("last_output_path") or "")
@@ -2112,7 +2143,8 @@ class McpJobManager:
         if conflicts:
             conflict_warning = "; ".join(c.message for c in conflicts)
 
-        gui_busy = bool(self._is_gui_busy and self._is_gui_busy())
+        with self._lock:
+            gui_busy = self._gui_busy_locked()
         mcp_busy = self.has_active_job()
         busy = gui_busy or mcp_busy
         busy_reason = None
@@ -2137,7 +2169,7 @@ class McpJobManager:
             preview_quality=int(mcp_cfg.get("preview_quality", 82) or 82),
             max_parallel_batches=int(mcp_cfg.get("max_parallel_batches", 1) or 1),
             batch_size=int(cli_cfg.get("batch_size", 3) or 3),
-            context_size=int(cli_cfg.get("context_size", 3) or 3),
+            context_size=context_size,
             ai_line_break_enabled=bool(render_cfg.get("disable_auto_wrap", False)),
             check_br_and_retry=bool(render_cfg.get("check_br_and_retry", False)),
             extract_glossary=bool(trans_cfg.get("extract_glossary", False)),
@@ -2168,7 +2200,7 @@ class McpJobManager:
         retranslate_json: bool = False,
     ) -> CreateJobResponse:
         with self._lock:
-            if self._is_gui_busy and self._is_gui_busy():
+            if self._gui_busy_locked():
                 raise RuntimeError("A GUI translation task is currently running. Wait for it to finish or stop it first.")
             if self.has_active_job():
                 if self._creating_job and not self._active_job_id:
@@ -2591,7 +2623,7 @@ class McpJobManager:
         with self._lock:
             if self.has_active_job():
                 raise RuntimeError("Cannot unload GPU models while an MCP translation job is running.")
-            if self._is_gui_busy and self._is_gui_busy():
+            if self._gui_busy_locked():
                 raise RuntimeError("Cannot unload GPU models while a GUI translation task is running.")
             self._cancel_idle_timer_locked()
 

@@ -6,7 +6,7 @@ import json
 import logging
 import os
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Iterable
 
 from ..config import Translator
 from .generic import Context
@@ -289,3 +289,31 @@ def slice_batch_indices(
         batches.append((batch_start, batch_end))
         batch_start = batch_end
     return batches
+
+
+def select_context_orders(
+    available_orders: Iterable[int],
+    batch_orders: Iterable[int],
+    limit: int,
+) -> list[int]:
+    """Choose up to ``limit`` finished page orders as cross-page context.
+
+    Pages right before the batch come first, nearest first. Concurrent batches
+    finish out of order, so when too few earlier pages are done, the pages
+    nearest after the batch (for example resume pages from an earlier run)
+    fill the rest. The result is in page order so prompts stay deterministic.
+    """
+    if limit <= 0:
+        return []
+    batch = set(batch_orders)
+    candidates = [order for order in available_orders if order not in batch]
+    if not batch:
+        return sorted(candidates)[-limit:]
+    first, last = min(batch), max(batch)
+
+    def distance(order: int) -> tuple[int, int]:
+        if order < first:
+            return (0, first - order)
+        return (1, abs(order - last))
+
+    return sorted(sorted(candidates, key=distance)[:limit])

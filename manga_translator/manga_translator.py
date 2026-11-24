@@ -3941,13 +3941,23 @@ class MangaTranslator:
             pipeline = ConcurrentPipeline(self, batch_size, max_workers=self.translation_concurrency)
             file_paths = [input_path(item) for item in images_with_configs]
             configs = [item[1] for item in images_with_configs]
-            contexts = await pipeline.process_batch(
-                file_paths,
-                configs,
-                progress_offset=processing_offset,
-                progress_total=display_total,
-                skipped_count=skipped_count,
-            )
+            try:
+                contexts = await pipeline.process_batch(
+                    file_paths,
+                    configs,
+                    progress_offset=processing_offset,
+                    progress_total=display_total,
+                    skipped_count=skipped_count,
+                )
+            except BaseException:
+                # The pipeline is the default path; without this, pages it
+                # already saved vanish from the caller's counts on an abort.
+                # Never let this bookkeeping replace the original error.
+                try:
+                    self._last_batch_partial_results = pipeline.finished_contexts()
+                except Exception:
+                    logger.debug("Could not collect finished pages after pipeline abort", exc_info=True)
+                raise
             self._prune_context_history()
             return plan.merge_results(contexts)
 
@@ -5383,7 +5393,13 @@ class MangaTranslator:
                     merged_ctx.text_regions = None
                     merged_ctx = None
                 batch = None
-                self._cleanup_gpu_memory(aggressive=True)
+                # Concurrent workers (they always pass context_history) only
+                # wait on network requests while detection/inpainting/rendering
+                # threads own the GPU. A device-wide synchronize + empty_cache
+                # from every worker after every request stalls those stages and
+                # drops the allocator cache they reuse; they clean up themselves.
+                if context_history is None:
+                    self._cleanup_gpu_memory(aggressive=True)
 
         return results
 
@@ -6145,6 +6161,9 @@ class MangaTranslator:
         resolved_batch_size = max(1, batch_size if batch_size is not None else self.batch_size)
         logger.info(f"Starting high quality translation in rolling batch mode with batch size: {resolved_batch_size}")
         results = []
+        # Like the standard path: pages finished before a skip-limit abort or
+        # a cancellation stay observable to callers such as subprocess mode.
+        self._last_batch_partial_results = results
         
         # 如果提供了全局总数，使用它来计算总批次数；否则使用当前批次的图片数
         display_total = global_total if global_total is not None else len(images_with_configs)

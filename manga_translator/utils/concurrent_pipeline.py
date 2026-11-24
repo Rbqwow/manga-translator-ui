@@ -20,7 +20,7 @@ from typing import List
 import numpy as np
 
 from . import Context, load_image, open_pil_image
-from .batch_skip import normalize_path, slice_batch_indices
+from .batch_skip import normalize_path, select_context_orders, slice_batch_indices
 
 # 使用 manga_translator 的主 logger，确保日志能被UI捕获
 logger = logging.getLogger('manga_translator')
@@ -568,19 +568,32 @@ class ConcurrentPipeline:
     def _available_history(self, batch_orders):
         """Called under _lock.
 
-        Context is whatever is already translated, not necessarily pages before
-        this batch: concurrent batches finish out of order, so restricting the
-        history to ``order < current`` would starve later-claimed batches. Pages
-        that belong to the batch being translated are excluded, because their
-        results are what this request is producing. Ordering is page order so the
-        prompt stays deterministic.
+        Context comes from pages that are already translated, nearest pages
+        before this batch first. Concurrent batches finish out of order, so when
+        too few earlier pages are done, the nearest later pages (such as resume
+        pages from an earlier run) fill in instead of leaving the batch without
+        context. Pages of the batch itself are excluded, because their results
+        are what this request is producing. The selection is returned in page
+        order so the prompt stays deterministic, and already holds exactly the
+        pages to send: ``_build_prev_context`` keeps the tail of this list.
+
+        An empty ``batch_orders`` asks for the end-of-run snapshot, which keeps
+        the most recent pages.
         """
         pages = {}
         for order, _path, entries in getattr(self.translator, '_resume_context_pages', []):
             pages[order] = entries
         pages.update(self._translation_history)
-        pages = {order: entries for order, entries in pages.items() if order not in batch_orders}
-        return [pages[order] for order in sorted(pages)[-self._history_limit:]]
+        if not batch_orders:
+            return [pages[order] for order in sorted(pages)[-self._history_limit:]]
+        has_entries = getattr(self.translator, '_page_has_context_entries', None)
+        usable = {
+            order: entries for order, entries in pages.items()
+            if has_entries is None or has_entries(entries)
+        }
+        context_pages = max(int(getattr(self.translator, 'context_size', 0) or 0), 0)
+        selected = select_context_orders(usable, batch_orders, context_pages)
+        return [usable[order] for order in selected]
 
     def _record_translation_history(self, batch):
         # Capture text before rendering releases the image context.
@@ -1360,4 +1373,10 @@ class ConcurrentPipeline:
         
         with self._lock:
             self.translator.all_page_translations = self._available_history(set())
-        return sorted(self._results, key=lambda ctx: self._page_order.get(normalize_path(ctx.image_name), 0))
+        return self.finished_contexts()
+
+    def finished_contexts(self) -> List[Context]:
+        """Pages finished so far, in page order; still valid after an abort."""
+        with self._results_lock:
+            results = list(self._results)
+        return sorted(results, key=lambda ctx: self._page_order.get(normalize_path(ctx.image_name), 0))

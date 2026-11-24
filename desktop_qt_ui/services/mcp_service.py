@@ -8,8 +8,10 @@ import logging
 import os
 from pathlib import Path
 import re
+import shutil
 import tempfile
 import threading
+import time
 import tomllib
 from typing import TYPE_CHECKING, Any, Callable, Dict, List, Literal, Optional
 
@@ -248,7 +250,9 @@ def _build_client_server_entry(client: str, url: str) -> Dict[str, Any]:
     return {"url": url}
 
 
-def _parse_json_or_jsonc(raw_text: str, target: Path) -> Dict[str, Any]:
+def _parse_json_or_jsonc(raw_text: str, target: Path) -> tuple[Dict[str, Any], bool]:
+    """Parse a client config; the flag is True when it needed the JSONC fallback."""
+    is_jsonc = False
     try:
         parsed = json.loads(raw_text)
     except json.JSONDecodeError:
@@ -256,11 +260,18 @@ def _parse_json_or_jsonc(raw_text: str, target: Path) -> Dict[str, Any]:
             import json5
 
             parsed = json5.loads(raw_text)
+            is_jsonc = True
         except Exception as exc:
             raise ValueError(f"Failed to parse JSON config {target}: {exc}") from exc
     if not isinstance(parsed, dict):
         raise ValueError(f"Expected JSON object in {target}")
-    return parsed
+    return parsed, is_jsonc
+
+
+def _backup_config_file(path: Path) -> Path:
+    backup = path.with_name(f"{path.name}.{time.strftime('%Y%m%d-%H%M%S')}.bak")
+    shutil.copy2(path, backup)
+    return backup
 
 
 def _merge_codex_toml_config(existing_text: str, url: str) -> str:
@@ -388,6 +399,9 @@ class McpService(QObject):
         self._server_op_lock = threading.Lock()
         self._job_manager: Optional[Any] = None
         self._http_server: Optional[Any] = None
+        # GUI reservations taken before the job manager exists (no MCP job can
+        # run yet); a manager created meanwhile starts with them.
+        self._early_gui_reservations = 0
 
         if self._config_service is not None and hasattr(self._config_service, "config_changed"):
             try:
@@ -410,6 +424,7 @@ class McpService(QObject):
                     on_progress=self._on_job_progress,
                     on_job_finished=self._on_job_finished,
                 )
+                self._job_manager._gui_reservations = self._early_gui_reservations
             return self._job_manager
 
     @property
@@ -596,6 +611,28 @@ class McpService(QObject):
     def has_active_job(self) -> bool:
         return bool(self._job_manager is not None and self._job_manager.has_active_job())
 
+    def try_reserve_gpu_for_gui(self) -> bool:
+        """Claim the GPU for a starting GUI task; False while an MCP job owns it."""
+        with self._lock:
+            if self._job_manager is None:
+                # Avoid loading the MCP stack just to start a GUI task.
+                self._early_gui_reservations += 1
+                return True
+            manager = self._job_manager
+        return manager.try_reserve_gpu_for_gui()
+
+    def release_gpu_for_gui(self) -> None:
+        with self._lock:
+            manager = self._job_manager
+            if self._early_gui_reservations:
+                self._early_gui_reservations -= 1
+                if manager is not None:
+                    # The reservation was handed over when the manager was created.
+                    manager.release_gpu_for_gui()
+                return
+        if manager is not None:
+            manager.release_gpu_for_gui()
+
     def get_current_job_status(self) -> Optional[Dict[str, Any]]:
         if self._job_manager is None:
             return None
@@ -741,7 +778,15 @@ class McpService(QObject):
             if target.exists():
                 raw_text = target.read_text(encoding="utf-8-sig").strip()
                 if raw_text:
-                    existing_data = _parse_json_or_jsonc(raw_text, target)
+                    existing_data, is_jsonc = _parse_json_or_jsonc(raw_text, target)
+                    if is_jsonc:
+                        # Rewriting as plain JSON drops comments and trailing
+                        # commas (common in VS Code/Cursor/OpenCode configs).
+                        backup = _backup_config_file(target)
+                        logger.warning(
+                            f"[MCP] {target} contains comments or trailing commas that plain JSON "
+                            f"cannot keep; the original was saved to {backup}"
+                        )
 
             servers = existing_data.get(profile.root_key)
             if servers is None:

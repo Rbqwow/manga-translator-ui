@@ -145,6 +145,8 @@ async def translate_batch_replace_translation(translator, images_with_configs: L
     """
     logger.info(f"Starting replace translation mode with {len(images_with_configs)} images")
     results = []
+    # Keep finished pages observable if the run aborts (see translate_batch).
+    translator._last_batch_partial_results = results
     
     display_total = global_total if global_total is not None else len(images_with_configs)
     failed_count = 0
