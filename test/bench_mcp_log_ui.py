@@ -1,8 +1,9 @@
 """Benchmark the GUI-thread cost of MCP live-log forwarding.
 
-McpService receives every log record in the process. A background thread feeds
-records into it the way the logging listener thread does, while the GUI thread
-runs a 10 ms heartbeat timer. For each scenario the harness reports:
+A background thread emits log records through the app's RecentLogHandler, as
+the logging listener thread does, while the GUI thread runs a 10 ms heartbeat
+timer. The MCP page picks the records up however the measured revision does it
+(per-record signals, a batched buffer, or sequence polling). For each scenario the harness reports:
 
 * GUI CPU: CPU time the GUI thread spent while the records were handled;
 * catch-up: time until the log view shows the last record (or, when nothing
@@ -72,18 +73,25 @@ def main() -> int:
 
     app = QApplication.instance() or QApplication([])
 
+    import logging
+
     from core.config_models import AppSettings
-    from services.log_service import unsubscribe_log_records
+    from services.log_service import RecentLogHandler
     from services.mcp_service import McpService
     from ui.main_page.pages import mcp_page
 
     workdir = tempfile.TemporaryDirectory()
     service = McpService(root_dir=workdir.name)
-    unsubscribe_log_records(service._on_log_entry)  # only the harness feeds records
     mcp_page.get_mcp_service = lambda: service
     mcp_page.get_config_service = lambda: SimpleNamespace(get_config=AppSettings)
-    mcp_page.get_log_service = lambda: SimpleNamespace(get_recent_logs=lambda limit=1000: [])
-    batching = hasattr(service, "drain_log_records")
+    # Records go through the real recent-log store and subscribers, like the
+    # logging listener thread delivers them; nothing else logs to this logger.
+    bench_logger = logging.getLogger("manga_translator.bench_mcp_log_ui")
+    bench_logger.handlers = [RecentLogHandler()]
+    bench_logger.setLevel(logging.INFO)
+    bench_logger.propagate = False
+    # Revisions that only render while the page is visible.
+    batching = hasattr(service, "drain_log_records") or hasattr(mcp_page.McpPagePanel, "_sync_logs")
 
     def settle(seconds):
         deadline = time.perf_counter() + seconds
@@ -97,18 +105,25 @@ def main() -> int:
         )
         shown = {"text": ""}
         original_append = panel.log_view.appendPlainText
+        original_set = panel.log_view.setPlainText
 
         def counting_append(text):
             shown["text"] = text
             original_append(text)
 
+        def counting_set(text):
+            shown["text"] = text
+            original_set(text)
+
         panel.log_view.appendPlainText = counting_append
+        panel.log_view.setPlainText = counting_set
         if visible:
             panel.resize(1000, 800)
             panel.show()
         settle(0.3)
-        if batching:
+        if hasattr(service, "drain_log_records"):
             service.drain_log_records()
+        shown["text"] = ""
 
         last_message = f"line {records - 1}"
         must_show = visible or not batching  # the old page rendered even while hidden
@@ -117,10 +132,7 @@ def main() -> int:
         def feed():
             start = time.perf_counter()
             for index in range(records):
-                service._on_log_entry({
-                    "timestamp": "2026-11-23T10:00:00", "level": "INFO",
-                    "module": "manga_translator", "message": f"line {index}",
-                })
+                bench_logger.info("line %d", index)
                 if rate:
                     delay = start + (index + 1) / rate - time.perf_counter()
                     if delay > 0:
